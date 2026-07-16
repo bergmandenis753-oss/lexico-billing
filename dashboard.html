@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lexico VoIP — биллинг</title>
+<style>
+  :root { --bg:#0f1420; --card:#1a2130; --line:#2a3446; --txt:#e6ebf2; --mut:#8a96a8; --accent:#3f8cff; --good:#37c26a; --bad:#ff5a5a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif; }
+  header { padding:18px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:18px; margin:0; font-weight:600; }
+  header .sub { color:var(--mut); font-size:13px; }
+  main { padding:20px 24px; max-width:1200px; margin:0 auto; }
+  .cards { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:22px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  .card .lbl { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .card .val { font-size:26px; font-weight:600; margin-top:6px; }
+  section { margin-bottom:26px; }
+  h2 { font-size:15px; font-weight:600; margin:0 0 10px; color:var(--txt); }
+  table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); }
+  th { color:var(--mut); font-weight:500; font-size:12px; text-transform:uppercase; letter-spacing:.03em; }
+  tr:last-child td { border-bottom:none; }
+  .badge { padding:2px 8px; border-radius:20px; font-size:12px; }
+  .on { background:rgba(55,194,106,.15); color:var(--good); }
+  .off { background:rgba(255,90,90,.15); color:var(--bad); }
+  button { background:var(--accent); color:#fff; border:none; border-radius:7px; padding:6px 12px; cursor:pointer; font-size:13px; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--txt); }
+  button:hover { opacity:.9; }
+  .right { text-align:right; }
+  .mut { color:var(--mut); }
+  dialog { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:12px; padding:20px; width:320px; }
+  dialog h3 { margin:0 0 14px; font-size:15px; }
+  dialog label { display:block; font-size:13px; color:var(--mut); margin-bottom:6px; }
+  dialog input { width:100%; padding:8px; border-radius:7px; border:1px solid var(--line); background:var(--bg); color:var(--txt); margin-bottom:14px; }
+  dialog .row { display:flex; gap:8px; justify-content:flex-end; }
+  .empty { padding:16px; color:var(--mut); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Lexico VoIP</h1>
+  <span class="sub">prepaid-биллинг · дашборд</span>
+  <span style="margin-left:auto"><button class="ghost" onclick="load()">Обновить</button></span>
+</header>
+
+<main>
+  <div class="cards">
+    <div class="card"><div class="lbl">Суммарный баланс</div><div class="val" id="c-balance">—</div></div>
+    <div class="card"><div class="lbl">Маржа за сегодня</div><div class="val" id="c-today">—</div></div>
+    <div class="card"><div class="lbl">Маржа за месяц</div><div class="val" id="c-month">—</div></div>
+  </div>
+
+  <section>
+    <h2>Клиенты</h2>
+    <table>
+      <thead><tr><th>Имя</th><th>IP</th><th class="right">Баланс</th><th>Статус</th><th></th></tr></thead>
+      <tbody id="t-clients"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Тарифы</h2>
+    <table>
+      <thead><tr><th>Клиент</th><th>Направление</th><th>Префикс</th><th class="right">Закупка</th><th class="right">Продажа</th><th class="right">Маржа %</th></tr></thead>
+      <tbody id="t-rates"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Последние звонки</h2>
+    <table>
+      <thead><tr><th>Клиент</th><th>Номер</th><th class="right">Длит., с</th><th class="right">Списано</th><th class="right">Маржа</th><th>Время</th></tr></thead>
+      <tbody id="t-cdr"></tbody>
+    </table>
+  </section>
+</main>
+
+<dialog id="topup-dlg">
+  <h3>Пополнить баланс</h3>
+  <form method="dialog" id="topup-form">
+    <label>Клиент</label>
+    <input id="topup-client" disabled>
+    <label>Сумма (в валюте, напр. 25.00)</label>
+    <input id="topup-amount" type="number" step="0.01" min="0.01" required autofocus>
+    <div class="row">
+      <button type="button" class="ghost" onclick="topupDlg.close()">Отмена</button>
+      <button type="submit">Пополнить</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+const topupDlg = document.getElementById('topup-dlg');
+let clientMap = {};       // id -> {name, currency}
+let topupClientId = null;
+
+// центы -> строка с валютой
+function money(cents, cur) {
+  return (cents/100).toFixed(2) + (cur ? ' ' + cur : '');
+}
+
+async function load() {
+  const r = await fetch('/api/dashboard-data');
+  const d = await r.json();
+
+  // валюта для сводки берём у первого клиента (обычно одна валюта)
+  const cur = (d.clients[0] && d.clients[0].currency) || '';
+  document.getElementById('c-balance').textContent = money(d.summary.total_balance_cents, cur);
+  document.getElementById('c-today').textContent   = money(d.summary.margin_today_cents, cur);
+  document.getElementById('c-month').textContent   = money(d.summary.margin_month_cents, cur);
+
+  clientMap = {};
+  d.clients.forEach(c => clientMap[c.id] = c);
+
+  // клиенты
+  const tc = document.getElementById('t-clients');
+  tc.innerHTML = d.clients.map(c => `
+    <tr>
+      <td>${esc(c.name)}</td>
+      <td class="mut">${esc(c.sip_ip)}</td>
+      <td class="right">${money(c.balance_cents, c.currency)}</td>
+      <td>${c.active ? '<span class="badge on">активен</span>' : '<span class="badge off">выкл</span>'}</td>
+      <td class="right"><button onclick="openTopup(${c.id})">+ Пополнить</button></td>
+    </tr>`).join('') || emptyRow(5);
+
+  // тарифы
+  const tr = document.getElementById('t-rates');
+  tr.innerHTML = d.rates.map(r => {
+    const pct = r.sell_rate_cents > 0
+      ? Math.round((r.sell_rate_cents - r.cost_rate_cents) / r.sell_rate_cents * 100)
+      : 0;
+    const cur = (clientMap[r.client_id]||{}).currency || '';
+    return `<tr>
+      <td>${esc(r.client_name)}</td>
+      <td>${esc(r.destination_name)}</td>
+      <td class="mut">${esc(r.prefix)}</td>
+      <td class="right">${money(r.cost_rate_cents, cur)}</td>
+      <td class="right">${money(r.sell_rate_cents, cur)}</td>
+      <td class="right">${pct}%</td>
+    </tr>`; }).join('') || emptyRow(6);
+
+  // CDR
+  const td = document.getElementById('t-cdr');
+  td.innerHTML = d.cdr.map(x => {
+    const cur = (clientMap[x.client_id]||{}).currency || '';
+    const nm = (clientMap[x.client_id]||{}).name || ('#'+x.client_id);
+    return `<tr>
+      <td>${esc(nm)}</td>
+      <td class="mut">${esc(x.destination||'')}</td>
+      <td class="right">${x.billsec}</td>
+      <td class="right">${money(x.charged_cents, cur)}</td>
+      <td class="right">${money(x.margin_cents, cur)}</td>
+      <td class="mut">${esc(x.started_at)}</td>
+    </tr>`; }).join('') || emptyRow(6);
+}
+
+function emptyRow(cols) { return `<tr><td class="empty" colspan="${cols}">Нет данных</td></tr>`; }
+function esc(s){ return String(s).replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
+
+function openTopup(id) {
+  topupClientId = id;
+  const c = clientMap[id];
+  document.getElementById('topup-client').value = c ? c.name : ('#'+id);
+  document.getElementById('topup-amount').value = '';
+  topupDlg.showModal();
+}
+
+document.getElementById('topup-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const val = parseFloat(document.getElementById('topup-amount').value);
+  if (!(val > 0)) return;
+  const cents = Math.round(val * 100);   // валюта -> целые центы
+  const r = await fetch(`/api/clients/${topupClientId}/topup`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({amount_cents: cents})
+  });
+  topupDlg.close();
+  if (!r.ok) { alert('Ошибка пополнения: ' + (await r.text())); return; }
+  load();
+});
+
+load();
+</script>
+</body>
+</html>
