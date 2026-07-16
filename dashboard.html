@@ -56,7 +56,7 @@
   </div>
 
   <section>
-    <div class="sec-head"><h2>Клиенты</h2><button class="small" onclick="clientDlg.showModal()">+ Клиент</button></div>
+    <div class="sec-head"><h2>Оригинаторы (кому даём роут)</h2><button class="small" onclick="clientDlg.showModal()">+ Оригинатор</button></div>
     <table>
       <thead><tr><th>Имя</th><th>IP</th><th class="right">Баланс</th><th>Статус</th><th></th></tr></thead>
       <tbody id="t-clients"></tbody>
@@ -64,15 +64,15 @@
   </section>
 
   <section>
-    <div class="sec-head"><h2>Роуты (закупка)</h2><button class="small" onclick="routeDlg.showModal()">+ Роут</button></div>
+    <div class="sec-head"><h2>Терминаторы (кто даёт нам роут)</h2><button class="small" onclick="routeDlg.showModal()">+ Терминатор</button></div>
     <table>
-      <thead><tr><th>Направление</th><th>Префикс</th><th>Gateway</th><th>Техпрефикс</th><th class="right">Закупка</th><th>Статус</th><th></th></tr></thead>
+      <thead><tr><th>Название</th><th>IP</th><th>Направление</th><th>Префикс</th><th>Gateway</th><th>Техпрефикс</th><th class="right">Закупка</th><th>Статус</th><th></th></tr></thead>
       <tbody id="t-routes"></tbody>
     </table>
   </section>
 
   <section>
-    <div class="sec-head"><h2>Тарифы клиентов (продажа)</h2><button class="small" onclick="openRateDlg()">+ Тариф</button></div>
+    <div class="sec-head"><h2>Тарифы оригинаторов (продажа)</h2><button class="small" onclick="openRateDlg()">+ Тариф</button></div>
     <table>
       <thead><tr><th>Клиент</th><th>Направление</th><th>Префикс</th><th class="right">Продажа</th><th></th></tr></thead>
       <tbody id="t-rates"></tbody>
@@ -90,7 +90,7 @@
 
 <!-- Добавить клиента -->
 <dialog id="client-dlg">
-  <h3>Новый клиент</h3>
+  <h3>Новый оригинатор</h3>
   <form id="client-form">
     <label>Имя</label><input id="cl-name" required autofocus>
     <label>SIP IP (whitelist)</label><input id="cl-ip" placeholder="203.0.113.10" required>
@@ -102,8 +102,10 @@
 
 <!-- Добавить роут -->
 <dialog id="route-dlg">
-  <h3>Новый роут</h3>
+  <h3>Новый терминатор</h3>
   <form id="route-form">
+    <label>Название (поставщик)</label><input id="rt-name" placeholder="Lexico" required autofocus>
+    <label>IP поставщика (через запятую)</label><input id="rt-ips" placeholder="195.219.39.9, 195.219.39.14, 195.219.39.39">
     <label>Направление</label><input id="rt-dest" value="Australia" required>
     <label>Префикс</label><input id="rt-prefix" value="61" required>
     <label>Gateway (имя в FreeSWITCH)</label><input id="rt-gw" placeholder="lexico" required>
@@ -177,9 +179,11 @@ async function load() {
       <td class="right"><button class="small" onclick="openTopup(${c.id})">+ Пополнить</button></td>
     </tr>`).join('') || emptyRow(5);
 
-  document.getElementById('t-routes').innerHTML = d.routes.map(r => {
+  document.getElementById('t-routes').innerHTML = d.terminators.map(r => {
     const c0 = (d.clients[0]||{}).currency || '';
     return `<tr>
+      <td>${esc(r.name)}</td>
+      <td class="mut">${esc(r.ips || '')}</td>
       <td>${esc(r.destination_name)}</td>
       <td class="mut">${esc(r.prefix)}</td>
       <td>${esc(r.gateway_name)}</td>
@@ -190,7 +194,7 @@ async function load() {
         ${r.active ? '' : `<button class="small" onclick="activateRoute(${r.id})">Сделать активным</button> `}
         <button class="small danger" onclick="delRoute(${r.id})">✕</button>
       </td>
-    </tr>`; }).join('') || emptyRow(7);
+    </tr>`; }).join('') || emptyRow(9);
 
   document.getElementById('t-rates').innerHTML = d.client_rates.map(r => {
     const cur = (clientMap[r.client_id]||{}).currency || '';
@@ -234,7 +238,9 @@ document.getElementById('client-form').addEventListener('submit', async e => {
 document.getElementById('route-form').addEventListener('submit', async e => {
   e.preventDefault();
   try {
-    await api('/api/routes', 'POST', {
+    await api('/api/terminators', 'POST', {
+      name: document.getElementById('rt-name').value,
+      ips: document.getElementById('rt-ips').value || '',
       destination_name: document.getElementById('rt-dest').value,
       prefix: document.getElementById('rt-prefix').value,
       gateway_name: document.getElementById('rt-gw').value,
@@ -242,7 +248,7 @@ document.getElementById('route-form').addEventListener('submit', async e => {
       cost_rate_cents: Math.round(parseFloat(document.getElementById('rt-cost').value) * 100),
       active: document.getElementById('rt-active').checked
     });
-    routeDlg.close(); load();
+    routeDlg.close(); e.target.reset(); load();
   } catch (err) { alert('Ошибка: ' + err.message); }
 });
 
@@ -283,8 +289,8 @@ document.getElementById('topup-form').addEventListener('submit', async e => {
 });
 
 // ---- действия с роутами/тарифами ----
-async function activateRoute(id) { try { await api(`/api/routes/${id}/activate`,'POST'); load(); } catch(e){ alert(e.message);} }
-async function delRoute(id) { if(!confirm('Удалить роут?'))return; try { await api(`/api/routes/${id}`,'DELETE'); load(); } catch(e){ alert(e.message);} }
+async function activateRoute(id) { try { await api(`/api/terminators/${id}/activate`,'POST'); load(); } catch(e){ alert(e.message);} }
+async function delRoute(id) { if(!confirm('Удалить терминатор?'))return; try { await api(`/api/terminators/${id}`,'DELETE'); load(); } catch(e){ alert(e.message);} }
 async function delRate(id) { if(!confirm('Удалить тариф?'))return; try { await api(`/api/client-rates/${id}`,'DELETE'); load(); } catch(e){ alert(e.message);} }
 
 load();

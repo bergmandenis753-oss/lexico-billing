@@ -62,7 +62,9 @@ class TopupIn(BaseModel):
     amount_cents: int = Field(gt=0)
 
 
-class RouteIn(BaseModel):
+class TerminatorIn(BaseModel):
+    name: str                  # 'Lexico'
+    ips: str = ""              # IP поставщика через запятую
     destination_name: str
     prefix: str
     gateway_name: str
@@ -71,7 +73,9 @@ class RouteIn(BaseModel):
     active: bool = True
 
 
-class RouteUpdateIn(BaseModel):
+class TerminatorUpdateIn(BaseModel):
+    name: Optional[str] = None
+    ips: Optional[str] = None
     destination_name: Optional[str] = None
     prefix: Optional[str] = None
     gateway_name: Optional[str] = None
@@ -115,9 +119,9 @@ def reserve(data: ReserveIn):
         if rate["sell_rate_cents"] <= 0:
             raise HTTPException(403, "Некорректный тариф продажи (<= 0)")
 
-        route = db.match_active_route(conn, data.destination)
+        route = db.match_active_terminator(conn, data.destination)
         if route is None:
-            raise HTTPException(403, f"Нет активного роута для {data.destination}")
+            raise HTTPException(403, f"Нет активного терминатора для {data.destination}")
 
         held = db.active_hold_sum(conn, client["id"], now_ts)
         available = client["balance_cents"] - held
@@ -260,21 +264,21 @@ def topup(cid: int, data: TopupIn):
         conn.close()
 
 
-# ================= CRUD роутов =================
+# ================= CRUD терминаторов (поставщиков) =================
 
-@app.post("/api/routes")
-def create_route(data: RouteIn):
+@app.post("/api/terminators")
+def create_terminator(data: TerminatorIn):
     conn = db.get_conn()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        # если новый роут активен — гасим другие активные на этот же префикс
+        # если новый терминатор активен — гасим других активных на этот же префикс
         if data.active:
-            conn.execute("UPDATE routes SET active = 0 WHERE prefix = ?", (data.prefix,))
+            conn.execute("UPDATE terminators SET active = 0 WHERE prefix = ?", (data.prefix,))
         cur = conn.execute(
-            "INSERT INTO routes (destination_name, prefix, gateway_name, tech_prefix, cost_rate_cents, active) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (data.destination_name, data.prefix, data.gateway_name, data.tech_prefix,
-             data.cost_rate_cents, int(data.active)),
+            "INSERT INTO terminators (name, ips, destination_name, prefix, gateway_name, tech_prefix, cost_rate_cents, active) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (data.name, data.ips, data.destination_name, data.prefix, data.gateway_name,
+             data.tech_prefix, data.cost_rate_cents, int(data.active)),
         )
         conn.commit()
         return {"id": cur.lastrowid}
@@ -282,66 +286,65 @@ def create_route(data: RouteIn):
         conn.close()
 
 
-@app.get("/api/routes")
-def list_routes():
+@app.get("/api/terminators")
+def list_terminators():
     conn = db.get_conn()
-    rows = conn.execute("SELECT * FROM routes ORDER BY prefix, active DESC, id").fetchall()
+    rows = conn.execute("SELECT * FROM terminators ORDER BY prefix, active DESC, id").fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
-@app.patch("/api/routes/{rid}")
-def update_route(rid: int, data: RouteUpdateIn):
+@app.patch("/api/terminators/{tid}")
+def update_terminator(tid: int, data: TerminatorUpdateIn):
     fields = {k: v for k, v in data.dict().items() if v is not None}
     if not fields:
         raise HTTPException(400, "Нет полей для обновления")
     conn = db.get_conn()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT * FROM routes WHERE id = ?", (rid,)).fetchone()
+        row = conn.execute("SELECT * FROM terminators WHERE id = ?", (tid,)).fetchone()
         if row is None:
             conn.rollback()
-            raise HTTPException(404, "Роут не найден")
-        # активируем этот роут — гасим соседей по префиксу
+            raise HTTPException(404, "Терминатор не найден")
         if fields.get("active"):
             prefix = fields.get("prefix", row["prefix"])
-            conn.execute("UPDATE routes SET active = 0 WHERE prefix = ? AND id != ?", (prefix, rid))
+            conn.execute("UPDATE terminators SET active = 0 WHERE prefix = ? AND id != ?", (prefix, tid))
         if "active" in fields:
             fields["active"] = int(fields["active"])
         sets = ", ".join(f"{k} = ?" for k in fields)
-        conn.execute(f"UPDATE routes SET {sets} WHERE id = ?", (*fields.values(), rid))
+        conn.execute(f"UPDATE terminators SET {sets} WHERE id = ?", (*fields.values(), tid))
         conn.commit()
         return {"ok": True}
     finally:
         conn.close()
 
 
-@app.post("/api/routes/{rid}/activate")
-def activate_route(rid: int):
-    """Сделать роут активным (остальные на этот префикс — в резерв)."""
+@app.post("/api/terminators/{tid}/activate")
+def activate_terminator(tid: int):
+    """Сделать терминатор активным (остальные на этот префикс — в резерв)."""
     conn = db.get_conn()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT * FROM routes WHERE id = ?", (rid,)).fetchone()
+        row = conn.execute("SELECT * FROM terminators WHERE id = ?", (tid,)).fetchone()
         if row is None:
             conn.rollback()
-            raise HTTPException(404, "Роут не найден")
-        conn.execute("UPDATE routes SET active = 0 WHERE prefix = ?", (row["prefix"],))
-        conn.execute("UPDATE routes SET active = 1 WHERE id = ?", (rid,))
+            raise HTTPException(404, "Терминатор не найден")
+        conn.execute("UPDATE terminators SET active = 0 WHERE prefix = ?", (row["prefix"],))
+        conn.execute("UPDATE terminators SET active = 1 WHERE id = ?", (tid,))
         conn.commit()
         return {"ok": True}
     finally:
         conn.close()
 
 
-@app.delete("/api/routes/{rid}")
-def delete_route(rid: int):
+@app.delete("/api/terminators/{tid}")
+def delete_terminator(tid: int):
     conn = db.get_conn()
     try:
-        cur = conn.execute("DELETE FROM routes WHERE id = ?", (rid,))
+        cur = conn.execute("DELETE FROM terminators WHERE id = ?", (tid,))
         conn.commit()
         if cur.rowcount == 0:
-            raise HTTPException(404, "Роут не найден")
+            raise HTTPException(404, "Терминатор не найден")
         return {"ok": True}
     finally:
         conn.close()
@@ -415,7 +418,7 @@ def dashboard_data():
     conn = db.get_conn()
 
     clients = conn.execute("SELECT * FROM clients ORDER BY id").fetchall()
-    routes = conn.execute("SELECT * FROM routes ORDER BY prefix, active DESC, id").fetchall()
+    terminators = conn.execute("SELECT * FROM terminators ORDER BY prefix, active DESC, id").fetchall()
     client_rates = conn.execute(
         "SELECT cr.*, c.name AS client_name FROM client_rates cr "
         "JOIN clients c ON c.id = cr.client_id ORDER BY cr.client_id"
@@ -434,7 +437,7 @@ def dashboard_data():
     conn.close()
     return {
         "clients": [dict(r) for r in clients],
-        "routes": [dict(r) for r in routes],
+        "terminators": [dict(r) for r in terminators],
         "client_rates": [dict(r) for r in client_rates],
         "cdr": [dict(r) for r in cdr],
         "summary": {

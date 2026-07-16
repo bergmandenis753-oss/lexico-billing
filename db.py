@@ -59,18 +59,21 @@ def init_db() -> None:
             created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
         );
 
-        -- Роуты (закупка). На префикс активен ровно один.
-        CREATE TABLE IF NOT EXISTS routes (
+        -- Терминаторы (поставщики, кто даёт нам роут — напр. Lexico). Закупка.
+        -- На префикс активен ровно один терминатор.
+        CREATE TABLE IF NOT EXISTS terminators (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            name             TEXT    NOT NULL,       -- 'Lexico'
+            ips              TEXT    NOT NULL DEFAULT '',  -- IP поставщика через запятую: '195.219.39.9,195.219.39.14'
             destination_name TEXT    NOT NULL,       -- 'Australia'
             prefix           TEXT    NOT NULL,       -- '61'
             gateway_name     TEXT    NOT NULL,       -- имя sofia-gateway, напр. 'lexico'
-            tech_prefix      TEXT    NOT NULL DEFAULT '',  -- техпрефикс поставщика перед номером, напр. '999001'
+            tech_prefix      TEXT    NOT NULL DEFAULT '',  -- техпрефикс перед номером, напр. '999001'
             cost_rate_cents  INTEGER NOT NULL,       -- закупка за минуту
             active           INTEGER NOT NULL DEFAULT 1,
             created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
         );
-        CREATE INDEX IF NOT EXISTS idx_routes_prefix ON routes(prefix, active);
+        CREATE INDEX IF NOT EXISTS idx_term_prefix ON terminators(prefix, active);
 
         -- Тарифы продажи: цена клиенту за направление.
         CREATE TABLE IF NOT EXISTS client_rates (
@@ -109,10 +112,6 @@ def init_db() -> None:
         CREATE UNIQUE INDEX IF NOT EXISTS idx_resv_uuid ON reservations(call_uuid);
         """
     )
-    # Мягкая миграция: добавляем tech_prefix в старую таблицу routes, если её ещё нет.
-    cols = [r["name"] for r in conn.execute("PRAGMA table_info(routes)").fetchall()]
-    if "tech_prefix" not in cols:
-        conn.execute("ALTER TABLE routes ADD COLUMN tech_prefix TEXT NOT NULL DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -135,10 +134,10 @@ def match_client_rate(conn, client_id, destination):
     return None
 
 
-def match_active_route(conn, destination):
-    """Активный роут по самому длинному подходящему префиксу."""
+def match_active_terminator(conn, destination):
+    """Активный терминатор по самому длинному подходящему префиксу."""
     rows = conn.execute(
-        "SELECT * FROM routes WHERE active = 1 ORDER BY length(prefix) DESC",
+        "SELECT * FROM terminators WHERE active = 1 ORDER BY length(prefix) DESC",
     ).fetchall()
     for r in rows:
         if destination.startswith(r["prefix"]):
