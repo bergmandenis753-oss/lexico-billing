@@ -66,6 +66,7 @@ class RouteIn(BaseModel):
     destination_name: str
     prefix: str
     gateway_name: str
+    tech_prefix: str = ""      # техпрефикс поставщика (напр. '999001')
     cost_rate_cents: int = Field(ge=0)
     active: bool = True
 
@@ -74,6 +75,7 @@ class RouteUpdateIn(BaseModel):
     destination_name: Optional[str] = None
     prefix: Optional[str] = None
     gateway_name: Optional[str] = None
+    tech_prefix: Optional[str] = None
     cost_rate_cents: Optional[int] = None
     active: Optional[bool] = None
 
@@ -141,6 +143,7 @@ def reserve(data: ReserveIn):
             "sell_rate_cents": rate["sell_rate_cents"],
             "cost_rate_cents": route["cost_rate_cents"],
             "gateway_name": route["gateway_name"],
+            "tech_prefix": route["tech_prefix"],
             "client_id": client["id"],
             "call_uuid": call_uuid,
         }
@@ -268,9 +271,10 @@ def create_route(data: RouteIn):
         if data.active:
             conn.execute("UPDATE routes SET active = 0 WHERE prefix = ?", (data.prefix,))
         cur = conn.execute(
-            "INSERT INTO routes (destination_name, prefix, gateway_name, cost_rate_cents, active) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (data.destination_name, data.prefix, data.gateway_name, data.cost_rate_cents, int(data.active)),
+            "INSERT INTO routes (destination_name, prefix, gateway_name, tech_prefix, cost_rate_cents, active) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (data.destination_name, data.prefix, data.gateway_name, data.tech_prefix,
+             data.cost_rate_cents, int(data.active)),
         )
         conn.commit()
         return {"id": cur.lastrowid}

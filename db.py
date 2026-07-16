@@ -65,6 +65,7 @@ def init_db() -> None:
             destination_name TEXT    NOT NULL,       -- 'Australia'
             prefix           TEXT    NOT NULL,       -- '61'
             gateway_name     TEXT    NOT NULL,       -- имя sofia-gateway, напр. 'lexico'
+            tech_prefix      TEXT    NOT NULL DEFAULT '',  -- техпрефикс поставщика перед номером, напр. '999001'
             cost_rate_cents  INTEGER NOT NULL,       -- закупка за минуту
             active           INTEGER NOT NULL DEFAULT 1,
             created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -108,6 +109,10 @@ def init_db() -> None:
         CREATE UNIQUE INDEX IF NOT EXISTS idx_resv_uuid ON reservations(call_uuid);
         """
     )
+    # Мягкая миграция: добавляем tech_prefix в старую таблицу routes, если её ещё нет.
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(routes)").fetchall()]
+    if "tech_prefix" not in cols:
+        conn.execute("ALTER TABLE routes ADD COLUMN tech_prefix TEXT NOT NULL DEFAULT ''")
     conn.commit()
     conn.close()
 
