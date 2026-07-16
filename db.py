@@ -1,12 +1,17 @@
 """
-db.py — работа с SQLite. Все деньги хранятся в целых центах (int), без float.
+db.py — работа с SQLite. Все деньги в целых центах (int), без float.
 
-Ключевая идея по concurrency: у одного клиента может идти несколько
-параллельных звонков. Чтобы два одновременных reserve не потратили один и тот же
-баланс дважды, при reserve мы создаём "холд" (строку в reservations) на всю
-доступную сумму под этот звонок. Доступный баланс = balance_cents минус сумма
-активных (непросроченных) холдов. Всё это делается в одной транзакции
-BEGIN IMMEDIATE, поэтому параллельные запросы сериализуются на уровне БД.
+Модель разведена на два уровня:
+  routes        — КУДА я отправляю трафик: направление + gateway у поставщика +
+                  закупочная цена. На одно направление (префикс) может быть
+                  несколько роутов, но активен всегда ровно один (ручной выбор).
+  client_rates  — по какой цене я ПРОДАЮ каждому клиенту это направление.
+
+При звонке: клиент по IP → его тариф (sell) по префиксу → активный роут по
+префиксу (gateway + cost). Маржа = sell - cost.
+
+Concurrency: холды (reservations) + BEGIN IMMEDIATE + WAL, чтобы параллельные
+звонки одного клиента не потратили баланс дважды.
 """
 
 import sqlite3
@@ -15,24 +20,18 @@ from pathlib import Path
 
 DB_PATH = Path(__file__).with_name("billing.db")
 
-# Запас поверх max_seconds, чтобы холд не протух пока звонок ещё идёт (сек).
 RESERVATION_BUFFER_SEC = 120
 
-# --- Правила тарификации ---
-# Тарифы в rates заданы за МИНУТУ. Ниже — как округляем длительность звонка.
-# Пример настроек: посекундно = (1, 1); минимум 30с потом по 6с = (30, 6);
-# поминутно = (60, 60).
-MIN_BILL_SEC = 1        # минимальная тарифицируемая длительность (сек)
-BILL_INCREMENT_SEC = 1  # шаг округления после минимума (сек)
+# Правила тарификации (тариф задан за минуту). Посекундно = (1, 1).
+MIN_BILL_SEC = 1
+BILL_INCREMENT_SEC = 1
 
 
 def billed_seconds(billsec: int) -> int:
-    """Округляем фактические секунды по правилам тарификации."""
     if billsec <= 0:
         return 0
     if billsec <= MIN_BILL_SEC:
         return MIN_BILL_SEC
-    # округляем вверх до кратного шагу
     extra = billsec - MIN_BILL_SEC
     steps = -(-extra // BILL_INCREMENT_SEC)  # ceil-деление
     return MIN_BILL_SEC + steps * BILL_INCREMENT_SEC
@@ -41,7 +40,6 @@ def billed_seconds(billsec: int) -> int:
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
-    # WAL — чтобы чтение дашборда не блокировало запись биллинга.
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
@@ -54,29 +52,41 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS clients (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
             name          TEXT    NOT NULL,
-            sip_ip        TEXT    NOT NULL UNIQUE,   -- идентификация клиента по IP (whitelist)
+            sip_ip        TEXT    NOT NULL UNIQUE,   -- whitelist по IP
             balance_cents INTEGER NOT NULL DEFAULT 0,
             currency      TEXT    NOT NULL DEFAULT 'USD',
             active        INTEGER NOT NULL DEFAULT 1,
             created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
         );
 
-        CREATE TABLE IF NOT EXISTS rates (
+        -- Роуты (закупка). На префикс активен ровно один.
+        CREATE TABLE IF NOT EXISTS routes (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            destination_name TEXT    NOT NULL,       -- 'Australia'
+            prefix           TEXT    NOT NULL,       -- '61'
+            gateway_name     TEXT    NOT NULL,       -- имя sofia-gateway, напр. 'lexico'
+            cost_rate_cents  INTEGER NOT NULL,       -- закупка за минуту
+            active           INTEGER NOT NULL DEFAULT 1,
+            created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_routes_prefix ON routes(prefix, active);
+
+        -- Тарифы продажи: цена клиенту за направление.
+        CREATE TABLE IF NOT EXISTS client_rates (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
             client_id        INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
-            prefix           TEXT    NOT NULL,   -- напр. '61'
-            destination_name TEXT    NOT NULL,   -- напр. 'Australia'
-            cost_rate_cents  INTEGER NOT NULL,   -- закупка у Lexico за минуту
-            sell_rate_cents  INTEGER NOT NULL    -- продажа клиенту за минуту
+            prefix           TEXT    NOT NULL,
+            destination_name TEXT    NOT NULL,
+            sell_rate_cents  INTEGER NOT NULL
         );
-        -- Быстрый подбор тарифа по клиенту и префиксу.
-        CREATE INDEX IF NOT EXISTS idx_rates_client ON rates(client_id, prefix);
+        CREATE INDEX IF NOT EXISTS idx_crates_client ON client_rates(client_id, prefix);
 
         CREATE TABLE IF NOT EXISTS cdr (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             client_id       INTEGER NOT NULL REFERENCES clients(id),
             call_uuid       TEXT,
             destination     TEXT,
+            gateway_name    TEXT,
             billsec         INTEGER NOT NULL,
             sell_rate_cents INTEGER NOT NULL,
             cost_rate_cents INTEGER NOT NULL,
@@ -86,13 +96,12 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_cdr_started ON cdr(started_at);
 
-        -- Активные холды под идущие звонки.
         CREATE TABLE IF NOT EXISTS reservations (
             id             INTEGER PRIMARY KEY AUTOINCREMENT,
             client_id      INTEGER NOT NULL REFERENCES clients(id),
             call_uuid      TEXT    NOT NULL,
             reserved_cents INTEGER NOT NULL,
-            expires_at     INTEGER NOT NULL,   -- unix-время, после которого холд считается протухшим
+            expires_at     INTEGER NOT NULL,
             created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_resv_client ON reservations(client_id);
@@ -103,19 +112,16 @@ def init_db() -> None:
     conn.close()
 
 
-# ---------- вспомогательные выборки ----------
+# ---------- выборки ----------
 
 def get_client_by_ip(conn, sip_ip):
     return conn.execute("SELECT * FROM clients WHERE sip_ip = ?", (sip_ip,)).fetchone()
 
 
-def match_rate(conn, client_id, destination):
-    """
-    Подбираем тариф клиента по самому длинному префиксу, который совпадает
-    с началом набранного номера. Так '61' поймает австралийские номера.
-    """
+def match_client_rate(conn, client_id, destination):
+    """Тариф клиента по самому длинному подходящему префиксу."""
     rows = conn.execute(
-        "SELECT * FROM rates WHERE client_id = ? ORDER BY length(prefix) DESC",
+        "SELECT * FROM client_rates WHERE client_id = ? ORDER BY length(prefix) DESC",
         (client_id,),
     ).fetchall()
     for r in rows:
@@ -124,8 +130,18 @@ def match_rate(conn, client_id, destination):
     return None
 
 
+def match_active_route(conn, destination):
+    """Активный роут по самому длинному подходящему префиксу."""
+    rows = conn.execute(
+        "SELECT * FROM routes WHERE active = 1 ORDER BY length(prefix) DESC",
+    ).fetchall()
+    for r in rows:
+        if destination.startswith(r["prefix"]):
+            return r
+    return None
+
+
 def active_hold_sum(conn, client_id, now_ts):
-    """Сумма непротухших холдов клиента."""
     row = conn.execute(
         "SELECT COALESCE(SUM(reserved_cents), 0) AS s FROM reservations "
         "WHERE client_id = ? AND expires_at > ?",
@@ -135,7 +151,6 @@ def active_hold_sum(conn, client_id, now_ts):
 
 
 def cleanup_expired(conn, now_ts):
-    """Удаляем протухшие холды (звонки, которые не дошли до finalize)."""
     conn.execute("DELETE FROM reservations WHERE expires_at <= ?", (now_ts,))
 
 

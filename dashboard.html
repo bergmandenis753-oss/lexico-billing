@@ -17,23 +17,26 @@
   .card .lbl { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
   .card .val { font-size:26px; font-weight:600; margin-top:6px; }
   section { margin-bottom:26px; }
-  h2 { font-size:15px; font-weight:600; margin:0 0 10px; color:var(--txt); }
+  .sec-head { display:flex; align-items:center; gap:12px; margin:0 0 10px; }
+  h2 { font-size:15px; font-weight:600; margin:0; }
   table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
   th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); }
   th { color:var(--mut); font-weight:500; font-size:12px; text-transform:uppercase; letter-spacing:.03em; }
   tr:last-child td { border-bottom:none; }
   .badge { padding:2px 8px; border-radius:20px; font-size:12px; }
   .on { background:rgba(55,194,106,.15); color:var(--good); }
-  .off { background:rgba(255,90,90,.15); color:var(--bad); }
+  .off { background:rgba(138,150,168,.15); color:var(--mut); }
   button { background:var(--accent); color:#fff; border:none; border-radius:7px; padding:6px 12px; cursor:pointer; font-size:13px; }
   button.ghost { background:transparent; border:1px solid var(--line); color:var(--txt); }
+  button.small { padding:4px 9px; font-size:12px; }
+  button.danger { background:transparent; border:1px solid var(--line); color:var(--bad); }
   button:hover { opacity:.9; }
   .right { text-align:right; }
   .mut { color:var(--mut); }
-  dialog { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:12px; padding:20px; width:320px; }
+  dialog { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:12px; padding:20px; width:340px; }
   dialog h3 { margin:0 0 14px; font-size:15px; }
-  dialog label { display:block; font-size:13px; color:var(--mut); margin-bottom:6px; }
-  dialog input { width:100%; padding:8px; border-radius:7px; border:1px solid var(--line); background:var(--bg); color:var(--txt); margin-bottom:14px; }
+  dialog label { display:block; font-size:13px; color:var(--mut); margin:0 0 5px; }
+  dialog input, dialog select { width:100%; padding:8px; border-radius:7px; border:1px solid var(--line); background:var(--bg); color:var(--txt); margin-bottom:13px; }
   dialog .row { display:flex; gap:8px; justify-content:flex-end; }
   .empty { padding:16px; color:var(--mut); }
 </style>
@@ -53,7 +56,7 @@
   </div>
 
   <section>
-    <h2>Клиенты</h2>
+    <div class="sec-head"><h2>Клиенты</h2><button class="small" onclick="clientDlg.showModal()">+ Клиент</button></div>
     <table>
       <thead><tr><th>Имя</th><th>IP</th><th class="right">Баланс</th><th>Статус</th><th></th></tr></thead>
       <tbody id="t-clients"></tbody>
@@ -61,51 +64,101 @@
   </section>
 
   <section>
-    <h2>Тарифы</h2>
+    <div class="sec-head"><h2>Роуты (закупка)</h2><button class="small" onclick="routeDlg.showModal()">+ Роут</button></div>
     <table>
-      <thead><tr><th>Клиент</th><th>Направление</th><th>Префикс</th><th class="right">Закупка</th><th class="right">Продажа</th><th class="right">Маржа %</th></tr></thead>
+      <thead><tr><th>Направление</th><th>Префикс</th><th>Gateway</th><th class="right">Закупка</th><th>Статус</th><th></th></tr></thead>
+      <tbody id="t-routes"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>Тарифы клиентов (продажа)</h2><button class="small" onclick="openRateDlg()">+ Тариф</button></div>
+    <table>
+      <thead><tr><th>Клиент</th><th>Направление</th><th>Префикс</th><th class="right">Продажа</th><th></th></tr></thead>
       <tbody id="t-rates"></tbody>
     </table>
   </section>
 
   <section>
-    <h2>Последние звонки</h2>
+    <h2 style="margin-bottom:10px">Последние звонки</h2>
     <table>
-      <thead><tr><th>Клиент</th><th>Номер</th><th class="right">Длит., с</th><th class="right">Списано</th><th class="right">Маржа</th><th>Время</th></tr></thead>
+      <thead><tr><th>Клиент</th><th>Номер</th><th>Gateway</th><th class="right">Длит., с</th><th class="right">Списано</th><th class="right">Маржа</th><th>Время</th></tr></thead>
       <tbody id="t-cdr"></tbody>
     </table>
   </section>
 </main>
 
+<!-- Добавить клиента -->
+<dialog id="client-dlg">
+  <h3>Новый клиент</h3>
+  <form id="client-form">
+    <label>Имя</label><input id="cl-name" required autofocus>
+    <label>SIP IP (whitelist)</label><input id="cl-ip" placeholder="203.0.113.10" required>
+    <label>Валюта</label><input id="cl-cur" value="USD" required>
+    <label>Стартовый баланс (в валюте)</label><input id="cl-bal" type="number" step="0.01" min="0" value="0">
+    <div class="row"><button type="button" class="ghost" onclick="clientDlg.close()">Отмена</button><button type="submit">Создать</button></div>
+  </form>
+</dialog>
+
+<!-- Добавить роут -->
+<dialog id="route-dlg">
+  <h3>Новый роут</h3>
+  <form id="route-form">
+    <label>Направление</label><input id="rt-dest" value="Australia" required>
+    <label>Префикс</label><input id="rt-prefix" value="61" required>
+    <label>Gateway (имя в FreeSWITCH)</label><input id="rt-gw" placeholder="lexico" required>
+    <label>Закупочная цена за минуту (в валюте)</label><input id="rt-cost" type="number" step="0.0001" min="0" required>
+    <label style="display:flex;align-items:center;gap:8px"><input id="rt-active" type="checkbox" checked style="width:auto;margin:0"> Сделать активным</label>
+    <div class="row"><button type="button" class="ghost" onclick="routeDlg.close()">Отмена</button><button type="submit">Создать</button></div>
+  </form>
+</dialog>
+
+<!-- Добавить тариф клиента -->
+<dialog id="rate-dlg">
+  <h3>Новый тариф клиента</h3>
+  <form id="rate-form">
+    <label>Клиент</label><select id="ra-client" required></select>
+    <label>Направление</label><input id="ra-dest" value="Australia" required>
+    <label>Префикс</label><input id="ra-prefix" value="61" required>
+    <label>Цена продажи за минуту (в валюте)</label><input id="ra-sell" type="number" step="0.0001" min="0" required>
+    <div class="row"><button type="button" class="ghost" onclick="rateDlg.close()">Отмена</button><button type="submit">Создать</button></div>
+  </form>
+</dialog>
+
+<!-- Пополнить -->
 <dialog id="topup-dlg">
   <h3>Пополнить баланс</h3>
-  <form method="dialog" id="topup-form">
-    <label>Клиент</label>
-    <input id="topup-client" disabled>
-    <label>Сумма (в валюте, напр. 25.00)</label>
-    <input id="topup-amount" type="number" step="0.01" min="0.01" required autofocus>
-    <div class="row">
-      <button type="button" class="ghost" onclick="topupDlg.close()">Отмена</button>
-      <button type="submit">Пополнить</button>
-    </div>
+  <form id="topup-form">
+    <label>Клиент</label><input id="tu-client" disabled>
+    <label>Сумма (в валюте)</label><input id="tu-amount" type="number" step="0.01" min="0.01" required autofocus>
+    <div class="row"><button type="button" class="ghost" onclick="topupDlg.close()">Отмена</button><button type="submit">Пополнить</button></div>
   </form>
 </dialog>
 
 <script>
-const topupDlg = document.getElementById('topup-dlg');
-let clientMap = {};       // id -> {name, currency}
+const clientDlg = document.getElementById('client-dlg');
+const routeDlg  = document.getElementById('route-dlg');
+const rateDlg   = document.getElementById('rate-dlg');
+const topupDlg  = document.getElementById('topup-dlg');
+let clientMap = {};
 let topupClientId = null;
 
-// центы -> строка с валютой
-function money(cents, cur) {
-  return (cents/100).toFixed(2) + (cur ? ' ' + cur : '');
+const money = (c, cur) => (c/100).toFixed(2) + (cur ? ' ' + cur : '');
+const rate  = (c, cur) => (c/100).toFixed(4) + (cur ? ' ' + cur : '');  // цены за минуту — до 4 знаков
+const esc = s => String(s ?? '').replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+const emptyRow = n => `<tr><td class="empty" colspan="${n}">Нет данных</td></tr>`;
+
+async function api(path, method, body) {
+  const r = await fetch(path, {
+    method, headers: {'Content-Type':'application/json'},
+    body: body ? JSON.stringify(body) : undefined
+  });
+  if (!r.ok) { throw new Error(await r.text()); }
+  return r.json();
 }
 
 async function load() {
-  const r = await fetch('/api/dashboard-data');
-  const d = await r.json();
-
-  // валюта для сводки берём у первого клиента (обычно одна валюта)
+  const d = await (await fetch('/api/dashboard-data')).json();
   const cur = (d.clients[0] && d.clients[0].currency) || '';
   document.getElementById('c-balance').textContent = money(d.summary.total_balance_cents, cur);
   document.getElementById('c-today').textContent   = money(d.summary.margin_today_cents, cur);
@@ -114,72 +167,122 @@ async function load() {
   clientMap = {};
   d.clients.forEach(c => clientMap[c.id] = c);
 
-  // клиенты
-  const tc = document.getElementById('t-clients');
-  tc.innerHTML = d.clients.map(c => `
+  document.getElementById('t-clients').innerHTML = d.clients.map(c => `
     <tr>
       <td>${esc(c.name)}</td>
       <td class="mut">${esc(c.sip_ip)}</td>
       <td class="right">${money(c.balance_cents, c.currency)}</td>
       <td>${c.active ? '<span class="badge on">активен</span>' : '<span class="badge off">выкл</span>'}</td>
-      <td class="right"><button onclick="openTopup(${c.id})">+ Пополнить</button></td>
+      <td class="right"><button class="small" onclick="openTopup(${c.id})">+ Пополнить</button></td>
     </tr>`).join('') || emptyRow(5);
 
-  // тарифы
-  const tr = document.getElementById('t-rates');
-  tr.innerHTML = d.rates.map(r => {
-    const pct = r.sell_rate_cents > 0
-      ? Math.round((r.sell_rate_cents - r.cost_rate_cents) / r.sell_rate_cents * 100)
-      : 0;
+  document.getElementById('t-routes').innerHTML = d.routes.map(r => {
+    const c0 = (d.clients[0]||{}).currency || '';
+    return `<tr>
+      <td>${esc(r.destination_name)}</td>
+      <td class="mut">${esc(r.prefix)}</td>
+      <td>${esc(r.gateway_name)}</td>
+      <td class="right">${rate(r.cost_rate_cents, c0)}</td>
+      <td>${r.active ? '<span class="badge on">активен</span>' : '<span class="badge off">резерв</span>'}</td>
+      <td class="right">
+        ${r.active ? '' : `<button class="small" onclick="activateRoute(${r.id})">Сделать активным</button> `}
+        <button class="small danger" onclick="delRoute(${r.id})">✕</button>
+      </td>
+    </tr>`; }).join('') || emptyRow(6);
+
+  document.getElementById('t-rates').innerHTML = d.client_rates.map(r => {
     const cur = (clientMap[r.client_id]||{}).currency || '';
     return `<tr>
       <td>${esc(r.client_name)}</td>
       <td>${esc(r.destination_name)}</td>
       <td class="mut">${esc(r.prefix)}</td>
-      <td class="right">${money(r.cost_rate_cents, cur)}</td>
-      <td class="right">${money(r.sell_rate_cents, cur)}</td>
-      <td class="right">${pct}%</td>
-    </tr>`; }).join('') || emptyRow(6);
+      <td class="right">${rate(r.sell_rate_cents, cur)}</td>
+      <td class="right"><button class="small danger" onclick="delRate(${r.id})">✕</button></td>
+    </tr>`; }).join('') || emptyRow(5);
 
-  // CDR
-  const td = document.getElementById('t-cdr');
-  td.innerHTML = d.cdr.map(x => {
+  document.getElementById('t-cdr').innerHTML = d.cdr.map(x => {
     const cur = (clientMap[x.client_id]||{}).currency || '';
     const nm = (clientMap[x.client_id]||{}).name || ('#'+x.client_id);
     return `<tr>
       <td>${esc(nm)}</td>
-      <td class="mut">${esc(x.destination||'')}</td>
+      <td class="mut">${esc(x.destination)}</td>
+      <td class="mut">${esc(x.gateway_name)}</td>
       <td class="right">${x.billsec}</td>
       <td class="right">${money(x.charged_cents, cur)}</td>
       <td class="right">${money(x.margin_cents, cur)}</td>
       <td class="mut">${esc(x.started_at)}</td>
-    </tr>`; }).join('') || emptyRow(6);
+    </tr>`; }).join('') || emptyRow(7);
 }
 
-function emptyRow(cols) { return `<tr><td class="empty" colspan="${cols}">Нет данных</td></tr>`; }
-function esc(s){ return String(s).replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
+// ---- создание клиента ----
+document.getElementById('client-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  try {
+    await api('/api/clients', 'POST', {
+      name: document.getElementById('cl-name').value,
+      sip_ip: document.getElementById('cl-ip').value,
+      currency: document.getElementById('cl-cur').value || 'USD',
+      balance_cents: Math.round(parseFloat(document.getElementById('cl-bal').value || '0') * 100)
+    });
+    clientDlg.close(); e.target.reset(); load();
+  } catch (err) { alert('Ошибка: ' + err.message); }
+});
 
+// ---- создание роута ----
+document.getElementById('route-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  try {
+    await api('/api/routes', 'POST', {
+      destination_name: document.getElementById('rt-dest').value,
+      prefix: document.getElementById('rt-prefix').value,
+      gateway_name: document.getElementById('rt-gw').value,
+      cost_rate_cents: Math.round(parseFloat(document.getElementById('rt-cost').value) * 100),
+      active: document.getElementById('rt-active').checked
+    });
+    routeDlg.close(); load();
+  } catch (err) { alert('Ошибка: ' + err.message); }
+});
+
+// ---- создание тарифа ----
+function openRateDlg() {
+  const sel = document.getElementById('ra-client');
+  sel.innerHTML = Object.values(clientMap).map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  if (!sel.innerHTML) { alert('Сначала создайте клиента'); return; }
+  rateDlg.showModal();
+}
+document.getElementById('rate-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  try {
+    await api('/api/client-rates', 'POST', {
+      client_id: parseInt(document.getElementById('ra-client').value),
+      destination_name: document.getElementById('ra-dest').value,
+      prefix: document.getElementById('ra-prefix').value,
+      sell_rate_cents: Math.round(parseFloat(document.getElementById('ra-sell').value) * 100)
+    });
+    rateDlg.close(); load();
+  } catch (err) { alert('Ошибка: ' + err.message); }
+});
+
+// ---- пополнение ----
 function openTopup(id) {
   topupClientId = id;
-  const c = clientMap[id];
-  document.getElementById('topup-client').value = c ? c.name : ('#'+id);
-  document.getElementById('topup-amount').value = '';
+  document.getElementById('tu-client').value = (clientMap[id]||{}).name || ('#'+id);
+  document.getElementById('tu-amount').value = '';
   topupDlg.showModal();
 }
-
-document.getElementById('topup-form').addEventListener('submit', async (e) => {
+document.getElementById('topup-form').addEventListener('submit', async e => {
   e.preventDefault();
-  const val = parseFloat(document.getElementById('topup-amount').value);
-  if (!(val > 0)) return;
-  const cents = Math.round(val * 100);   // валюта -> целые центы
-  const r = await fetch(`/api/clients/${topupClientId}/topup`, {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({amount_cents: cents})
-  });
-  topupDlg.close();
-  if (!r.ok) { alert('Ошибка пополнения: ' + (await r.text())); return; }
-  load();
+  try {
+    await api(`/api/clients/${topupClientId}/topup`, 'POST',
+      { amount_cents: Math.round(parseFloat(document.getElementById('tu-amount').value) * 100) });
+    topupDlg.close(); load();
+  } catch (err) { alert('Ошибка: ' + err.message); }
 });
+
+// ---- действия с роутами/тарифами ----
+async function activateRoute(id) { try { await api(`/api/routes/${id}/activate`,'POST'); load(); } catch(e){ alert(e.message);} }
+async function delRoute(id) { if(!confirm('Удалить роут?'))return; try { await api(`/api/routes/${id}`,'DELETE'); load(); } catch(e){ alert(e.message);} }
+async function delRate(id) { if(!confirm('Удалить тариф?'))return; try { await api(`/api/client-rates/${id}`,'DELETE'); load(); } catch(e){ alert(e.message);} }
 
 load();
 </script>
