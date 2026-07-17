@@ -4,6 +4,7 @@ local KEY_FILE = "/etc/freeswitch/billing_api_key"
 local client_ip = session:getVariable("network_addr") or session:getVariable("sip_received_ip") or ""
 local dest = session:getVariable("destination_number") or ""
 local uuid = session:getVariable("uuid") or tostring(os.time())
+local clid = session:getVariable("caller_id_number") or session:getVariable("sip_from_user") or ""
 
 local function trim(s)
   return (s or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -87,7 +88,14 @@ local client_id = jnum(body, "client_id")
 local gateway = trim(jstr(body, "gateway_name") or "")
 local route_ip = trim(jstr(body, "route_ip") or "")
 local tech_prefix = jstr(body, "tech_prefix") or ""
+local client_tech_prefix = jstr(body, "client_tech_prefix") or ""
 local dial_destination = jstr(body, "dial_destination") or dest
+local provider_number = jstr(body, "provider_number") or (tech_prefix .. dial_destination)
+local terminator_id = jnum(body, "terminator_id") or 0
+local terminator_name = jstr(body, "terminator_name") or ""
+local terminator_destination_name = jstr(body, "terminator_destination_name") or ""
+local terminator_prefix = jstr(body, "terminator_prefix") or ""
+local terminator_tech_prefix = jstr(body, "terminator_tech_prefix") or tech_prefix
 
 if not max_seconds or max_seconds <= 0 or not client_id or not sell or not cost then
   freeswitch.consoleLog("warning", "[billing] invalid reserve response: " .. body .. "\n")
@@ -102,7 +110,7 @@ if gateway == "" and route_ip == "" then
 end
 
 session:execute("set", "execute_on_answer=sched_hangup +" .. max_seconds .. " normal_clearing")
-local dial_number = tech_prefix .. dial_destination
+local dial_number = provider_number
 local bridge_target = ""
 local used_route = gateway
 if gateway ~= "" then
@@ -116,9 +124,40 @@ freeswitch.consoleLog("info", "[billing] bridge " .. bridge_target .. "\n")
 session:execute("bridge", bridge_target)
 
 local billsec = tonumber(session:getVariable("billsec")) or 0
+local hangup_cause = session:getVariable("hangup_cause") or ""
+local bridge_hangup_cause = session:getVariable("bridge_hangup_cause")
+  or session:getVariable("originate_disposition")
+  or session:getVariable("endpoint_disposition")
+  or ""
+local result = "Normal"
+if billsec <= 0 then
+  result = bridge_hangup_cause ~= "" and bridge_hangup_cause or hangup_cause
+  if result == "" then result = "Rejected" end
+end
+
 local fjson = string.format(
-  '{"client_id":%d,"call_uuid":"%s","destination":"%s","billsec":%d,"sell_rate_cents":%d,"cost_rate_cents":%d,"gateway_name":"%s"}',
-  client_id, json_escape(uuid), json_escape(dest), billsec, sell, cost, json_escape(used_route)
+  '{"client_id":%d,"call_uuid":"%s","sip_ip":"%s","clid":"%s","destination":"%s","client_tech_prefix":"%s","dial_destination":"%s","provider_number":"%s","billsec":%d,"sell_rate_cents":%d,"cost_rate_cents":%d,"gateway_name":"%s","route_ip":"%s","terminator_id":%d,"terminator_name":"%s","terminator_destination_name":"%s","terminator_prefix":"%s","terminator_tech_prefix":"%s","hangup_cause":"%s","bridge_hangup_cause":"%s","result":"%s"}',
+  client_id,
+  json_escape(uuid),
+  json_escape(client_ip),
+  json_escape(clid),
+  json_escape(dest),
+  json_escape(client_tech_prefix),
+  json_escape(dial_destination),
+  json_escape(provider_number),
+  billsec,
+  sell,
+  cost,
+  json_escape(used_route),
+  json_escape(route_ip),
+  terminator_id,
+  json_escape(terminator_name),
+  json_escape(terminator_destination_name),
+  json_escape(terminator_prefix),
+  json_escape(terminator_tech_prefix),
+  json_escape(hangup_cause),
+  json_escape(bridge_hangup_cause),
+  json_escape(result)
 )
 local fcode, fbody = http_post("/api/finalize", fjson)
 if fcode ~= 200 then
