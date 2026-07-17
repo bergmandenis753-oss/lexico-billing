@@ -181,6 +181,24 @@ class OpsClientRouteIn(BaseModel):
     cost_rate_cents: Optional[int] = None
 
 
+class DirectionIn(BaseModel):
+    client_id: int
+    terminator_id: int
+    destination_name: str
+    prefix: str
+    client_tech_prefix: str = ""
+    sell_rate_cents: int = Field(gt=0)
+    update_existing: bool = True
+
+
+class RouteCheckIn(BaseModel):
+    client_id: int
+    destination: Optional[str] = None
+    prefix: Optional[str] = None
+    client_tech_prefix: str = ""
+    terminator_id: Optional[int] = None
+
+
 # ================= БИЛЛИНГ =================
 
 @app.get("/healthz", include_in_schema=False)
@@ -576,6 +594,241 @@ def delete_client_rate(rid: int):
         if cur.rowcount == 0:
             raise HTTPException(404, "Тариф не найден")
         return {"ok": True}
+    finally:
+        conn.close()
+
+
+# ================= Мастер направлений =================
+
+def _route_preview(conn, *, client, destination: str, terminator_id: Optional[int] = None):
+    rate_match = db.match_client_rate_for_destination(conn, client["id"], destination)
+    if rate_match is None:
+        return {
+            "ok": False,
+            "stage": "client_rate",
+            "message": f"Нет тарифа клиента для {destination}",
+            "client": dict(client),
+            "input_destination": destination,
+        }
+
+    rate, dial_destination, client_tech_prefix = rate_match
+    route = db.get_terminator(conn, terminator_id or rate["terminator_id"])
+    if route is None:
+        route = db.match_active_terminator(conn, dial_destination)
+    if route is None:
+        return {
+            "ok": False,
+            "stage": "terminator",
+            "message": f"Нет терминатора для {dial_destination}",
+            "client": dict(client),
+            "client_rate": dict(rate),
+            "input_destination": destination,
+            "dial_destination": dial_destination,
+            "client_tech_prefix": client_tech_prefix,
+        }
+
+    group = db.get_termination_group(conn, route["gateway_group_id"] if "gateway_group_id" in route.keys() else None)
+    gateway_name = (route["gateway_name"] or "").strip()
+    route_ips = route["ips"] or ""
+    if group is not None:
+        gateway_name = gateway_name or (group["gateway_name"] or "").strip()
+        route_ips = route_ips or group["ips"] or ""
+    route_ip = db.pick_ip(route_ips, destination)
+    if not gateway_name and not route_ip:
+        return {
+            "ok": False,
+            "stage": "gateway",
+            "message": "У терминатора не указан ни gateway, ни IP",
+            "client": dict(client),
+            "client_rate": dict(rate),
+            "terminator": dict(route),
+            "termination_group": dict(group) if group else None,
+            "input_destination": destination,
+            "dial_destination": dial_destination,
+            "client_tech_prefix": client_tech_prefix,
+        }
+
+    provider_number = f"{route['tech_prefix'] or ''}{dial_destination}"
+    if gateway_name:
+        dial_string = f"sofia/gateway/{gateway_name}/{provider_number}"
+    else:
+        dial_string = f"sofia/external/{provider_number}@{route_ip}"
+
+    return {
+        "ok": True,
+        "stage": "ready",
+        "message": "Цепочка готова",
+        "client": dict(client),
+        "client_rate": dict(rate),
+        "terminator": dict(route),
+        "termination_group": dict(group) if group else None,
+        "input_destination": destination,
+        "client_tech_prefix": client_tech_prefix,
+        "dial_destination": dial_destination,
+        "gateway_name": gateway_name,
+        "route_ip": route_ip,
+        "terminator_tech_prefix": route["tech_prefix"] or "",
+        "provider_number": provider_number,
+        "dial_string": dial_string,
+    }
+
+
+def _new_direction_preview(conn, *, client, route, destination: str, prefix: str, client_tech_prefix: str):
+    dial_destination = destination
+    if client_tech_prefix and destination.startswith(client_tech_prefix):
+        dial_destination = destination[len(client_tech_prefix):]
+    if not dial_destination.startswith(prefix):
+        return {
+            "ok": False,
+            "stage": "prefix",
+            "message": f"Номер после клиентского техпрефикса должен начинаться с {prefix}",
+            "client": dict(client),
+            "terminator": dict(route),
+            "input_destination": destination,
+            "dial_destination": dial_destination,
+            "client_tech_prefix": client_tech_prefix,
+        }
+
+    group = db.get_termination_group(conn, route["gateway_group_id"] if "gateway_group_id" in route.keys() else None)
+    gateway_name = (route["gateway_name"] or "").strip()
+    route_ips = route["ips"] or ""
+    if group is not None:
+        gateway_name = gateway_name or (group["gateway_name"] or "").strip()
+        route_ips = route_ips or group["ips"] or ""
+    route_ip = db.pick_ip(route_ips, destination)
+    if not gateway_name and not route_ip:
+        return {
+            "ok": False,
+            "stage": "gateway",
+            "message": "У терминатора не указан ни gateway, ни IP",
+            "client": dict(client),
+            "terminator": dict(route),
+            "termination_group": dict(group) if group else None,
+            "input_destination": destination,
+            "dial_destination": dial_destination,
+            "client_tech_prefix": client_tech_prefix,
+        }
+
+    provider_number = f"{route['tech_prefix'] or ''}{dial_destination}"
+    if gateway_name:
+        dial_string = f"sofia/gateway/{gateway_name}/{provider_number}"
+    else:
+        dial_string = f"sofia/external/{provider_number}@{route_ip}"
+
+    return {
+        "ok": True,
+        "stage": "ready",
+        "message": "Цепочка будет готова после сохранения",
+        "client": dict(client),
+        "client_rate": None,
+        "terminator": dict(route),
+        "termination_group": dict(group) if group else None,
+        "input_destination": destination,
+        "client_tech_prefix": client_tech_prefix,
+        "dial_destination": dial_destination,
+        "gateway_name": gateway_name,
+        "route_ip": route_ip,
+        "terminator_tech_prefix": route["tech_prefix"] or "",
+        "provider_number": provider_number,
+        "dial_string": dial_string,
+    }
+
+
+@app.post("/api/directions", dependencies=ADMIN_AUTH)
+def create_direction(data: DirectionIn):
+    conn = db.get_conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        client = conn.execute("SELECT * FROM clients WHERE id = ?", (data.client_id,)).fetchone()
+        if client is None:
+            conn.rollback()
+            raise HTTPException(404, "Оригинатор не найден")
+        if not client["active"]:
+            conn.rollback()
+            raise HTTPException(400, "Оригинатор выключен")
+
+        route = db.get_terminator(conn, data.terminator_id)
+        if route is None:
+            conn.rollback()
+            raise HTTPException(404, "Терминатор не найден")
+        if not route["active"]:
+            conn.rollback()
+            raise HTTPException(400, "Терминатор выключен")
+
+        group = db.get_termination_group(conn, route["gateway_group_id"] if "gateway_group_id" in route.keys() else None)
+        gateway_name = (route["gateway_name"] or "").strip()
+        route_ips = route["ips"] or ""
+        if group is not None:
+            gateway_name = gateway_name or (group["gateway_name"] or "").strip()
+            route_ips = route_ips or group["ips"] or ""
+        if not gateway_name and not db.split_ip_list(route_ips):
+            conn.rollback()
+            raise HTTPException(400, "У терминатора нет gateway/IP")
+
+        existing = conn.execute(
+            "SELECT * FROM client_rates WHERE client_id = ? AND client_tech_prefix = ? AND prefix = ?",
+            (data.client_id, data.client_tech_prefix, data.prefix),
+        ).fetchone()
+        created = existing is None
+        if existing is None:
+            cur = conn.execute(
+                "INSERT INTO client_rates (client_id, terminator_id, client_tech_prefix, prefix, destination_name, sell_rate_cents) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (data.client_id, data.terminator_id, data.client_tech_prefix, data.prefix,
+                 data.destination_name, data.sell_rate_cents),
+            )
+            rate_id = cur.lastrowid
+        elif data.update_existing:
+            rate_id = existing["id"]
+            conn.execute(
+                "UPDATE client_rates SET terminator_id = ?, destination_name = ?, sell_rate_cents = ? WHERE id = ?",
+                (data.terminator_id, data.destination_name, data.sell_rate_cents, rate_id),
+            )
+        else:
+            conn.rollback()
+            raise HTTPException(409, "Такое направление у оригинатора уже есть")
+
+        check_number = f"{data.client_tech_prefix or ''}{data.prefix}5551234"
+        preview = _route_preview(conn, client=client, destination=check_number, terminator_id=data.terminator_id)
+        conn.commit()
+        return {
+            "ok": True,
+            "created": created,
+            "client_rate_id": rate_id,
+            "preview": preview,
+        }
+    except HTTPException:
+        raise
+    finally:
+        conn.close()
+
+
+@app.post("/api/route-check", dependencies=ADMIN_AUTH)
+def route_check(data: RouteCheckIn):
+    conn = db.get_conn()
+    try:
+        client = conn.execute("SELECT * FROM clients WHERE id = ?", (data.client_id,)).fetchone()
+        if client is None:
+            raise HTTPException(404, "Оригинатор не найден")
+        destination = (data.destination or "").strip()
+        if not destination:
+            if not data.prefix:
+                raise HTTPException(400, "Укажите номер или префикс")
+            destination = f"{data.client_tech_prefix or ''}{data.prefix}5551234"
+        preview = _route_preview(conn, client=client, destination=destination, terminator_id=data.terminator_id)
+        if preview.get("ok") or not data.prefix or data.terminator_id is None:
+            return preview
+        route = db.get_terminator(conn, data.terminator_id)
+        if route is None:
+            raise HTTPException(404, "Терминатор не найден")
+        return _new_direction_preview(
+            conn,
+            client=client,
+            route=route,
+            destination=destination,
+            prefix=data.prefix,
+            client_tech_prefix=data.client_tech_prefix,
+        )
     finally:
         conn.close()
 
