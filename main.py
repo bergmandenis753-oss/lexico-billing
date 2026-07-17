@@ -91,11 +91,25 @@ class ReserveIn(BaseModel):
 class FinalizeIn(BaseModel):
     client_id: int
     call_uuid: str
+    sip_ip: str = ""
+    clid: str = ""
     destination: str
+    client_tech_prefix: str = ""
+    dial_destination: str = ""
+    provider_number: str = ""
     billsec: int = Field(ge=0)
     sell_rate_cents: int = Field(ge=0)
     cost_rate_cents: int = Field(ge=0)
     gateway_name: Optional[str] = None
+    route_ip: str = ""
+    terminator_id: Optional[int] = None
+    terminator_name: str = ""
+    terminator_destination_name: str = ""
+    terminator_prefix: str = ""
+    terminator_tech_prefix: str = ""
+    hangup_cause: str = ""
+    bridge_hangup_cause: str = ""
+    result: str = ""
 
 
 class ClientIn(BaseModel):
@@ -245,6 +259,7 @@ def reserve(data: ReserveIn):
         route_ip = db.pick_ip(route_ips, data.call_uuid or dial_destination)
         if not gateway_name and not route_ip:
             raise HTTPException(403, "У терминатора не указан ни gateway, ни IP")
+        provider_number = f"{route['tech_prefix'] or ''}{dial_destination}"
 
         held = db.active_hold_sum(conn, client["id"], now_ts)
         available = client["balance_cents"] - held
@@ -274,6 +289,12 @@ def reserve(data: ReserveIn):
             "tech_prefix": route["tech_prefix"],
             "client_tech_prefix": client_tech_prefix,
             "dial_destination": dial_destination,
+            "provider_number": provider_number,
+            "terminator_id": route["id"],
+            "terminator_name": route["name"],
+            "terminator_destination_name": route["destination_name"],
+            "terminator_prefix": route["prefix"],
+            "terminator_tech_prefix": route["tech_prefix"],
             "client_id": client["id"],
             "call_uuid": call_uuid,
         }
@@ -308,11 +329,36 @@ def finalize(data: FinalizeIn):
 
         conn.execute("UPDATE clients SET balance_cents = ? WHERE id = ?", (new_balance, data.client_id))
         conn.execute(
-            "INSERT INTO cdr (client_id, call_uuid, destination, gateway_name, billsec, "
-            "sell_rate_cents, cost_rate_cents, charged_cents, margin_cents) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (data.client_id, data.call_uuid, data.destination, data.gateway_name, data.billsec,
-             data.sell_rate_cents, data.cost_rate_cents, charged, margin),
+            "INSERT INTO cdr (client_id, call_uuid, sip_ip, clid, destination, client_tech_prefix, "
+            "dial_destination, provider_number, gateway_name, route_ip, terminator_id, terminator_name, "
+            "terminator_destination_name, terminator_prefix, terminator_tech_prefix, hangup_cause, "
+            "bridge_hangup_cause, result, billsec, sell_rate_cents, cost_rate_cents, charged_cents, "
+            "margin_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                data.client_id,
+                data.call_uuid,
+                data.sip_ip,
+                data.clid,
+                data.destination,
+                data.client_tech_prefix,
+                data.dial_destination,
+                data.provider_number,
+                data.gateway_name,
+                data.route_ip,
+                data.terminator_id,
+                data.terminator_name,
+                data.terminator_destination_name,
+                data.terminator_prefix,
+                data.terminator_tech_prefix,
+                data.hangup_cause,
+                data.bridge_hangup_cause,
+                data.result,
+                data.billsec,
+                data.sell_rate_cents,
+                data.cost_rate_cents,
+                charged,
+                margin,
+            ),
         )
         conn.execute("DELETE FROM reservations WHERE call_uuid = ?", (data.call_uuid,))
         conn.commit()
@@ -933,7 +979,11 @@ def dashboard_data():
         "JOIN clients c ON c.id = cr.client_id "
         "LEFT JOIN terminators t ON t.id = cr.terminator_id ORDER BY cr.client_id"
     ).fetchall()
-    cdr = conn.execute("SELECT * FROM cdr ORDER BY id DESC LIMIT 50").fetchall()
+    cdr = conn.execute(
+        "SELECT cd.*, c.name AS client_name, c.sip_ip AS client_sip_ip, c.currency AS client_currency "
+        "FROM cdr cd LEFT JOIN clients c ON c.id = cd.client_id "
+        "ORDER BY cd.id DESC LIMIT 10"
+    ).fetchall()
 
     total_balance = conn.execute("SELECT COALESCE(SUM(balance_cents),0) AS s FROM clients").fetchone()["s"]
     margin_today = conn.execute(
