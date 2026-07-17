@@ -82,7 +82,7 @@
   <section>
     <div class="sec-head"><h2>Роуты оригинаторов (направление · терминатор · цена)</h2><button class="small" onclick="openRateDlg()">+ Роут</button></div>
     <table>
-      <thead><tr><th>Оригинатор</th><th>Терминатор</th><th>Направление</th><th>Префикс</th><th class="right">Продажа</th><th></th></tr></thead>
+      <thead><tr><th>Оригинатор</th><th>Терминатор</th><th>Направление</th><th>Клиентский тех</th><th>Префикс</th><th class="right">Продажа</th><th></th></tr></thead>
       <tbody id="t-rates"></tbody>
     </table>
   </section>
@@ -124,7 +124,7 @@
 <dialog id="route-dlg">
   <h3>Новый терминатор</h3>
   <form id="route-form">
-    <label>Название (поставщик)</label><input id="rt-name" placeholder="Lexico Russia" required autofocus>
+    <label>Название (поставщик)</label><input id="rt-name" placeholder="Lexico" required autofocus>
     <label>Терминационная группа</label><select id="rt-group" required></select>
     <label>Направление</label><input id="rt-dest" value="Australia" required>
     <label>Префикс</label><input id="rt-prefix" value="61" required>
@@ -142,6 +142,7 @@
     <label>Оригинатор</label><select id="ra-client" required></select>
     <label>Терминатор (через кого слать)</label><select id="ra-term" required></select>
     <label>Направление</label><input id="ra-dest" value="Australia" required>
+    <label>Клиентский техпрефикс (можно пусто)</label><input id="ra-client-tech" placeholder="101">
     <label>Префикс</label><input id="ra-prefix" value="61" required>
     <label>Цена продажи за минуту (в валюте)</label><input id="ra-sell" type="number" step="0.0001" min="0" required>
     <div class="row"><button type="button" class="ghost" onclick="rateDlg.close()">Отмена</button><button type="submit">Создать</button></div>
@@ -241,10 +242,11 @@ async function load() {
       <td>${esc(r.client_name)}</td>
       <td>${r.terminator_name ? esc(r.terminator_name) : '<span class="mut">— (активный)</span>'}</td>
       <td>${esc(r.destination_name)}</td>
+      <td class="mut">${r.client_tech_prefix ? esc(r.client_tech_prefix) : '—'}</td>
       <td class="mut">${esc(r.prefix)}</td>
       <td class="right">${rate(r.sell_rate_cents, cur)}</td>
       <td class="right"><button class="small danger" onclick="delRate(${r.id})">✕</button></td>
-    </tr>`; }).join('') || emptyRow(6);
+    </tr>`; }).join('') || emptyRow(7);
 
   document.getElementById('t-cdr').innerHTML = d.cdr.map(x => {
     const cur = (clientMap[x.client_id]||{}).currency || '';
@@ -329,6 +331,7 @@ document.getElementById('rate-form').addEventListener('submit', async e => {
     await api('/api/client-rates', 'POST', {
       client_id: parseInt(document.getElementById('ra-client').value),
       terminator_id: parseInt(document.getElementById('ra-term').value),
+      client_tech_prefix: document.getElementById('ra-client-tech').value || '',
       destination_name: document.getElementById('ra-dest').value,
       prefix: document.getElementById('ra-prefix').value,
       sell_rate_cents: Math.round(parseFloat(document.getElementById('ra-sell').value) * 100)
