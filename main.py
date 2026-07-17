@@ -158,12 +158,14 @@ class TerminatorUpdateIn(BaseModel):
 class ClientRateIn(BaseModel):
     client_id: int
     terminator_id: Optional[int] = None   # персональный терминатор оригинатора
+    client_tech_prefix: str = ""          # входящий техпрефикс клиента (напр. '101')
     prefix: str
     destination_name: str
     sell_rate_cents: int = Field(ge=0)
 
 
 class ClientRateUpdateIn(BaseModel):
+    client_tech_prefix: Optional[str] = None
     prefix: Optional[str] = None
     destination_name: Optional[str] = None
     sell_rate_cents: Optional[int] = None
@@ -190,9 +192,10 @@ def reserve(data: ReserveIn):
         if not client["active"]:
             raise HTTPException(403, "Клиент неактивен")
 
-        rate = db.match_client_rate(conn, client["id"], data.destination)
-        if rate is None:
+        rate_match = db.match_client_rate_for_destination(conn, client["id"], data.destination)
+        if rate_match is None:
             raise HTTPException(403, f"Нет тарифа клиента для {data.destination}")
+        rate, dial_destination, client_tech_prefix = rate_match
         if rate["sell_rate_cents"] <= 0:
             raise HTTPException(403, "Некорректный тариф продажи (<= 0)")
 
@@ -200,9 +203,9 @@ def reserve(data: ReserveIn):
         # в его роуте; если не задан — глобально активный на этот префикс.
         route = db.get_terminator(conn, rate["terminator_id"]) if "terminator_id" in rate.keys() else None
         if route is None:
-            route = db.match_active_terminator(conn, data.destination)
+            route = db.match_active_terminator(conn, dial_destination)
         if route is None:
-            raise HTTPException(403, f"Нет терминатора для {data.destination}")
+            raise HTTPException(403, f"Нет терминатора для {dial_destination}")
         group = None
         if "gateway_group_id" in route.keys():
             group = db.get_termination_group(conn, route["gateway_group_id"])
@@ -211,7 +214,7 @@ def reserve(data: ReserveIn):
         if group is not None:
             gateway_name = gateway_name or (group["gateway_name"] or "").strip()
             route_ips = route_ips or group["ips"] or ""
-        route_ip = db.pick_ip(route_ips, data.call_uuid or data.destination)
+        route_ip = db.pick_ip(route_ips, data.call_uuid or dial_destination)
         if not gateway_name and not route_ip:
             raise HTTPException(403, "У терминатора не указан ни gateway, ни IP")
 
@@ -241,6 +244,8 @@ def reserve(data: ReserveIn):
             "gateway_name": gateway_name,
             "route_ip": route_ip,
             "tech_prefix": route["tech_prefix"],
+            "client_tech_prefix": client_tech_prefix,
+            "dial_destination": dial_destination,
             "client_id": client["id"],
             "call_uuid": call_uuid,
         }
@@ -512,9 +517,10 @@ def create_client_rate(data: ClientRateIn):
         if exists is None:
             raise HTTPException(404, "Клиент не найден")
         cur = conn.execute(
-            "INSERT INTO client_rates (client_id, terminator_id, prefix, destination_name, sell_rate_cents) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (data.client_id, data.terminator_id, data.prefix, data.destination_name, data.sell_rate_cents),
+            "INSERT INTO client_rates (client_id, terminator_id, client_tech_prefix, prefix, destination_name, sell_rate_cents) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (data.client_id, data.terminator_id, data.client_tech_prefix, data.prefix,
+             data.destination_name, data.sell_rate_cents),
         )
         conn.commit()
         return {"id": cur.lastrowid}
