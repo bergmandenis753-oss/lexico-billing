@@ -117,8 +117,23 @@ class TopupIn(BaseModel):
     amount_cents: int = Field(gt=0)
 
 
+class TerminationGroupIn(BaseModel):
+    name: str
+    ips: str = ""
+    gateway_name: str = ""
+    active: bool = True
+
+
+class TerminationGroupUpdateIn(BaseModel):
+    name: Optional[str] = None
+    ips: Optional[str] = None
+    gateway_name: Optional[str] = None
+    active: Optional[bool] = None
+
+
 class TerminatorIn(BaseModel):
     name: str                  # 'Lexico'
+    gateway_group_id: Optional[int] = None
     ips: str = ""              # IP поставщика через запятую
     destination_name: str
     prefix: str
@@ -130,6 +145,7 @@ class TerminatorIn(BaseModel):
 
 class TerminatorUpdateIn(BaseModel):
     name: Optional[str] = None
+    gateway_group_id: Optional[int] = None
     ips: Optional[str] = None
     destination_name: Optional[str] = None
     prefix: Optional[str] = None
@@ -187,8 +203,15 @@ def reserve(data: ReserveIn):
             route = db.match_active_terminator(conn, data.destination)
         if route is None:
             raise HTTPException(403, f"Нет терминатора для {data.destination}")
+        group = None
+        if "gateway_group_id" in route.keys():
+            group = db.get_termination_group(conn, route["gateway_group_id"])
         gateway_name = (route["gateway_name"] or "").strip()
-        route_ip = db.pick_ip(route["ips"], data.call_uuid or data.destination)
+        route_ips = route["ips"] or ""
+        if group is not None:
+            gateway_name = gateway_name or (group["gateway_name"] or "").strip()
+            route_ips = route_ips or group["ips"] or ""
+        route_ip = db.pick_ip(route_ips, data.call_uuid or data.destination)
         if not gateway_name and not route_ip:
             raise HTTPException(403, "У терминатора не указан ни gateway, ни IP")
 
@@ -334,22 +357,69 @@ def topup(cid: int, data: TopupIn):
         conn.close()
 
 
+# ================= CRUD терминационных групп =================
+
+@app.post("/api/termination-groups", dependencies=ADMIN_AUTH)
+def create_termination_group(data: TerminationGroupIn):
+    if not data.gateway_name.strip() and not db.split_ip_list(data.ips):
+        raise HTTPException(400, "Укажите IP группы или FreeSWITCH gateway")
+    conn = db.get_conn()
+    try:
+        cur = conn.execute(
+            "INSERT INTO termination_groups (name, ips, gateway_name, active) VALUES (?, ?, ?, ?)",
+            (data.name, data.ips, data.gateway_name.strip(), int(data.active)),
+        )
+        conn.commit()
+        return {"id": cur.lastrowid}
+    except db.sqlite3.IntegrityError:
+        raise HTTPException(409, "Группа с таким именем уже существует")
+    finally:
+        conn.close()
+
+
+@app.get("/api/termination-groups", dependencies=ADMIN_AUTH)
+def list_termination_groups():
+    conn = db.get_conn()
+    rows = conn.execute("SELECT * FROM termination_groups ORDER BY name").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.delete("/api/termination-groups/{gid}", dependencies=ADMIN_AUTH)
+def delete_termination_group(gid: int):
+    conn = db.get_conn()
+    try:
+        used = conn.execute("SELECT 1 FROM terminators WHERE gateway_group_id = ? LIMIT 1", (gid,)).fetchone()
+        if used is not None:
+            raise HTTPException(409, "Группа используется терминатором")
+        cur = conn.execute("DELETE FROM termination_groups WHERE id = ?", (gid,))
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Группа не найдена")
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
 # ================= CRUD терминаторов (поставщиков) =================
 
 @app.post("/api/terminators", dependencies=ADMIN_AUTH)
 def create_terminator(data: TerminatorIn):
     conn = db.get_conn()
     try:
-        if not data.gateway_name.strip() and not db.split_ip_list(data.ips):
+        group = db.get_termination_group(conn, data.gateway_group_id)
+        if data.gateway_group_id is not None and group is None:
+            raise HTTPException(404, "Терминационная группа не найдена")
+        if group is None and not data.gateway_name.strip() and not db.split_ip_list(data.ips):
             raise HTTPException(400, "Укажите gateway или IP терминатора")
         conn.execute("BEGIN IMMEDIATE")
         # если новый терминатор активен — гасим других активных на этот же префикс
         if data.active:
             conn.execute("UPDATE terminators SET active = 0 WHERE prefix = ?", (data.prefix,))
         cur = conn.execute(
-            "INSERT INTO terminators (name, ips, destination_name, prefix, gateway_name, tech_prefix, cost_rate_cents, active) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (data.name, data.ips, data.destination_name, data.prefix, data.gateway_name,
+            "INSERT INTO terminators (name, gateway_group_id, ips, destination_name, prefix, gateway_name, tech_prefix, cost_rate_cents, active) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (data.name, data.gateway_group_id, data.ips, data.destination_name, data.prefix, data.gateway_name,
              data.tech_prefix, data.cost_rate_cents, int(data.active)),
         )
         conn.commit()
@@ -378,9 +448,14 @@ def update_terminator(tid: int, data: TerminatorUpdateIn):
         if row is None:
             conn.rollback()
             raise HTTPException(404, "Терминатор не найден")
+        next_group_id = fields.get("gateway_group_id", row["gateway_group_id"] if "gateway_group_id" in row.keys() else None)
+        group = db.get_termination_group(conn, next_group_id)
+        if next_group_id is not None and group is None:
+            conn.rollback()
+            raise HTTPException(404, "Терминационная группа не найдена")
         next_gateway = fields.get("gateway_name", row["gateway_name"]) or ""
         next_ips = fields.get("ips", row["ips"]) or ""
-        if not next_gateway.strip() and not db.split_ip_list(next_ips):
+        if group is None and not next_gateway.strip() and not db.split_ip_list(next_ips):
             conn.rollback()
             raise HTTPException(400, "Укажите gateway или IP терминатора")
         if fields.get("active"):
@@ -496,7 +571,13 @@ def dashboard_data():
     conn = db.get_conn()
 
     clients = conn.execute("SELECT * FROM clients ORDER BY id").fetchall()
-    terminators = conn.execute("SELECT * FROM terminators ORDER BY prefix, active DESC, id").fetchall()
+    groups = conn.execute("SELECT * FROM termination_groups ORDER BY name").fetchall()
+    terminators = conn.execute(
+        "SELECT t.*, g.name AS gateway_group_name, g.ips AS gateway_group_ips, "
+        "g.gateway_name AS gateway_group_gateway_name "
+        "FROM terminators t LEFT JOIN termination_groups g ON g.id = t.gateway_group_id "
+        "ORDER BY t.prefix, t.active DESC, t.id"
+    ).fetchall()
     client_rates = conn.execute(
         "SELECT cr.*, c.name AS client_name, t.name AS terminator_name FROM client_rates cr "
         "JOIN clients c ON c.id = cr.client_id "
@@ -516,6 +597,7 @@ def dashboard_data():
     conn.close()
     return {
         "clients": [dict(r) for r in clients],
+        "termination_groups": [dict(r) for r in groups],
         "terminators": [dict(r) for r in terminators],
         "client_rates": [dict(r) for r in client_rates],
         "cdr": [dict(r) for r in cdr],
