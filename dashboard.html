@@ -64,9 +64,17 @@
   </section>
 
   <section>
-    <div class="sec-head"><h2>Терминаторы (кто даёт нам роут)</h2><button class="small" onclick="routeDlg.showModal()">+ Терминатор</button></div>
+    <div class="sec-head"><h2>Терминационные группы (gateway/IP аккаунты)</h2><button class="small" onclick="groupDlg.showModal()">+ Группа</button></div>
     <table>
-      <thead><tr><th>Название</th><th>IP</th><th>Направление</th><th>Префикс</th><th>Gateway</th><th>Техпрефикс</th><th class="right">Закупка</th><th>Статус</th><th></th></tr></thead>
+      <thead><tr><th>Имя аккаунта</th><th>IP</th><th>FreeSWITCH gateway</th><th>Статус</th><th></th></tr></thead>
+      <tbody id="t-groups"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>Терминаторы (кто даёт нам роут)</h2><button class="small" onclick="openTermDlg()">+ Терминатор</button></div>
+    <table>
+      <thead><tr><th>Название</th><th>Группа</th><th>IP группы</th><th>Направление</th><th>Префикс</th><th>Техпрефикс</th><th class="right">Закупка</th><th>Статус</th><th></th></tr></thead>
       <tbody id="t-routes"></tbody>
     </table>
   </section>
@@ -100,15 +108,26 @@
   </form>
 </dialog>
 
+<!-- Добавить терминационную группу -->
+<dialog id="group-dlg">
+  <h3>Новая терминационная группа</h3>
+  <form id="group-form">
+    <label>Имя аккаунта / группы</label><input id="gr-name" placeholder="Lexico" required autofocus>
+    <label>IP аккаунта (через запятую)</label><input id="gr-ips" placeholder="195.219.39.9, 195.219.39.14, 195.219.39.39" required>
+    <label>FreeSWITCH gateway (можно пусто)</label><input id="gr-gw" placeholder="lexico или пусто для direct IP">
+    <label style="display:flex;align-items:center;gap:8px"><input id="gr-active" type="checkbox" checked style="width:auto;margin:0"> Активна</label>
+    <div class="row"><button type="button" class="ghost" onclick="groupDlg.close()">Отмена</button><button type="submit">Создать</button></div>
+  </form>
+</dialog>
+
 <!-- Добавить роут -->
 <dialog id="route-dlg">
   <h3>Новый терминатор</h3>
   <form id="route-form">
-    <label>Название (поставщик)</label><input id="rt-name" placeholder="Lexico" required autofocus>
-    <label>IP поставщика (через запятую)</label><input id="rt-ips" placeholder="195.219.39.9, 195.219.39.14, 195.219.39.39">
+    <label>Название (поставщик)</label><input id="rt-name" placeholder="Lexico Russia" required autofocus>
+    <label>Терминационная группа</label><select id="rt-group" required></select>
     <label>Направление</label><input id="rt-dest" value="Australia" required>
     <label>Префикс</label><input id="rt-prefix" value="61" required>
-    <label>Gateway (имя в FreeSWITCH)</label><input id="rt-gw" placeholder="lexico" required>
     <label>Техпрефикс поставщика (можно пусто)</label><input id="rt-tech" placeholder="999001">
     <label>Закупочная цена за минуту (в валюте)</label><input id="rt-cost" type="number" step="0.0001" min="0" required>
     <label style="display:flex;align-items:center;gap:8px"><input id="rt-active" type="checkbox" checked style="width:auto;margin:0"> Сделать активным</label>
@@ -141,10 +160,13 @@
 
 <script>
 const clientDlg = document.getElementById('client-dlg');
+const groupDlg  = document.getElementById('group-dlg');
 const routeDlg  = document.getElementById('route-dlg');
 const rateDlg   = document.getElementById('rate-dlg');
 const topupDlg  = document.getElementById('topup-dlg');
 let clientMap = {};
+let groupList = [];
+let groupMap = {};
 let termList = [];
 let topupClientId = null;
 
@@ -171,6 +193,9 @@ async function load() {
 
   clientMap = {};
   d.clients.forEach(c => clientMap[c.id] = c);
+  groupList = d.termination_groups || [];
+  groupMap = {};
+  groupList.forEach(g => groupMap[g.id] = g);
   termList = d.terminators || [];
 
   document.getElementById('t-clients').innerHTML = d.clients.map(c => `
@@ -182,14 +207,25 @@ async function load() {
       <td class="right"><button class="small" onclick="openTopup(${c.id})">+ Пополнить</button></td>
     </tr>`).join('') || emptyRow(5);
 
+  document.getElementById('t-groups').innerHTML = groupList.map(g => `
+    <tr>
+      <td>${esc(g.name)}</td>
+      <td class="mut">${esc(g.ips || '')}</td>
+      <td>${g.gateway_name ? esc(g.gateway_name) : '<span class="mut">direct IP</span>'}</td>
+      <td>${g.active ? '<span class="badge on">активна</span>' : '<span class="badge off">выкл</span>'}</td>
+      <td class="right"><button class="small danger" onclick="delGroup(${g.id})">✕</button></td>
+    </tr>`).join('') || emptyRow(5);
+
   document.getElementById('t-routes').innerHTML = d.terminators.map(r => {
     const c0 = (d.clients[0]||{}).currency || '';
+    const groupName = r.gateway_group_name || ((groupMap[r.gateway_group_id]||{}).name) || '';
+    const groupIps = r.gateway_group_ips || ((groupMap[r.gateway_group_id]||{}).ips) || r.ips || '';
     return `<tr>
       <td>${esc(r.name)}</td>
-      <td class="mut">${esc(r.ips || '')}</td>
+      <td>${groupName ? esc(groupName) : '<span class="mut">manual</span>'}</td>
+      <td class="mut">${esc(groupIps)}</td>
       <td>${esc(r.destination_name)}</td>
       <td class="mut">${esc(r.prefix)}</td>
-      <td>${esc(r.gateway_name)}</td>
       <td class="mut">${esc(r.tech_prefix || '')}</td>
       <td class="right">${rate(r.cost_rate_cents, c0)}</td>
       <td>${r.active ? '<span class="badge on">активен</span>' : '<span class="badge off">резерв</span>'}</td>
@@ -238,16 +274,37 @@ document.getElementById('client-form').addEventListener('submit', async e => {
   } catch (err) { alert('Ошибка: ' + err.message); }
 });
 
-// ---- создание роута ----
+// ---- создание группы ----
+document.getElementById('group-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  try {
+    await api('/api/termination-groups', 'POST', {
+      name: document.getElementById('gr-name').value,
+      ips: document.getElementById('gr-ips').value,
+      gateway_name: document.getElementById('gr-gw').value || '',
+      active: document.getElementById('gr-active').checked
+    });
+    groupDlg.close(); e.target.reset(); load();
+  } catch (err) { alert('Ошибка: ' + err.message); }
+});
+
+// ---- создание терминатора ----
+function openTermDlg() {
+  const sel = document.getElementById('rt-group');
+  sel.innerHTML = groupList.map(g => `<option value="${g.id}">${esc(g.name)} · ${esc(g.ips || g.gateway_name || '')}</option>`).join('');
+  if (!sel.innerHTML) { alert('Сначала создайте терминационную группу'); return; }
+  routeDlg.showModal();
+}
 document.getElementById('route-form').addEventListener('submit', async e => {
   e.preventDefault();
   try {
     await api('/api/terminators', 'POST', {
       name: document.getElementById('rt-name').value,
-      ips: document.getElementById('rt-ips').value || '',
+      gateway_group_id: parseInt(document.getElementById('rt-group').value),
+      ips: '',
       destination_name: document.getElementById('rt-dest').value,
       prefix: document.getElementById('rt-prefix').value,
-      gateway_name: document.getElementById('rt-gw').value,
+      gateway_name: '',
       tech_prefix: document.getElementById('rt-tech').value || '',
       cost_rate_cents: Math.round(parseFloat(document.getElementById('rt-cost').value) * 100),
       active: document.getElementById('rt-active').checked
@@ -297,6 +354,7 @@ document.getElementById('topup-form').addEventListener('submit', async e => {
 });
 
 // ---- действия с роутами/тарифами ----
+async function delGroup(id) { if(!confirm('Удалить группу?'))return; try { await api(`/api/termination-groups/${id}`,'DELETE'); load(); } catch(e){ alert(e.message);} }
 async function activateRoute(id) { try { await api(`/api/terminators/${id}/activate`,'POST'); load(); } catch(e){ alert(e.message);} }
 async function delRoute(id) { if(!confirm('Удалить терминатор?'))return; try { await api(`/api/terminators/${id}`,'DELETE'); load(); } catch(e){ alert(e.message);} }
 async function delRate(id) { if(!confirm('Удалить тариф?'))return; try { await api(`/api/client-rates/${id}`,'DELETE'); load(); } catch(e){ alert(e.message);} }
