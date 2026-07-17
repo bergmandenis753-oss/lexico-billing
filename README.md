@@ -10,6 +10,7 @@ Set these variables in Railway before exposing the service:
 ADMIN_USER=your-admin-login
 ADMIN_PASSWORD=use-a-long-random-password
 API_SECRET_KEY=use-a-different-long-random-secret
+BILLING_DB_PATH=/data/billing.db
 ```
 
 The app fails closed when these variables are missing:
@@ -33,3 +34,14 @@ X-API-Key: <API_SECRET_KEY>
 ```
 
 `/healthz` is intentionally public so Railway can check that the app is alive.
+
+## Persistent database on Railway
+
+SQLite data is lost on Railway when it is stored inside the app container.
+Create a Railway Volume mounted at `/data`, then set:
+
+```env
+BILLING_DB_PATH=/data/billing.db
+```
+
+After this, deploys can replace the code without deleting billing data.
