@@ -122,8 +122,22 @@ def init_db() -> None:
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             client_id       INTEGER NOT NULL REFERENCES clients(id),
             call_uuid       TEXT,
+            sip_ip          TEXT    NOT NULL DEFAULT '',
+            clid            TEXT    NOT NULL DEFAULT '',
             destination     TEXT,
+            client_tech_prefix TEXT NOT NULL DEFAULT '',
+            dial_destination TEXT   NOT NULL DEFAULT '',
+            provider_number TEXT    NOT NULL DEFAULT '',
             gateway_name    TEXT,
+            route_ip        TEXT    NOT NULL DEFAULT '',
+            terminator_id   INTEGER,
+            terminator_name TEXT    NOT NULL DEFAULT '',
+            terminator_destination_name TEXT NOT NULL DEFAULT '',
+            terminator_prefix TEXT  NOT NULL DEFAULT '',
+            terminator_tech_prefix TEXT NOT NULL DEFAULT '',
+            hangup_cause    TEXT    NOT NULL DEFAULT '',
+            bridge_hangup_cause TEXT NOT NULL DEFAULT '',
+            result          TEXT    NOT NULL DEFAULT '',
             billsec         INTEGER NOT NULL,
             sell_rate_cents INTEGER NOT NULL,
             cost_rate_cents INTEGER NOT NULL,
@@ -145,7 +159,7 @@ def init_db() -> None:
         CREATE UNIQUE INDEX IF NOT EXISTS idx_resv_uuid ON reservations(call_uuid);
         """
     )
-    # Мягкая миграция: добавляем новые поля в старые таблицы.
+    # Мягкая миграция: добавляем terminator_id в старую таблицу client_rates.
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(client_rates)").fetchall()]
     if "terminator_id" not in cols:
         conn.execute("ALTER TABLE client_rates ADD COLUMN terminator_id INTEGER")
@@ -158,6 +172,26 @@ def init_db() -> None:
     term_cols = [r["name"] for r in conn.execute("PRAGMA table_info(terminators)").fetchall()]
     if "gateway_group_id" not in term_cols:
         conn.execute("ALTER TABLE terminators ADD COLUMN gateway_group_id INTEGER")
+    cdr_cols = [r["name"] for r in conn.execute("PRAGMA table_info(cdr)").fetchall()]
+    cdr_migrations = {
+        "sip_ip": "ALTER TABLE cdr ADD COLUMN sip_ip TEXT NOT NULL DEFAULT ''",
+        "clid": "ALTER TABLE cdr ADD COLUMN clid TEXT NOT NULL DEFAULT ''",
+        "client_tech_prefix": "ALTER TABLE cdr ADD COLUMN client_tech_prefix TEXT NOT NULL DEFAULT ''",
+        "dial_destination": "ALTER TABLE cdr ADD COLUMN dial_destination TEXT NOT NULL DEFAULT ''",
+        "provider_number": "ALTER TABLE cdr ADD COLUMN provider_number TEXT NOT NULL DEFAULT ''",
+        "route_ip": "ALTER TABLE cdr ADD COLUMN route_ip TEXT NOT NULL DEFAULT ''",
+        "terminator_id": "ALTER TABLE cdr ADD COLUMN terminator_id INTEGER",
+        "terminator_name": "ALTER TABLE cdr ADD COLUMN terminator_name TEXT NOT NULL DEFAULT ''",
+        "terminator_destination_name": "ALTER TABLE cdr ADD COLUMN terminator_destination_name TEXT NOT NULL DEFAULT ''",
+        "terminator_prefix": "ALTER TABLE cdr ADD COLUMN terminator_prefix TEXT NOT NULL DEFAULT ''",
+        "terminator_tech_prefix": "ALTER TABLE cdr ADD COLUMN terminator_tech_prefix TEXT NOT NULL DEFAULT ''",
+        "hangup_cause": "ALTER TABLE cdr ADD COLUMN hangup_cause TEXT NOT NULL DEFAULT ''",
+        "bridge_hangup_cause": "ALTER TABLE cdr ADD COLUMN bridge_hangup_cause TEXT NOT NULL DEFAULT ''",
+        "result": "ALTER TABLE cdr ADD COLUMN result TEXT NOT NULL DEFAULT ''",
+    }
+    for col, sql in cdr_migrations.items():
+        if col not in cdr_cols:
+            conn.execute(sql)
     conn.commit()
     conn.close()
 
