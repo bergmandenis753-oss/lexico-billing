@@ -1,0 +1,10 @@
+<include>
+  <context name="public">
+    <extension name="lexico_billing_clients">
+      <condition field="destination_number" expression="^\+?(\d+)$">
+        <action application="set" data="destination_number=$1"/>
+        <action application="lua" data="billing.lua"/>
+      </condition>
+    </extension>
+  </context>
+</include>
