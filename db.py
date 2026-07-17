@@ -17,6 +17,7 @@ Concurrency: холды (reservations) + BEGIN IMMEDIATE + WAL, чтобы па�
 """
 
 import hashlib
+import ipaddress
 import os
 import sqlite3
 import time
@@ -203,6 +204,21 @@ def split_ip_list(value):
     return [ip.strip() for ip in separators_normalized.split(",") if ip.strip()]
 
 
+def ip_token_matches(candidate, token):
+    candidate = (candidate or "").strip()
+    token = (token or "").strip()
+    if not candidate or not token:
+        return False
+    if candidate == token:
+        return True
+    if "/" not in token:
+        return False
+    try:
+        return ipaddress.ip_address(candidate) in ipaddress.ip_network(token, strict=False)
+    except ValueError:
+        return False
+
+
 def pick_ip(value, seed=""):
     ips = split_ip_list(value)
     if not ips:
@@ -214,15 +230,21 @@ def pick_ip(value, seed=""):
 
 
 def get_client_by_ip(conn, sip_ip):
-    sip_ip = (sip_ip or "").strip()
-    row = conn.execute("SELECT * FROM clients WHERE sip_ip = ?", (sip_ip,)).fetchone()
-    if row is not None:
-        return row
+    candidates = split_ip_list(sip_ip)
+    if not candidates and (sip_ip or "").strip():
+        candidates = [(sip_ip or "").strip()]
+
+    for candidate in candidates:
+        row = conn.execute("SELECT * FROM clients WHERE sip_ip = ?", (candidate,)).fetchone()
+        if row is not None:
+            return row
 
     rows = conn.execute("SELECT * FROM clients").fetchall()
     for row in rows:
-        if sip_ip in split_ip_list(row["sip_ip"]):
-            return row
+        tokens = split_ip_list(row["sip_ip"])
+        for candidate in candidates:
+            if any(ip_token_matches(candidate, token) for token in tokens):
+                return row
     return None
 
 
