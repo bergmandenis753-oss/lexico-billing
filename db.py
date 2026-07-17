@@ -124,8 +124,22 @@ def init_db() -> None:
 
 # ---------- выборки ----------
 
+def _split_ip_list(value):
+    separators_normalized = (value or "").replace("\n", ",").replace(";", ",")
+    return [ip.strip() for ip in separators_normalized.split(",") if ip.strip()]
+
+
 def get_client_by_ip(conn, sip_ip):
-    return conn.execute("SELECT * FROM clients WHERE sip_ip = ?", (sip_ip,)).fetchone()
+    sip_ip = (sip_ip or "").strip()
+    row = conn.execute("SELECT * FROM clients WHERE sip_ip = ?", (sip_ip,)).fetchone()
+    if row is not None:
+        return row
+
+    rows = conn.execute("SELECT * FROM clients").fetchall()
+    for row in rows:
+        if sip_ip in _split_ip_list(row["sip_ip"]):
+            return row
+    return None
 
 
 def match_client_rate(conn, client_id, destination):
