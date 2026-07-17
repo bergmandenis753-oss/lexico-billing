@@ -148,6 +148,39 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_cdr_started ON cdr(started_at);
 
+        CREATE TABLE IF NOT EXISTS sip_hits (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            call_uuid       TEXT    NOT NULL DEFAULT '',
+            sip_ip          TEXT    NOT NULL DEFAULT '',
+            sip_port        TEXT    NOT NULL DEFAULT '',
+            clid            TEXT    NOT NULL DEFAULT '',
+            destination     TEXT    NOT NULL DEFAULT '',
+            client_id       INTEGER,
+            client_name     TEXT    NOT NULL DEFAULT '',
+            client_tech_prefix TEXT NOT NULL DEFAULT '',
+            dial_destination TEXT   NOT NULL DEFAULT '',
+            provider_number TEXT    NOT NULL DEFAULT '',
+            gateway_name    TEXT    NOT NULL DEFAULT '',
+            route_ip        TEXT    NOT NULL DEFAULT '',
+            terminator_id   INTEGER,
+            terminator_name TEXT    NOT NULL DEFAULT '',
+            terminator_destination_name TEXT NOT NULL DEFAULT '',
+            terminator_prefix TEXT  NOT NULL DEFAULT '',
+            status          TEXT    NOT NULL DEFAULT '',
+            stage           TEXT    NOT NULL DEFAULT '',
+            reason          TEXT    NOT NULL DEFAULT '',
+            max_seconds     INTEGER,
+            sell_rate_cents INTEGER NOT NULL DEFAULT 0,
+            cost_rate_cents INTEGER NOT NULL DEFAULT 0,
+            user_agent      TEXT    NOT NULL DEFAULT '',
+            sip_call_id     TEXT    NOT NULL DEFAULT '',
+            profile         TEXT    NOT NULL DEFAULT '',
+            context         TEXT    NOT NULL DEFAULT '',
+            created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_sip_hits_created ON sip_hits(created_at);
+        CREATE INDEX IF NOT EXISTS idx_sip_hits_ip ON sip_hits(sip_ip);
+
         CREATE TABLE IF NOT EXISTS reservations (
             id             INTEGER PRIMARY KEY AUTOINCREMENT,
             client_id      INTEGER NOT NULL REFERENCES clients(id),
@@ -316,3 +349,53 @@ def cleanup_expired(conn, now_ts):
 
 def now() -> int:
     return int(time.time())
+
+
+SIP_HIT_COLUMNS = (
+    "call_uuid",
+    "sip_ip",
+    "sip_port",
+    "clid",
+    "destination",
+    "client_id",
+    "client_name",
+    "client_tech_prefix",
+    "dial_destination",
+    "provider_number",
+    "gateway_name",
+    "route_ip",
+    "terminator_id",
+    "terminator_name",
+    "terminator_destination_name",
+    "terminator_prefix",
+    "status",
+    "stage",
+    "reason",
+    "max_seconds",
+    "sell_rate_cents",
+    "cost_rate_cents",
+    "user_agent",
+    "sip_call_id",
+    "profile",
+    "context",
+)
+
+
+def record_sip_hit(fields):
+    """Write one incoming SIP attempt as seen by the billing gate."""
+    conn = get_conn()
+    try:
+        values = []
+        for col in SIP_HIT_COLUMNS:
+            value = fields.get(col)
+            if value is None and col not in {"client_id", "terminator_id", "max_seconds"}:
+                value = ""
+            values.append(value)
+        placeholders = ", ".join("?" for _ in SIP_HIT_COLUMNS)
+        conn.execute(
+            f"INSERT INTO sip_hits ({', '.join(SIP_HIT_COLUMNS)}) VALUES ({placeholders})",
+            values,
+        )
+        conn.commit()
+    finally:
+        conn.close()
