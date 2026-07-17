@@ -52,6 +52,12 @@
   .cdr-table td.wrap { white-space:normal; min-width:150px; }
   .cdr-table tr.bad-call td { background:rgba(255,90,90,.06); }
   .cdr-table tr.good-call td { background:rgba(55,194,106,.035); }
+  .badge.badge-bad { background:rgba(255,90,90,.15); color:var(--bad); }
+  .badge.badge-warn { background:rgba(255,191,71,.14); color:#ffbf47; }
+  .hit-table th, .hit-table td { vertical-align:middle; white-space:nowrap; }
+  .hit-table td.wrap { white-space:normal; min-width:160px; }
+  .hit-table tr.rejected-hit td { background:rgba(255,90,90,.055); }
+  .hit-table tr.allowed-hit td { background:rgba(55,194,106,.035); }
 </style>
 </head>
 <body>
@@ -103,6 +109,20 @@
       <thead><tr><th>Оригинатор</th><th>Терминатор</th><th>Направление</th><th>Клиентский тех</th><th>Префикс</th><th class="right">Продажа</th><th></th></tr></thead>
       <tbody id="t-rates"></tbody>
     </table>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>SIP хиты · последние 50 INVITE</h2></div>
+    <div class="table-wrap">
+      <table class="hit-table">
+        <thead><tr>
+          <th>Время</th><th>IP:порт</th><th>CLID</th><th>Вх. номер</th><th>Клиент</th>
+          <th>Вх. тех</th><th>Номер дальше</th><th>Статус</th><th>Причина</th>
+          <th>Терминатор</th><th>Куда шлём</th><th>Call-ID</th><th>User-Agent</th>
+        </tr></thead>
+        <tbody id="t-hits"></tbody>
+      </table>
+    </div>
   </section>
 
   <section>
@@ -297,6 +317,43 @@ async function load() {
       <td class="right">${rate(r.sell_rate_cents, cur)}</td>
       <td class="right"><button class="small danger" onclick="delRate(${r.id})">✕</button></td>
     </tr>`; }).join('') || emptyRow(7);
+
+  const stageName = s => ({
+    received: 'получили',
+    client_lookup: 'IP не найден',
+    client_status: 'клиент выключен',
+    client_rate: 'нет тарифа',
+    terminator: 'нет терминатора',
+    gateway: 'нет gateway/IP',
+    balance: 'баланс',
+    reserved: 'готово'
+  })[s] || s || '';
+
+  document.getElementById('t-hits').innerHTML = (d.sip_hits || []).map(x => {
+    const ok = x.status === 'allowed';
+    const cls = ok ? 'allowed-hit' : 'rejected-hit';
+    const statusBadge = ok
+      ? '<span class="badge on">принят</span>'
+      : '<span class="badge badge-bad">отказ</span>';
+    const ipPort = `${x.sip_ip || ''}${x.sip_port ? ':' + x.sip_port : ''}`;
+    const outRoute = x.gateway_name || (x.route_ip ? 'direct ' + x.route_ip : '');
+    const reason = [stageName(x.stage), x.reason].filter(Boolean).join(' · ');
+    return `<tr class="${cls}">
+      <td class="mut">${val(x.created_at)}</td>
+      <td>${val(ipPort)}</td>
+      <td>${val(x.clid)}</td>
+      <td>${val(x.destination)}</td>
+      <td class="wrap">${val(x.client_name)}</td>
+      <td>${val(x.client_tech_prefix)}</td>
+      <td>${val(x.dial_destination)}</td>
+      <td>${statusBadge}</td>
+      <td class="wrap">${val(reason)}</td>
+      <td class="wrap">${val(x.terminator_name)}</td>
+      <td class="wrap">${val(outRoute || x.provider_number)}</td>
+      <td class="wrap">${val(x.sip_call_id)}</td>
+      <td class="wrap">${val(x.user_agent)}</td>
+    </tr>`;
+  }).join('') || emptyRow(13);
 
   document.getElementById('t-cdr').innerHTML = d.cdr.map(x => {
     const client = clientMap[x.client_id] || {};
