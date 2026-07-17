@@ -86,6 +86,7 @@ class TerminatorUpdateIn(BaseModel):
 
 class ClientRateIn(BaseModel):
     client_id: int
+    terminator_id: Optional[int] = None   # персональный терминатор оригинатора
     prefix: str
     destination_name: str
     sell_rate_cents: int = Field(ge=0)
@@ -119,9 +120,13 @@ def reserve(data: ReserveIn):
         if rate["sell_rate_cents"] <= 0:
             raise HTTPException(403, "Некорректный тариф продажи (<= 0)")
 
-        route = db.match_active_terminator(conn, data.destination)
+        # Персональный роут: сначала терминатор, назначенный этому оригинатору
+        # в его роуте; если не задан — глобально активный на этот префикс.
+        route = db.get_terminator(conn, rate["terminator_id"]) if "terminator_id" in rate.keys() else None
         if route is None:
-            raise HTTPException(403, f"Нет активного терминатора для {data.destination}")
+            route = db.match_active_terminator(conn, data.destination)
+        if route is None:
+            raise HTTPException(403, f"Нет терминатора для {data.destination}")
 
         held = db.active_hold_sum(conn, client["id"], now_ts)
         available = client["balance_cents"] - held
@@ -360,9 +365,9 @@ def create_client_rate(data: ClientRateIn):
         if exists is None:
             raise HTTPException(404, "Клиент не найден")
         cur = conn.execute(
-            "INSERT INTO client_rates (client_id, prefix, destination_name, sell_rate_cents) "
-            "VALUES (?, ?, ?, ?)",
-            (data.client_id, data.prefix, data.destination_name, data.sell_rate_cents),
+            "INSERT INTO client_rates (client_id, terminator_id, prefix, destination_name, sell_rate_cents) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (data.client_id, data.terminator_id, data.prefix, data.destination_name, data.sell_rate_cents),
         )
         conn.commit()
         return {"id": cur.lastrowid}
@@ -374,8 +379,9 @@ def create_client_rate(data: ClientRateIn):
 def list_client_rates():
     conn = db.get_conn()
     rows = conn.execute(
-        "SELECT cr.*, c.name AS client_name FROM client_rates cr "
-        "JOIN clients c ON c.id = cr.client_id ORDER BY cr.client_id"
+        "SELECT cr.*, c.name AS client_name, t.name AS terminator_name FROM client_rates cr "
+        "JOIN clients c ON c.id = cr.client_id "
+        "LEFT JOIN terminators t ON t.id = cr.terminator_id ORDER BY cr.client_id"
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -420,8 +426,9 @@ def dashboard_data():
     clients = conn.execute("SELECT * FROM clients ORDER BY id").fetchall()
     terminators = conn.execute("SELECT * FROM terminators ORDER BY prefix, active DESC, id").fetchall()
     client_rates = conn.execute(
-        "SELECT cr.*, c.name AS client_name FROM client_rates cr "
-        "JOIN clients c ON c.id = cr.client_id ORDER BY cr.client_id"
+        "SELECT cr.*, c.name AS client_name, t.name AS terminator_name FROM client_rates cr "
+        "JOIN clients c ON c.id = cr.client_id "
+        "LEFT JOIN terminators t ON t.id = cr.terminator_id ORDER BY cr.client_id"
     ).fetchall()
     cdr = conn.execute("SELECT * FROM cdr ORDER BY id DESC LIMIT 50").fetchall()
 

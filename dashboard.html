@@ -72,9 +72,9 @@
   </section>
 
   <section>
-    <div class="sec-head"><h2>Тарифы оригинаторов (продажа)</h2><button class="small" onclick="openRateDlg()">+ Тариф</button></div>
+    <div class="sec-head"><h2>Роуты оригинаторов (направление · терминатор · цена)</h2><button class="small" onclick="openRateDlg()">+ Роут</button></div>
     <table>
-      <thead><tr><th>Клиент</th><th>Направление</th><th>Префикс</th><th class="right">Продажа</th><th></th></tr></thead>
+      <thead><tr><th>Оригинатор</th><th>Терминатор</th><th>Направление</th><th>Префикс</th><th class="right">Продажа</th><th></th></tr></thead>
       <tbody id="t-rates"></tbody>
     </table>
   </section>
@@ -118,9 +118,10 @@
 
 <!-- Добавить тариф клиента -->
 <dialog id="rate-dlg">
-  <h3>Новый тариф клиента</h3>
+  <h3>Новый роут оригинатора</h3>
   <form id="rate-form">
-    <label>Клиент</label><select id="ra-client" required></select>
+    <label>Оригинатор</label><select id="ra-client" required></select>
+    <label>Терминатор (через кого слать)</label><select id="ra-term" required></select>
     <label>Направление</label><input id="ra-dest" value="Australia" required>
     <label>Префикс</label><input id="ra-prefix" value="61" required>
     <label>Цена продажи за минуту (в валюте)</label><input id="ra-sell" type="number" step="0.0001" min="0" required>
@@ -144,6 +145,7 @@ const routeDlg  = document.getElementById('route-dlg');
 const rateDlg   = document.getElementById('rate-dlg');
 const topupDlg  = document.getElementById('topup-dlg');
 let clientMap = {};
+let termList = [];
 let topupClientId = null;
 
 const money = (c, cur) => (c/100).toFixed(2) + (cur ? ' ' + cur : '');
@@ -169,6 +171,7 @@ async function load() {
 
   clientMap = {};
   d.clients.forEach(c => clientMap[c.id] = c);
+  termList = d.terminators || [];
 
   document.getElementById('t-clients').innerHTML = d.clients.map(c => `
     <tr>
@@ -200,11 +203,12 @@ async function load() {
     const cur = (clientMap[r.client_id]||{}).currency || '';
     return `<tr>
       <td>${esc(r.client_name)}</td>
+      <td>${r.terminator_name ? esc(r.terminator_name) : '<span class="mut">— (активный)</span>'}</td>
       <td>${esc(r.destination_name)}</td>
       <td class="mut">${esc(r.prefix)}</td>
       <td class="right">${rate(r.sell_rate_cents, cur)}</td>
       <td class="right"><button class="small danger" onclick="delRate(${r.id})">✕</button></td>
-    </tr>`; }).join('') || emptyRow(5);
+    </tr>`; }).join('') || emptyRow(6);
 
   document.getElementById('t-cdr').innerHTML = d.cdr.map(x => {
     const cur = (clientMap[x.client_id]||{}).currency || '';
@@ -256,7 +260,10 @@ document.getElementById('route-form').addEventListener('submit', async e => {
 function openRateDlg() {
   const sel = document.getElementById('ra-client');
   sel.innerHTML = Object.values(clientMap).map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
-  if (!sel.innerHTML) { alert('Сначала создайте клиента'); return; }
+  if (!sel.innerHTML) { alert('Сначала создайте оригинатора'); return; }
+  const ts = document.getElementById('ra-term');
+  ts.innerHTML = termList.map(t => `<option value="${t.id}">${esc(t.name)} · ${esc(t.destination_name)} (${esc(t.prefix)})</option>`).join('');
+  if (!ts.innerHTML) { alert('Сначала создайте терминатор'); return; }
   rateDlg.showModal();
 }
 document.getElementById('rate-form').addEventListener('submit', async e => {
@@ -264,6 +271,7 @@ document.getElementById('rate-form').addEventListener('submit', async e => {
   try {
     await api('/api/client-rates', 'POST', {
       client_id: parseInt(document.getElementById('ra-client').value),
+      terminator_id: parseInt(document.getElementById('ra-term').value),
       destination_name: document.getElementById('ra-dest').value,
       prefix: document.getElementById('ra-prefix').value,
       sell_rate_cents: Math.round(parseFloat(document.getElementById('ra-sell').value) * 100)

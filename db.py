@@ -75,10 +75,12 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_term_prefix ON terminators(prefix, active);
 
-        -- Тарифы продажи: цена клиенту за направление.
+        -- Роуты оригинаторов: направление + цена продажи + ПЕРСОНАЛЬНЫЙ терминатор.
+        -- terminator_id — через какой терминатор идёт трафик именно этого оригинатора.
         CREATE TABLE IF NOT EXISTS client_rates (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
             client_id        INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+            terminator_id    INTEGER REFERENCES terminators(id),
             prefix           TEXT    NOT NULL,
             destination_name TEXT    NOT NULL,
             sell_rate_cents  INTEGER NOT NULL
@@ -112,6 +114,10 @@ def init_db() -> None:
         CREATE UNIQUE INDEX IF NOT EXISTS idx_resv_uuid ON reservations(call_uuid);
         """
     )
+    # Мягкая миграция: добавляем terminator_id в старую таблицу client_rates.
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(client_rates)").fetchall()]
+    if "terminator_id" not in cols:
+        conn.execute("ALTER TABLE client_rates ADD COLUMN terminator_id INTEGER")
     conn.commit()
     conn.close()
 
@@ -132,6 +138,13 @@ def match_client_rate(conn, client_id, destination):
         if destination.startswith(r["prefix"]):
             return r
     return None
+
+
+def get_terminator(conn, tid):
+    """Терминатор по id (для персонального роута оригинатора)."""
+    if tid is None:
+        return None
+    return conn.execute("SELECT * FROM terminators WHERE id = ?", (tid,)).fetchone()
 
 
 def match_active_terminator(conn, destination):
