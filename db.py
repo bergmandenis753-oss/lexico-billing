@@ -5,10 +5,12 @@ db.py — работа с SQLite. Все деньги в целых центах
   routes        — КУДА я отправляю трафик: направление + gateway у поставщика +
                   закупочная цена. На одно направление (префикс) может быть
                   несколько роутов, но активен всегда ровно один (ручной выбор).
-  client_rates  — по какой цене я ПРОДАЮ каждому клиенту это направление.
+  client_rates  — по какой цене я ПРОДАЮ каждому клиенту это направление,
+                  включая опциональный входящий техпрефикс клиента.
 
-При звонке: клиент по IP → его тариф (sell) по префиксу → активный роут по
-префиксу (gateway + cost). Маржа = sell - cost.
+При звонке: клиент по IP → его тариф (sell) по клиентскому техпрефиксу и
+префиксу направления → активный роут по префиксу (gateway + cost).
+Маржа = sell - cost.
 
 Concurrency: холды (reservations) + BEGIN IMMEDIATE + WAL, чтобы параллельные
 звонки одного клиента не потратили баланс дважды.
@@ -77,6 +79,8 @@ def init_db() -> None:
             created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
         );
 
+        -- Терминаторы (поставщики, кто даёт нам роут — напр. Lexico). Закупка.
+        -- На префикс активен ровно один терминатор.
         CREATE TABLE IF NOT EXISTS termination_groups (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
             name             TEXT    NOT NULL UNIQUE, -- account/gateway name: 'Lexico'
@@ -86,8 +90,6 @@ def init_db() -> None:
             created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
         );
 
-        -- Терминаторы (поставщики, кто даёт нам роут — напр. Lexico). Закупка.
-        -- На префикс активен ровно один терминатор.
         CREATE TABLE IF NOT EXISTS terminators (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
             name             TEXT    NOT NULL,       -- 'Lexico'
@@ -109,6 +111,7 @@ def init_db() -> None:
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
             client_id        INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
             terminator_id    INTEGER REFERENCES terminators(id),
+            client_tech_prefix TEXT   NOT NULL DEFAULT '',
             prefix           TEXT    NOT NULL,
             destination_name TEXT    NOT NULL,
             sell_rate_cents  INTEGER NOT NULL
@@ -142,10 +145,16 @@ def init_db() -> None:
         CREATE UNIQUE INDEX IF NOT EXISTS idx_resv_uuid ON reservations(call_uuid);
         """
     )
-    # Мягкая миграция: добавляем terminator_id в старую таблицу client_rates.
+    # Мягкая миграция: добавляем новые поля в старые таблицы.
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(client_rates)").fetchall()]
     if "terminator_id" not in cols:
         conn.execute("ALTER TABLE client_rates ADD COLUMN terminator_id INTEGER")
+    if "client_tech_prefix" not in cols:
+        conn.execute("ALTER TABLE client_rates ADD COLUMN client_tech_prefix TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_crates_client_tech "
+        "ON client_rates(client_id, client_tech_prefix, prefix)"
+    )
     term_cols = [r["name"] for r in conn.execute("PRAGMA table_info(terminators)").fetchall()]
     if "gateway_group_id" not in term_cols:
         conn.execute("ALTER TABLE terminators ADD COLUMN gateway_group_id INTEGER")
@@ -185,13 +194,29 @@ def get_client_by_ip(conn, sip_ip):
 
 def match_client_rate(conn, client_id, destination):
     """Тариф клиента по самому длинному подходящему префиксу."""
+    match = match_client_rate_for_destination(conn, client_id, destination)
+    return match[0] if match is not None else None
+
+
+def match_client_rate_for_destination(conn, client_id, destination):
+    """Тариф клиента + номер без входящего клиентского техпрефикса."""
+    destination = str(destination or "")
     rows = conn.execute(
-        "SELECT * FROM client_rates WHERE client_id = ? ORDER BY length(prefix) DESC",
+        "SELECT * FROM client_rates WHERE client_id = ? "
+        "ORDER BY length(client_tech_prefix) DESC, length(prefix) DESC, id",
         (client_id,),
     ).fetchall()
     for r in rows:
-        if destination.startswith(r["prefix"]):
-            return r
+        client_tech_prefix = (r["client_tech_prefix"] or "") if "client_tech_prefix" in r.keys() else ""
+        routed_destination = destination
+        if client_tech_prefix:
+            if not destination.startswith(client_tech_prefix):
+                continue
+            routed_destination = destination[len(client_tech_prefix):]
+            if not routed_destination:
+                continue
+        if routed_destination.startswith(r["prefix"]):
+            return r, routed_destination, client_tech_prefix
     return None
 
 
