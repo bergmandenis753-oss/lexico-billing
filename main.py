@@ -122,7 +122,7 @@ class TerminatorIn(BaseModel):
     ips: str = ""              # IP поставщика через запятую
     destination_name: str
     prefix: str
-    gateway_name: str
+    gateway_name: str = ""     # если пусто — FreeSWITCH шлёт напрямую на IP
     tech_prefix: str = ""      # техпрефикс поставщика (напр. '999001')
     cost_rate_cents: int = Field(ge=0)
     active: bool = True
@@ -187,6 +187,10 @@ def reserve(data: ReserveIn):
             route = db.match_active_terminator(conn, data.destination)
         if route is None:
             raise HTTPException(403, f"Нет терминатора для {data.destination}")
+        gateway_name = (route["gateway_name"] or "").strip()
+        route_ip = db.pick_ip(route["ips"], data.call_uuid or data.destination)
+        if not gateway_name and not route_ip:
+            raise HTTPException(403, "У терминатора не указан ни gateway, ни IP")
 
         held = db.active_hold_sum(conn, client["id"], now_ts)
         available = client["balance_cents"] - held
@@ -211,7 +215,8 @@ def reserve(data: ReserveIn):
             "max_seconds": max_seconds,
             "sell_rate_cents": rate["sell_rate_cents"],
             "cost_rate_cents": route["cost_rate_cents"],
-            "gateway_name": route["gateway_name"],
+            "gateway_name": gateway_name,
+            "route_ip": route_ip,
             "tech_prefix": route["tech_prefix"],
             "client_id": client["id"],
             "call_uuid": call_uuid,
@@ -335,6 +340,8 @@ def topup(cid: int, data: TopupIn):
 def create_terminator(data: TerminatorIn):
     conn = db.get_conn()
     try:
+        if not data.gateway_name.strip() and not db.split_ip_list(data.ips):
+            raise HTTPException(400, "Укажите gateway или IP терминатора")
         conn.execute("BEGIN IMMEDIATE")
         # если новый терминатор активен — гасим других активных на этот же префикс
         if data.active:
@@ -371,6 +378,11 @@ def update_terminator(tid: int, data: TerminatorUpdateIn):
         if row is None:
             conn.rollback()
             raise HTTPException(404, "Терминатор не найден")
+        next_gateway = fields.get("gateway_name", row["gateway_name"]) or ""
+        next_ips = fields.get("ips", row["ips"]) or ""
+        if not next_gateway.strip() and not db.split_ip_list(next_ips):
+            conn.rollback()
+            raise HTTPException(400, "Укажите gateway или IP терминатора")
         if fields.get("active"):
             prefix = fields.get("prefix", row["prefix"])
             conn.execute("UPDATE terminators SET active = 0 WHERE prefix = ? AND id != ?", (prefix, tid))
