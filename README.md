@@ -49,3 +49,28 @@ ${RAILWAY_VOLUME_MOUNT_PATH}/billing.db
 You may also set `BILLING_DB_PATH=/data/billing.db` explicitly if preferred.
 
 After this, deploys can replace the code without deleting billing data.
+
+## Terminator routing modes
+
+Terminators can route calls in two ways:
+
+- Set `gateway_name` to an existing FreeSWITCH gateway name, for example `lexico`.
+- Leave `gateway_name` empty and set one or more terminator IPs. FreeSWITCH will bridge directly to the selected IP.
+
+When multiple IPs are entered, separate them with commas or semicolons.
+
+Originator IP fields also accept CIDR networks, for example:
+
+```text
+204.44.67.152, 91.202.0.53, 204.44.67.0/24
+```
+
+## FreeSWITCH default context
+
+Authenticated SIP users can enter the FreeSWITCH `default` context before the
+public carrier dialplan. Keep `freeswitch/dialplan/default/00_lexico_clients.xml`
+included near the top of `/etc/freeswitch/dialplan/default.xml`, immediately
+after `<context name="default">`, before the stock demo/global extensions.
+
+That keeps carrier calls inside the billing flow first, so calls are reserved,
+bridged, finalized, and written to CDR before any demo dialplan actions can run.
