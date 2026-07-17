@@ -171,6 +171,16 @@ class ClientRateUpdateIn(BaseModel):
     sell_rate_cents: Optional[int] = None
 
 
+class OpsClientRouteIn(BaseModel):
+    client_ip: str
+    prefix: str
+    destination_name: str
+    client_tech_prefix: str = ""
+    clone_from_prefix: str = "7"
+    sell_rate_cents: Optional[int] = None
+    cost_rate_cents: Optional[int] = None
+
+
 # ================= БИЛЛИНГ =================
 
 @app.get("/healthz", include_in_schema=False)
@@ -566,6 +576,87 @@ def delete_client_rate(rid: int):
         if cur.rowcount == 0:
             raise HTTPException(404, "Тариф не найден")
         return {"ok": True}
+    finally:
+        conn.close()
+
+
+# ================= Служебные команды =================
+
+@app.post("/api/ops/client-route", dependencies=API_AUTH)
+def ensure_ops_client_route(data: OpsClientRouteIn):
+    conn = db.get_conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+
+        client = db.get_client_by_ip(conn, data.client_ip)
+        if client is None:
+            conn.rollback()
+            raise HTTPException(404, f"Клиент с IP {data.client_ip} не найден")
+
+        route = db.match_active_terminator(conn, data.prefix)
+        created_terminator = False
+        if route is None:
+            source_route = db.match_active_terminator(conn, data.clone_from_prefix)
+            if source_route is None:
+                conn.rollback()
+                raise HTTPException(404, f"Нет терминатора-источника для {data.clone_from_prefix}")
+            cost_rate = data.cost_rate_cents if data.cost_rate_cents is not None else source_route["cost_rate_cents"]
+            cur = conn.execute(
+                "INSERT INTO terminators (name, gateway_group_id, ips, destination_name, prefix, gateway_name, tech_prefix, cost_rate_cents, active) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
+                (
+                    f"{source_route['name']} {data.destination_name}",
+                    source_route["gateway_group_id"] if "gateway_group_id" in source_route.keys() else None,
+                    source_route["ips"],
+                    data.destination_name,
+                    data.prefix,
+                    source_route["gateway_name"],
+                    source_route["tech_prefix"],
+                    cost_rate,
+                ),
+            )
+            route = conn.execute("SELECT * FROM terminators WHERE id = ?", (cur.lastrowid,)).fetchone()
+            created_terminator = True
+
+        sell_rate = data.sell_rate_cents
+        if sell_rate is None:
+            sell_rate = max(int(route["cost_rate_cents"]) + 4, 1)
+
+        existing_rate = conn.execute(
+            "SELECT * FROM client_rates WHERE client_id = ? AND client_tech_prefix = ? AND prefix = ?",
+            (client["id"], data.client_tech_prefix, data.prefix),
+        ).fetchone()
+        if existing_rate is None:
+            cur = conn.execute(
+                "INSERT INTO client_rates (client_id, terminator_id, client_tech_prefix, prefix, destination_name, sell_rate_cents) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (client["id"], route["id"], data.client_tech_prefix, data.prefix, data.destination_name, sell_rate),
+            )
+            rate_id = cur.lastrowid
+            created_rate = True
+        else:
+            rate_id = existing_rate["id"]
+            conn.execute(
+                "UPDATE client_rates SET terminator_id = ?, destination_name = ?, sell_rate_cents = ? WHERE id = ?",
+                (route["id"], data.destination_name, sell_rate, rate_id),
+            )
+            created_rate = False
+
+        conn.commit()
+        return {
+            "ok": True,
+            "client_id": client["id"],
+            "terminator_id": route["id"],
+            "client_rate_id": rate_id,
+            "created_terminator": created_terminator,
+            "created_client_rate": created_rate,
+            "prefix": data.prefix,
+            "destination_name": data.destination_name,
+            "sell_rate_cents": sell_rate,
+            "cost_rate_cents": route["cost_rate_cents"],
+        }
+    except HTTPException:
+        raise
     finally:
         conn.close()
 
