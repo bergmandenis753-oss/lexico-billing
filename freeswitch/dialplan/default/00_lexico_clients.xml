@@ -1,0 +1,6 @@
+<extension name="lexico_billing_clients_default" continue="false">
+  <condition field="destination_number" expression="^\+?(\d+)$">
+    <action application="set" data="destination_number=$1"/>
+    <action application="lua" data="/etc/freeswitch/scripts/billing.lua"/>
+  </condition>
+</extension>
