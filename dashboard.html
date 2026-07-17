@@ -46,6 +46,12 @@
   .check.bad { border-color:rgba(255,90,90,.55); }
   .check .title { font-weight:600; margin-bottom:7px; }
   .check .line { color:var(--mut); font-size:13px; margin-top:3px; word-break:break-all; }
+  .table-wrap { overflow:auto; border:1px solid var(--line); border-radius:10px; background:var(--card); }
+  .table-wrap table { border:none; border-radius:0; min-width:1680px; }
+  .cdr-table th, .cdr-table td { vertical-align:middle; white-space:nowrap; }
+  .cdr-table td.wrap { white-space:normal; min-width:150px; }
+  .cdr-table tr.bad-call td { background:rgba(255,90,90,.06); }
+  .cdr-table tr.good-call td { background:rgba(55,194,106,.035); }
 </style>
 </head>
 <body>
@@ -100,11 +106,18 @@
   </section>
 
   <section>
-    <h2 style="margin-bottom:10px">Последние звонки</h2>
-    <table>
-      <thead><tr><th>Клиент</th><th>Номер</th><th>Gateway</th><th class="right">Длит., с</th><th class="right">Списано</th><th class="right">Маржа</th><th>Время</th></tr></thead>
-      <tbody id="t-cdr"></tbody>
-    </table>
+    <div class="sec-head"><h2>CDR анализ · последние 10 звонков</h2></div>
+    <div class="table-wrap">
+      <table class="cdr-table">
+        <thead><tr>
+          <th>Вх. аккаунт</th><th>Вх. IP</th><th>Вх. CLID</th><th>Вх. тех</th><th>Вх. тел. номер</th>
+          <th class="right">Вх. тариф</th><th>Исх. аккаунт</th><th>Исх. тех</th><th>Исх. номер</th>
+          <th class="right">Исх. тариф</th><th>Направление</th><th>Схема</th><th>Код отбоя</th>
+          <th>Инициатор</th><th class="right">Длит., с</th><th class="right">Списано</th><th class="right">Маржа</th><th>Время</th>
+        </tr></thead>
+        <tbody id="t-cdr"></tbody>
+      </table>
+    </div>
   </section>
 </main>
 
@@ -204,9 +217,13 @@ let groupMap = {};
 let termList = [];
 let topupClientId = null;
 
-const money = (c, cur) => (c/100).toFixed(2) + (cur ? ' ' + cur : '');
-const rate  = (c, cur) => (c/100).toFixed(4) + (cur ? ' ' + cur : '');  // цены за минуту — до 4 знаков
+const money = (c, cur) => ((Number(c)||0)/100).toFixed(2) + (cur ? ' ' + cur : '');
+const rate  = (c, cur) => ((Number(c)||0)/100).toFixed(4) + (cur ? ' ' + cur : '');  // цены за минуту — до 4 знаков
 const esc = s => String(s ?? '').replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+const val = s => {
+  const v = String(s ?? '').trim();
+  return v ? esc(v) : '<span class="mut">—</span>';
+};
 const emptyRow = n => `<tr><td class="empty" colspan="${n}">Нет данных</td></tr>`;
 
 async function api(path, method, body) {
@@ -282,17 +299,36 @@ async function load() {
     </tr>`; }).join('') || emptyRow(7);
 
   document.getElementById('t-cdr').innerHTML = d.cdr.map(x => {
-    const cur = (clientMap[x.client_id]||{}).currency || '';
-    const nm = (clientMap[x.client_id]||{}).name || ('#'+x.client_id);
-    return `<tr>
-      <td>${esc(nm)}</td>
-      <td class="mut">${esc(x.destination)}</td>
-      <td class="mut">${esc(x.gateway_name)}</td>
+    const client = clientMap[x.client_id] || {};
+    const cur = x.client_currency || client.currency || '';
+    const inboundName = x.client_name || client.name || ('#' + x.client_id);
+    const inboundIp = x.sip_ip || x.client_sip_ip || client.sip_ip || '';
+    const outAccount = x.terminator_name || x.gateway_name || '';
+    const outNumber = x.provider_number || x.dial_destination || x.destination || '';
+    const hangup = x.result || x.bridge_hangup_cause || x.hangup_cause || (x.billsec > 0 ? 'Normal' : 'Rejected');
+    const isGood = x.billsec > 0 || String(hangup).toLowerCase() === 'normal';
+    const initiator = isGood || x.bridge_hangup_cause ? 'Терминатор' : 'Switch';
+    const scheme = x.gateway_name ? 'CLI' : (x.route_ip ? 'direct IP' : '—');
+    return `<tr class="${isGood ? 'good-call' : 'bad-call'}">
+      <td class="wrap">${val(inboundName)}</td>
+      <td>${val(inboundIp)}</td>
+      <td>${val(x.clid)}</td>
+      <td>${val(x.client_tech_prefix)}</td>
+      <td>${val(x.destination)}</td>
+      <td class="right">${rate(x.sell_rate_cents, cur)}</td>
+      <td class="wrap">${val(outAccount)}</td>
+      <td>${val(x.terminator_tech_prefix)}</td>
+      <td>${val(outNumber)}</td>
+      <td class="right">${rate(x.cost_rate_cents, cur)}</td>
+      <td class="wrap">${val(x.terminator_destination_name)}</td>
+      <td>${val(scheme)}</td>
+      <td class="wrap">${val(hangup)}</td>
+      <td>${val(initiator)}</td>
       <td class="right">${x.billsec}</td>
       <td class="right">${money(x.charged_cents, cur)}</td>
       <td class="right">${money(x.margin_cents, cur)}</td>
-      <td class="mut">${esc(x.started_at)}</td>
-    </tr>`; }).join('') || emptyRow(7);
+      <td class="mut">${val(x.started_at)}</td>
+    </tr>`; }).join('') || emptyRow(18);
 }
 
 // ---- создание клиента ----
