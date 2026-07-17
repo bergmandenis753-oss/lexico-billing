@@ -20,7 +20,21 @@ import time
 from pathlib import Path
 
 DEFAULT_DB_PATH = Path(__file__).with_name("billing.db")
-DB_PATH = Path(os.getenv("BILLING_DB_PATH") or os.getenv("DB_PATH") or DEFAULT_DB_PATH).expanduser()
+
+
+def _database_path():
+    explicit_path = os.getenv("BILLING_DB_PATH") or os.getenv("DB_PATH")
+    if explicit_path:
+        return Path(explicit_path).expanduser()
+
+    volume_mount = os.getenv("RAILWAY_VOLUME_MOUNT_PATH")
+    if volume_mount:
+        return Path(volume_mount).expanduser() / "billing.db"
+
+    return DEFAULT_DB_PATH
+
+
+DB_PATH = _database_path()
 
 RESERVATION_BUFFER_SEC = 120
 
