@@ -34,11 +34,18 @@
   .right { text-align:right; }
   .mut { color:var(--mut); }
   dialog { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:12px; padding:20px; width:340px; }
+  dialog.wide { width:min(680px, calc(100vw - 32px)); }
   dialog h3 { margin:0 0 14px; font-size:15px; }
   dialog label { display:block; font-size:13px; color:var(--mut); margin:0 0 5px; }
   dialog input, dialog select { width:100%; padding:8px; border-radius:7px; border:1px solid var(--line); background:var(--bg); color:var(--txt); margin-bottom:13px; }
   dialog .row { display:flex; gap:8px; justify-content:flex-end; }
   .empty { padding:16px; color:var(--mut); }
+  .toolbar { display:flex; gap:10px; align-items:center; margin:0 0 22px; }
+  .check { border:1px solid var(--line); border-radius:10px; padding:12px; margin:2px 0 14px; background:#111827; }
+  .check.ok { border-color:rgba(55,194,106,.55); }
+  .check.bad { border-color:rgba(255,90,90,.55); }
+  .check .title { font-weight:600; margin-bottom:7px; }
+  .check .line { color:var(--mut); font-size:13px; margin-top:3px; word-break:break-all; }
 </style>
 </head>
 <body>
@@ -53,6 +60,11 @@
     <div class="card"><div class="lbl">Суммарный баланс</div><div class="val" id="c-balance">—</div></div>
     <div class="card"><div class="lbl">Маржа за сегодня</div><div class="val" id="c-today">—</div></div>
     <div class="card"><div class="lbl">Маржа за месяц</div><div class="val" id="c-month">—</div></div>
+  </div>
+
+  <div class="toolbar">
+    <button onclick="openDirectionDlg()">+ Направление</button>
+    <span class="mut">Открыть клиенту страну через выбранного терминатора и сразу проверить цепочку.</span>
   </div>
 
   <section>
@@ -149,6 +161,26 @@
   </form>
 </dialog>
 
+<!-- Мастер направления -->
+<dialog id="direction-dlg" class="wide">
+  <h3>Новое направление для оригинатора</h3>
+  <form id="direction-form">
+    <label>Оригинатор</label><select id="di-client" required></select>
+    <label>Терминатор / поставщик</label><select id="di-term" required></select>
+    <label>Направление</label><input id="di-dest" placeholder="Czechia" required>
+    <label>Префикс страны/направления</label><input id="di-prefix" placeholder="420" required>
+    <label>Клиентский техпрефикс (если клиент шлёт его нам)</label><input id="di-client-tech" placeholder="101">
+    <label>Цена продажи за минуту (в валюте)</label><input id="di-sell" type="number" step="0.0001" min="0.0001" required>
+    <label>Тестовый номер (можно пусто)</label><input id="di-test-number" placeholder="101420777123456">
+    <div id="di-preview" class="check" style="display:none"></div>
+    <div class="row">
+      <button type="button" class="ghost" onclick="directionDlg.close()">Отмена</button>
+      <button type="button" class="ghost" onclick="checkDirection()">Проверить</button>
+      <button type="submit">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
 <!-- Пополнить -->
 <dialog id="topup-dlg">
   <h3>Пополнить баланс</h3>
@@ -164,6 +196,7 @@ const clientDlg = document.getElementById('client-dlg');
 const groupDlg  = document.getElementById('group-dlg');
 const routeDlg  = document.getElementById('route-dlg');
 const rateDlg   = document.getElementById('rate-dlg');
+const directionDlg = document.getElementById('direction-dlg');
 const topupDlg  = document.getElementById('topup-dlg');
 let clientMap = {};
 let groupList = [];
@@ -337,6 +370,91 @@ document.getElementById('rate-form').addEventListener('submit', async e => {
       sell_rate_cents: Math.round(parseFloat(document.getElementById('ra-sell').value) * 100)
     });
     rateDlg.close(); load();
+  } catch (err) { alert('Ошибка: ' + err.message); }
+});
+
+// ---- мастер направления ----
+function fillDirectionTerms() {
+  const activeTerms = termList.filter(t => t.active);
+  const ts = document.getElementById('di-term');
+  ts.innerHTML = activeTerms.map(t => {
+    const group = groupMap[t.gateway_group_id] || {};
+    const gw = t.gateway_name || group.gateway_name || group.ips || t.ips || 'без gateway/IP';
+    return `<option value="${t.id}">${esc(t.name)} · ${esc(t.destination_name)} (${esc(t.prefix)}) · ${esc(gw)}</option>`;
+  }).join('');
+  return Boolean(ts.innerHTML);
+}
+
+function openDirectionDlg() {
+  const cs = document.getElementById('di-client');
+  cs.innerHTML = Object.values(clientMap).filter(c => c.active).map(c =>
+    `<option value="${c.id}">${esc(c.name)} · ${esc(c.sip_ip)}</option>`).join('');
+  if (!cs.innerHTML) { alert('Сначала создайте активного оригинатора'); return; }
+  if (!fillDirectionTerms()) { alert('Сначала создайте активного терминатора'); return; }
+  document.getElementById('di-dest').value = '';
+  document.getElementById('di-prefix').value = '';
+  document.getElementById('di-client-tech').value = '';
+  document.getElementById('di-sell').value = '';
+  document.getElementById('di-test-number').value = '';
+  showDirectionPreview(null);
+  directionDlg.showModal();
+}
+
+function directionPayload() {
+  return {
+    client_id: parseInt(document.getElementById('di-client').value),
+    terminator_id: parseInt(document.getElementById('di-term').value),
+    destination_name: document.getElementById('di-dest').value.trim(),
+    prefix: document.getElementById('di-prefix').value.trim(),
+    client_tech_prefix: document.getElementById('di-client-tech').value.trim(),
+    sell_rate_cents: Math.round(parseFloat(document.getElementById('di-sell').value || '0') * 100)
+  };
+}
+
+function showDirectionPreview(p) {
+  const box = document.getElementById('di-preview');
+  if (!p) { box.style.display = 'none'; box.className = 'check'; box.innerHTML = ''; return; }
+  box.style.display = 'block';
+  box.className = `check ${p.ok ? 'ok' : 'bad'}`;
+  if (!p.ok) {
+    box.innerHTML = `<div class="title">Проверка не прошла</div><div class="line">${esc(p.message || 'Ошибка маршрута')}</div>`;
+    return;
+  }
+  box.innerHTML = `
+    <div class="title">Цепочка готова</div>
+    <div class="line">Вход: ${esc(p.input_destination)}</div>
+    <div class="line">После клиентского техпрефикса: ${esc(p.dial_destination)}</div>
+    <div class="line">К терминатору: ${esc(p.provider_number)}</div>
+    <div class="line">Выход: ${esc(p.dial_string)}</div>`;
+}
+
+async function checkDirection() {
+  const p = directionPayload();
+  if (!p.client_id || !p.terminator_id || !p.prefix) { alert('Заполните оригинатора, терминатора и префикс'); return; }
+  const testNumber = document.getElementById('di-test-number').value.trim();
+  try {
+    const result = await api('/api/route-check', 'POST', {
+      client_id: p.client_id,
+      terminator_id: p.terminator_id,
+      prefix: p.prefix,
+      client_tech_prefix: p.client_tech_prefix,
+      destination: testNumber || undefined
+    });
+    showDirectionPreview(result);
+  } catch (err) { alert('Ошибка: ' + err.message); }
+}
+
+document.getElementById('direction-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const p = directionPayload();
+  if (!p.destination_name || !p.prefix || p.sell_rate_cents <= 0) {
+    alert('Заполните направление, префикс и цену продажи');
+    return;
+  }
+  try {
+    const result = await api('/api/directions', 'POST', p);
+    showDirectionPreview(result.preview);
+    await load();
   } catch (err) { alert('Ошибка: ' + err.message); }
 });
 
