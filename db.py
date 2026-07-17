@@ -77,11 +77,21 @@ def init_db() -> None:
             created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
         );
 
+        CREATE TABLE IF NOT EXISTS termination_groups (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            name             TEXT    NOT NULL UNIQUE, -- account/gateway name: 'Lexico'
+            ips              TEXT    NOT NULL DEFAULT '', -- IP через запятую
+            gateway_name     TEXT    NOT NULL DEFAULT '', -- опциональный FreeSWITCH gateway
+            active           INTEGER NOT NULL DEFAULT 1,
+            created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+
         -- Терминаторы (поставщики, кто даёт нам роут — напр. Lexico). Закупка.
         -- На префикс активен ровно один терминатор.
         CREATE TABLE IF NOT EXISTS terminators (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
             name             TEXT    NOT NULL,       -- 'Lexico'
+            gateway_group_id INTEGER REFERENCES termination_groups(id),
             ips              TEXT    NOT NULL DEFAULT '',  -- IP поставщика через запятую: '195.219.39.9,195.219.39.14'
             destination_name TEXT    NOT NULL,       -- 'Australia'
             prefix           TEXT    NOT NULL,       -- '61'
@@ -136,6 +146,9 @@ def init_db() -> None:
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(client_rates)").fetchall()]
     if "terminator_id" not in cols:
         conn.execute("ALTER TABLE client_rates ADD COLUMN terminator_id INTEGER")
+    term_cols = [r["name"] for r in conn.execute("PRAGMA table_info(terminators)").fetchall()]
+    if "gateway_group_id" not in term_cols:
+        conn.execute("ALTER TABLE terminators ADD COLUMN gateway_group_id INTEGER")
     conn.commit()
     conn.close()
 
@@ -187,6 +200,13 @@ def get_terminator(conn, tid):
     if tid is None:
         return None
     return conn.execute("SELECT * FROM terminators WHERE id = ?", (tid,)).fetchone()
+
+
+def get_termination_group(conn, gid):
+    """Терминационная группа/account по id."""
+    if gid is None:
+        return None
+    return conn.execute("SELECT * FROM termination_groups WHERE id = ?", (gid,)).fetchone()
 
 
 def match_active_terminator(conn, destination):
