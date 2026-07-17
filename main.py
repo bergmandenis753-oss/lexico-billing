@@ -183,6 +183,29 @@ class RouteCheckIn(BaseModel):
 def healthz():
     return {'ok': True}
 
+@app.get('/api/firewall-whitelist', dependencies=API_AUTH)
+def firewall_whitelist():
+    conn = db.get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT id, name, sip_ip FROM clients WHERE active = 1 ORDER BY id"
+        ).fetchall()
+        entries = []
+        seen = set()
+        for row in rows:
+            for token in db.split_ip_list(row['sip_ip']):
+                if token in seen:
+                    continue
+                seen.add(token)
+                entries.append({
+                    'ip': token,
+                    'client_id': row['id'],
+                    'client_name': row['name'],
+                })
+        return {'ok': True, 'entries': entries}
+    finally:
+        conn.close()
+
 def _row_value(row, key, default=None):
     if row is None:
         return default
