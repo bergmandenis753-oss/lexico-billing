@@ -7,17 +7,72 @@ main.py — FastAPI биллинг.
 """
 
 import math
+import os
+import secrets
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 import db
 
-app = FastAPI(title="Lexico VoIP billing")
+app = FastAPI(
+    title="Lexico VoIP billing",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 templates = Jinja2Templates(directory=".")
+basic_security = HTTPBasic(auto_error=False)
+
+
+def _auth_not_configured(detail: str):
+    raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
+
+
+def _admin_unauthorized():
+    raise HTTPException(
+        status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required",
+        headers={"WWW-Authenticate": "Basic"},
+    )
+
+
+def require_admin(credentials: Optional[HTTPBasicCredentials] = Depends(basic_security)):
+    admin_user = os.getenv("ADMIN_USER")
+    admin_password = os.getenv("ADMIN_PASSWORD")
+    if not admin_user or not admin_password:
+        _auth_not_configured("Admin credentials are not configured")
+    if credentials is None:
+        _admin_unauthorized()
+
+    user_ok = secrets.compare_digest(credentials.username, admin_user)
+    password_ok = secrets.compare_digest(credentials.password, admin_password)
+    if not (user_ok and password_ok):
+        _admin_unauthorized()
+    return credentials.username
+
+
+def require_api_key(request: Request):
+    expected = os.getenv("API_SECRET_KEY")
+    if not expected:
+        _auth_not_configured("API secret is not configured")
+
+    token = request.headers.get("x-api-key", "")
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+
+    if not token or not secrets.compare_digest(token, expected):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+    return True
+
+
+ADMIN_AUTH = [Depends(require_admin)]
+API_AUTH = [Depends(require_api_key)]
 
 
 @app.on_event("startup")
@@ -100,7 +155,12 @@ class ClientRateUpdateIn(BaseModel):
 
 # ================= БИЛЛИНГ =================
 
-@app.post("/api/reserve")
+@app.get("/healthz", include_in_schema=False)
+def healthz():
+    return {"ok": True}
+
+
+@app.post("/api/reserve", dependencies=API_AUTH)
 def reserve(data: ReserveIn):
     conn = db.get_conn()
     try:
@@ -163,7 +223,7 @@ def reserve(data: ReserveIn):
         conn.close()
 
 
-@app.post("/api/finalize")
+@app.post("/api/finalize", dependencies=API_AUTH)
 def finalize(data: FinalizeIn):
     conn = db.get_conn()
     try:
@@ -205,7 +265,7 @@ def finalize(data: FinalizeIn):
 
 # ================= CRUD клиентов =================
 
-@app.post("/api/clients")
+@app.post("/api/clients", dependencies=ADMIN_AUTH)
 def create_client(data: ClientIn):
     conn = db.get_conn()
     try:
@@ -221,7 +281,7 @@ def create_client(data: ClientIn):
         conn.close()
 
 
-@app.get("/api/clients")
+@app.get("/api/clients", dependencies=ADMIN_AUTH)
 def list_clients():
     conn = db.get_conn()
     rows = conn.execute("SELECT * FROM clients ORDER BY id").fetchall()
@@ -229,7 +289,7 @@ def list_clients():
     return [dict(r) for r in rows]
 
 
-@app.patch("/api/clients/{cid}")
+@app.patch("/api/clients/{cid}", dependencies=ADMIN_AUTH)
 def update_client(cid: int, data: ClientUpdateIn):
     fields = {k: v for k, v in data.dict().items() if v is not None}
     if not fields:
@@ -250,7 +310,7 @@ def update_client(cid: int, data: ClientUpdateIn):
         conn.close()
 
 
-@app.post("/api/clients/{cid}/topup")
+@app.post("/api/clients/{cid}/topup", dependencies=ADMIN_AUTH)
 def topup(cid: int, data: TopupIn):
     conn = db.get_conn()
     try:
@@ -271,7 +331,7 @@ def topup(cid: int, data: TopupIn):
 
 # ================= CRUD терминаторов (поставщиков) =================
 
-@app.post("/api/terminators")
+@app.post("/api/terminators", dependencies=ADMIN_AUTH)
 def create_terminator(data: TerminatorIn):
     conn = db.get_conn()
     try:
@@ -291,7 +351,7 @@ def create_terminator(data: TerminatorIn):
         conn.close()
 
 
-@app.get("/api/terminators")
+@app.get("/api/terminators", dependencies=ADMIN_AUTH)
 def list_terminators():
     conn = db.get_conn()
     rows = conn.execute("SELECT * FROM terminators ORDER BY prefix, active DESC, id").fetchall()
@@ -299,7 +359,7 @@ def list_terminators():
     return [dict(r) for r in rows]
 
 
-@app.patch("/api/terminators/{tid}")
+@app.patch("/api/terminators/{tid}", dependencies=ADMIN_AUTH)
 def update_terminator(tid: int, data: TerminatorUpdateIn):
     fields = {k: v for k, v in data.dict().items() if v is not None}
     if not fields:
@@ -324,7 +384,7 @@ def update_terminator(tid: int, data: TerminatorUpdateIn):
         conn.close()
 
 
-@app.post("/api/terminators/{tid}/activate")
+@app.post("/api/terminators/{tid}/activate", dependencies=ADMIN_AUTH)
 def activate_terminator(tid: int):
     """Сделать терминатор активным (остальные на этот префикс — в резерв)."""
     conn = db.get_conn()
@@ -342,7 +402,7 @@ def activate_terminator(tid: int):
         conn.close()
 
 
-@app.delete("/api/terminators/{tid}")
+@app.delete("/api/terminators/{tid}", dependencies=ADMIN_AUTH)
 def delete_terminator(tid: int):
     conn = db.get_conn()
     try:
@@ -357,7 +417,7 @@ def delete_terminator(tid: int):
 
 # ================= CRUD тарифов клиентов =================
 
-@app.post("/api/client-rates")
+@app.post("/api/client-rates", dependencies=ADMIN_AUTH)
 def create_client_rate(data: ClientRateIn):
     conn = db.get_conn()
     try:
@@ -375,7 +435,7 @@ def create_client_rate(data: ClientRateIn):
         conn.close()
 
 
-@app.get("/api/client-rates")
+@app.get("/api/client-rates", dependencies=ADMIN_AUTH)
 def list_client_rates():
     conn = db.get_conn()
     rows = conn.execute(
@@ -387,7 +447,7 @@ def list_client_rates():
     return [dict(r) for r in rows]
 
 
-@app.patch("/api/client-rates/{rid}")
+@app.patch("/api/client-rates/{rid}", dependencies=ADMIN_AUTH)
 def update_client_rate(rid: int, data: ClientRateUpdateIn):
     fields = {k: v for k, v in data.dict().items() if v is not None}
     if not fields:
@@ -404,7 +464,7 @@ def update_client_rate(rid: int, data: ClientRateUpdateIn):
         conn.close()
 
 
-@app.delete("/api/client-rates/{rid}")
+@app.delete("/api/client-rates/{rid}", dependencies=ADMIN_AUTH)
 def delete_client_rate(rid: int):
     conn = db.get_conn()
     try:
@@ -419,7 +479,7 @@ def delete_client_rate(rid: int):
 
 # ================= Дашборд =================
 
-@app.get("/api/dashboard-data")
+@app.get("/api/dashboard-data", dependencies=ADMIN_AUTH)
 def dashboard_data():
     conn = db.get_conn()
 
@@ -455,6 +515,6 @@ def dashboard_data():
     }
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/", response_class=HTMLResponse, dependencies=ADMIN_AUTH)
 def dashboard(request: Request):
     return templates.TemplateResponse("dashboard.html", {"request": request})
