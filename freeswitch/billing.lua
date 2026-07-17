@@ -15,6 +15,17 @@ local function trim(s)
   return (s or ""):gsub("^%s+", ""):gsub("%s+$", "")
 end
 
+local function looks_like_direct_sip_host(s)
+  s = trim(s)
+  if s:match("^%d+%.%d+%.%d+%.%d+$") then
+    return true
+  end
+  if s:match("^%d+%.%d+%.%d+%.%d+:%d+$") then
+    return true
+  end
+  return false
+end
+
 local function read_api_key()
   local f = io.open(KEY_FILE, "r")
   if not f then return "" end
@@ -27,7 +38,7 @@ local API_KEY = read_api_key()
 
 local function shell_quote(s)
   s = tostring(s or "")
-  return "'" .. s:gsub("'", "'\\''") .. "'"
+  return "'" .. s:gsub("'", "'\''") .. "'"
 end
 
 local function json_escape(s)
@@ -74,6 +85,12 @@ local function http_post(path, json)
   return tonumber(code) or 0, body
 end
 
+local function reject_call(message)
+  freeswitch.consoleLog("warning", message .. "\n")
+  session:execute("respond", "403")
+  session:hangup("CALL_REJECTED")
+end
+
 local rjson = string.format(
   '{"sip_ip":"%s","sip_port":"%s","destination":"%s","call_uuid":"%s","clid":"%s","user_agent":"%s","sip_call_id":"%s","profile":"%s","context":"%s"}',
   json_escape(client_ip),
@@ -87,10 +104,17 @@ local rjson = string.format(
   json_escape(context)
 )
 
+local guard_code, guard_body = http_post("/api/sip-guard", rjson)
+if guard_code == 404 or guard_code == 405 then
+  freeswitch.consoleLog("warning", "[billing] sip guard unavailable (" .. guard_code .. "), falling back to reserve\n")
+elseif guard_code ~= 200 then
+  reject_call("[billing] sip guard blocked (" .. guard_code .. "): " .. guard_body)
+  return
+end
+
 local code, body = http_post("/api/reserve", rjson)
 if code ~= 200 then
-  freeswitch.consoleLog("warning", "[billing] reserve rejected (" .. code .. "): " .. body .. "\n")
-  session:hangup("CALL_REJECTED")
+  reject_call("[billing] reserve rejected (" .. code .. "): " .. body)
   return
 end
 
@@ -111,14 +135,12 @@ local terminator_prefix = jstr(body, "terminator_prefix") or ""
 local terminator_tech_prefix = jstr(body, "terminator_tech_prefix") or tech_prefix
 
 if not max_seconds or max_seconds <= 0 or not client_id or not sell or not cost then
-  freeswitch.consoleLog("warning", "[billing] invalid reserve response: " .. body .. "\n")
-  session:hangup("CALL_REJECTED")
+  reject_call("[billing] invalid reserve response: " .. body)
   return
 end
 
 if gateway == "" and route_ip == "" then
-  freeswitch.consoleLog("warning", "[billing] reserve has neither gateway nor route_ip: " .. body .. "\n")
-  session:hangup("CALL_REJECTED")
+  reject_call("[billing] reserve has neither gateway nor route_ip: " .. body)
   return
 end
 
@@ -126,7 +148,11 @@ session:execute("set", "execute_on_answer=sched_hangup +" .. max_seconds .. " no
 local dial_number = provider_number
 local bridge_target = ""
 local used_route = gateway
-if gateway ~= "" then
+if gateway ~= "" and looks_like_direct_sip_host(gateway) then
+  bridge_target = "sofia/external/" .. dial_number .. "@" .. gateway
+  route_ip = route_ip ~= "" and route_ip or gateway
+  used_route = "direct:" .. gateway
+elseif gateway ~= "" then
   bridge_target = "sofia/gateway/" .. gateway .. "/" .. dial_number
 else
   bridge_target = "sofia/external/" .. dial_number .. "@" .. route_ip
