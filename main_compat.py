@@ -62,7 +62,7 @@ async def dashboard_scale_guard(request: Request, call_next):
             "/api/ops/",
         ))
     )
-    if admin_write and not _uses_current_money_scale(request):
+    if admin_write and request.headers.get("authorization") and not _uses_current_money_scale(request):
         response = JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content={"detail": "Страница биллинга устарела. Обновите вкладку и повторите действие."},
