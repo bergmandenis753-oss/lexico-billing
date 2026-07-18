@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 
+import client_portal
 import main_compat
 
 
@@ -154,3 +155,6 @@ def ops_diagnostics():
         }
     finally:
         conn.close()
+
+
+client_portal.install(app, main, db)
