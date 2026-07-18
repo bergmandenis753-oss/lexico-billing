@@ -1,5 +1,6 @@
 local function safe_filename(s)
-  return tostring(s or ""):gsub("[^%w%._%-]", "_")
+  local cleaned = tostring(s or ""):gsub("[^%w%._%-]", "_")
+  return cleaned
 end
 
 local function first_script_arg()
