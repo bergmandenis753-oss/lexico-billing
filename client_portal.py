@@ -85,14 +85,13 @@ def install(app, main, db):
                 f"<td>{safe(row['started_at'] or '-')}</td>"
                 f"<td>{safe(row['clid'] or '-')}</td>"
                 f"<td>{safe(row['destination'] or '-')}</td>"
-                f"<td>{safe(row['terminator_name'] or row['gateway_name'] or '-')}</td>"
                 f"<td>{int(row['billsec'] or 0)}</td>"
                 f"<td>{safe(money(row['charged_cents'], currency=currency))}</td>"
                 f"<td>{safe(result)}</td>"
                 "</tr>"
             )
         if not rows_html:
-            rows_html.append('<tr><td colspan="7" class="empty">Звонков пока нет</td></tr>')
+            rows_html.append('<tr><td colspan="6" class="empty">Звонков пока нет</td></tr>')
 
         html = f"""<!doctype html>
 <html lang="ru">
@@ -143,7 +142,7 @@ def install(app, main, db):
     h1 {{ margin: 0 0 20px; font-size: 28px; }}
     h2 {{ margin: 0 0 12px; font-size: 20px; }}
     .table-wrap {{ overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }}
-    table {{ width: 100%; border-collapse: collapse; min-width: 860px; }}
+    table {{ width: 100%; border-collapse: collapse; min-width: 760px; }}
     th, td {{ padding: 13px 14px; text-align: left; border-bottom: 1px solid var(--line); }}
     th {{ color: var(--muted); background: var(--surface-2); text-transform: uppercase; font-size: 12px; font-weight: 800; letter-spacing: .06em; }}
     tr:last-child td {{ border-bottom: 0; }}
@@ -196,7 +195,6 @@ def install(app, main, db):
               <th>Время</th>
               <th>CLID</th>
               <th>Номер</th>
-              <th>Терминатор</th>
               <th>Длит., с</th>
               <th>Списано</th>
               <th>Отбой</th>
