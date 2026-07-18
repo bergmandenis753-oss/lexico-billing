@@ -67,6 +67,7 @@ async def dashboard_scale_guard(request: Request, call_next):
             "/api/reserve",
             "/api/finalize",
             "/api/sip-guard",
+            "/api/pcap-events",
             "/api/firewall-whitelist",
             "/api/ops/",
         ))
