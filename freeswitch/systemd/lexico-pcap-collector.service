@@ -1,0 +1,17 @@
+[Unit]
+Description=Lexico passive SIP packet collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+Environment=BILLING_API=https://web-production-d5e1c.up.railway.app
+Environment=BILLING_API_KEY_FILE=/etc/freeswitch/billing_api_key
+Environment=LEXICO_LOCAL_IPS=207.154.192.34,10.114.0.2
+ExecStart=/usr/bin/python3 /usr/local/sbin/lexico-pcap-collector.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
