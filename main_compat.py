@@ -1,6 +1,7 @@
 from pathlib import Path
+import math
 
-from fastapi import Request, status
+from fastapi import HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse
 
 import db
@@ -75,7 +76,7 @@ async def dashboard_scale_guard(request: Request, call_next):
     return response
 
 
-_remove_routes({"/", "/api/dashboard-data", "/api/firewall-whitelist"})
+_remove_routes({"/", "/api/dashboard-data", "/api/firewall-whitelist", "/api/finalize"})
 
 
 @app.get("/api/firewall-whitelist", dependencies=main.API_AUTH)
@@ -122,6 +123,106 @@ def firewall_whitelist():
             )
 
         return {"ok": True, "entries": entries}
+    finally:
+        conn.close()
+
+
+@app.post("/api/finalize", dependencies=main.API_AUTH)
+def finalize(data: main.FinalizeIn):
+    conn = db.get_conn()
+    try:
+        bsec = db.billed_seconds(data.billsec)
+        charged = math.ceil(bsec * data.sell_rate_cents / 60)
+        cost = math.ceil(bsec * data.cost_rate_cents / 60)
+        conn.execute("BEGIN IMMEDIATE")
+        client = conn.execute("SELECT * FROM clients WHERE id = ?", (data.client_id,)).fetchone()
+        if client is None:
+            raise HTTPException(404, "Клиент не найден")
+
+        new_balance = client["balance_cents"] - charged
+        if new_balance < 0:
+            print(
+                f"[FINALIZE WARN] client={data.client_id} call={data.call_uuid} "
+                f"charged={charged} > balance={client['balance_cents']}: clamp to 0"
+            )
+            charged = client["balance_cents"]
+            new_balance = 0
+
+        margin = charged - cost
+        conn.execute("UPDATE clients SET balance_cents = ? WHERE id = ?", (new_balance, data.client_id))
+        conn.execute(
+            "INSERT INTO cdr (client_id, call_uuid, sip_ip, clid, destination, client_tech_prefix, "
+            "dial_destination, provider_number, gateway_name, route_ip, terminator_id, terminator_name, "
+            "terminator_destination_name, terminator_prefix, terminator_tech_prefix, hangup_cause, "
+            "bridge_hangup_cause, result, billsec, sell_rate_cents, cost_rate_cents, charged_cents, "
+            "margin_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                data.client_id,
+                data.call_uuid,
+                data.sip_ip,
+                data.clid,
+                data.destination,
+                data.client_tech_prefix,
+                data.dial_destination,
+                data.provider_number,
+                data.gateway_name,
+                data.route_ip,
+                data.terminator_id,
+                data.terminator_name,
+                data.terminator_destination_name,
+                data.terminator_prefix,
+                data.terminator_tech_prefix,
+                data.hangup_cause,
+                data.bridge_hangup_cause,
+                data.result,
+                data.billsec,
+                data.sell_rate_cents,
+                data.cost_rate_cents,
+                charged,
+                margin,
+            ),
+        )
+
+        final_status = "answered" if data.billsec > 0 else "failed"
+        hangup = data.bridge_hangup_cause or data.hangup_cause or data.result or ""
+        reason_parts = [part for part in (hangup, data.result if data.result != hangup else "") if part]
+        reason_parts.append(f"billsec={data.billsec}")
+        if charged:
+            reason_parts.append(f"charged={charged}")
+        if margin:
+            reason_parts.append(f"margin={margin}")
+        conn.execute(
+            "UPDATE sip_hits SET status = ?, stage = ?, reason = ?, client_id = ?, client_name = ?, "
+            "client_tech_prefix = ?, dial_destination = ?, provider_number = ?, gateway_name = ?, "
+            "route_ip = ?, terminator_id = ?, terminator_name = ?, terminator_destination_name = ?, "
+            "terminator_prefix = ?, sell_rate_cents = ?, cost_rate_cents = ? WHERE call_uuid = ?",
+            (
+                final_status,
+                "finalized",
+                " · ".join(reason_parts),
+                data.client_id,
+                client["name"],
+                data.client_tech_prefix,
+                data.dial_destination,
+                data.provider_number,
+                data.gateway_name or "",
+                data.route_ip,
+                data.terminator_id,
+                data.terminator_name,
+                data.terminator_destination_name,
+                data.terminator_prefix,
+                data.sell_rate_cents,
+                data.cost_rate_cents,
+                data.call_uuid,
+            ),
+        )
+
+        conn.execute("DELETE FROM reservations WHERE call_uuid = ?", (data.call_uuid,))
+        conn.commit()
+        return {"ok": True, "charged_cents": charged, "margin_cents": margin, "balance_cents": new_balance}
+    except HTTPException:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
