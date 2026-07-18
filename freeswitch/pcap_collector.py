@@ -31,7 +31,7 @@ LOCAL_IPS = {
 FILTER = os.getenv("LEXICO_PCAP_FILTER", "udp port 5060 or udp port 5080")
 BATCH_SIZE = int(os.getenv("LEXICO_PCAP_BATCH_SIZE", "12"))
 FLUSH_INTERVAL = float(os.getenv("LEXICO_PCAP_FLUSH_INTERVAL", "1.5"))
-MAX_SUMMARY = int(os.getenv("LEXICO_PCAP_MAX_SUMMARY", "1600"))
+MAX_SUMMARY = int(os.getenv("LEXICO_PCAP_MAX_SUMMARY", "5000"))
 
 PACKET_RE = re.compile(
     r"^(?P<ts>\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+"
@@ -79,14 +79,17 @@ def packet_direction(src_ip, dst_ip):
     return "unknown"
 
 
-def summarize_payload(first_line, payload):
-    keep = [first_line]
-    for name in ("Call-ID", "CSeq", "From", "To", "Via", "Contact", "User-Agent", "Reason"):
-        value = header_value(payload, name)
-        if value:
-            keep.append(f"{name}: {value}")
-    summary = "\n".join(keep)
-    return summary[:MAX_SUMMARY]
+def summarize_payload(payload):
+    # Keep the full SIP text for diagnostics, but cap it so one noisy packet
+    # cannot grow the billing database forever. RTP/audio is not captured.
+    visible = []
+    for char in payload:
+        if char in "\r\n\t" or 32 <= ord(char) <= 126:
+            visible.append(char)
+    summary = "".join(visible).replace("\r\n", "\n").strip()
+    if len(summary) > MAX_SUMMARY:
+        return summary[:MAX_SUMMARY] + "\n...[truncated]"
+    return summary
 
 
 def parse_packet(meta, lines):
@@ -132,7 +135,7 @@ def parse_packet(meta, lines):
         "request_uri": request_uri,
         "user_agent": header_value(sip_payload, "User-Agent"),
         "reason": header_value(sip_payload, "Reason"),
-        "raw_summary": summarize_payload(first_line, sip_payload),
+        "raw_summary": summarize_payload(sip_payload),
     }
 
 
