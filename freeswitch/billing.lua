@@ -1,5 +1,6 @@
 local API = "https://web-production-d5e1c.up.railway.app"
 local KEY_FILE = "/etc/freeswitch/billing_api_key"
+local DIRECT_PROFILE = "internal"
 
 local client_ip = session:getVariable("network_addr") or session:getVariable("sip_received_ip") or ""
 local client_port = session:getVariable("network_port") or session:getVariable("sip_received_port") or session:getVariable("sip_network_port") or ""
@@ -38,7 +39,7 @@ local API_KEY = read_api_key()
 
 local function shell_quote(s)
   s = tostring(s or "")
-  return "'" .. s:gsub("'", "'\''") .. "'"
+  return "'" .. s:gsub("'", "'\\''") .. "'"
 end
 
 local function safe_filename(s)
@@ -175,13 +176,13 @@ local dial_number = provider_number
 local bridge_target = ""
 local used_route = gateway
 if gateway ~= "" and looks_like_direct_sip_host(gateway) then
-  bridge_target = "sofia/external/" .. dial_number .. "@" .. gateway
+  bridge_target = "sofia/" .. DIRECT_PROFILE .. "/" .. dial_number .. "@" .. gateway
   route_ip = route_ip ~= "" and route_ip or gateway
   used_route = "direct:" .. gateway
 elseif gateway ~= "" then
   bridge_target = "sofia/gateway/" .. gateway .. "/" .. dial_number
 else
-  bridge_target = "sofia/external/" .. dial_number .. "@" .. route_ip
+  bridge_target = "sofia/" .. DIRECT_PROFILE .. "/" .. dial_number .. "@" .. route_ip
   used_route = "direct:" .. route_ip
 end
 
