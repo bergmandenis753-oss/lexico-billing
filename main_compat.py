@@ -1,5 +1,6 @@
 from pathlib import Path
 import math
+import re
 
 from fastapi import HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -9,6 +10,13 @@ import main
 
 
 app = main.app
+
+
+def _split_ip_list(value):
+    return [ip.strip() for ip in re.split(r"[\s,;]+", value or "") if ip.strip()]
+
+
+db.split_ip_list = _split_ip_list
 
 
 def _no_store(response):
