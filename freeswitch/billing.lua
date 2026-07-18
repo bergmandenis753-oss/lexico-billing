@@ -41,6 +41,18 @@ local function shell_quote(s)
   return "'" .. s:gsub("'", "'\''") .. "'"
 end
 
+local function safe_filename(s)
+  return tostring(s or ""):gsub("[^%w%._%-]", "_")
+end
+
+local function read_number_file(path)
+  local f = io.open(path, "r")
+  if not f then return 0 end
+  local value = tonumber(trim(f:read("*a")))
+  f:close()
+  return value or 0
+end
+
 local function json_escape(s)
   s = tostring(s or "")
   s = s:gsub("\\", "\\\\"):gsub('"', '\\"'):gsub("\n", "\\n"):gsub("\r", "\\r")
@@ -51,6 +63,17 @@ local function json_unescape(s)
   if not s then return nil end
   s = s:gsub('\\"', '"'):gsub("\\n", "\n"):gsub("\\r", "\r"):gsub("\\\\", "\\")
   return s
+end
+
+local function positive_number_var(...)
+  for i = 1, select("#", ...) do
+    local key = select(i, ...)
+    local value = tonumber(session:getVariable(key))
+    if value and value > 0 then
+      return value, key
+    end
+  end
+  return 0, ""
 end
 
 local function jstr(body, key)
@@ -144,6 +167,9 @@ if gateway == "" and route_ip == "" then
   return
 end
 
+local answer_stamp_path = "/tmp/billing_answer_" .. safe_filename(uuid) .. ".ts"
+os.remove(answer_stamp_path)
+session:execute("set", "api_on_answer=luarun /etc/freeswitch/scripts/billing_mark_answer.lua " .. uuid)
 session:execute("set", "execute_on_answer=sched_hangup +" .. max_seconds .. " normal_clearing")
 local dial_number = provider_number
 local bridge_target = ""
@@ -162,7 +188,23 @@ end
 freeswitch.consoleLog("info", "[billing] bridge " .. bridge_target .. "\n")
 session:execute("bridge", bridge_target)
 
-local billsec = tonumber(session:getVariable("billsec")) or 0
+local raw_billsec, billsec_source = positive_number_var("billsec", "flow_billsec", "bridge_billsec")
+local billsec = raw_billsec
+if billsec <= 0 then
+  local marked_answer_epoch = read_number_file(answer_stamp_path)
+  if marked_answer_epoch > 0 then
+    billsec = math.max(0, os.time() - marked_answer_epoch)
+    billsec_source = "api_on_answer"
+  end
+end
+if billsec <= 0 then
+  local answer_epoch, answer_source = positive_number_var("answer_epoch", "answered_epoch", "bridge_answer_epoch")
+  if answer_epoch > 0 then
+    billsec = math.max(0, os.time() - answer_epoch)
+    billsec_source = answer_source .. ":fallback"
+  end
+end
+billsec = math.floor(billsec)
 local hangup_cause = session:getVariable("hangup_cause") or ""
 local bridge_hangup_cause = session:getVariable("bridge_hangup_cause")
   or session:getVariable("originate_disposition")
@@ -201,4 +243,7 @@ local fjson = string.format(
 local fcode, fbody = http_post("/api/finalize", fjson)
 if fcode ~= 200 then
   freeswitch.consoleLog("error", "[billing] finalize error (" .. fcode .. "): " .. fbody .. "\n")
+else
+  freeswitch.consoleLog("info", "[billing] finalize ok billsec=" .. billsec .. " source=" .. billsec_source .. " response=" .. fbody .. "\n")
 end
+os.remove(answer_stamp_path)
