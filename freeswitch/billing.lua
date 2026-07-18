@@ -13,7 +13,9 @@ local profile = session:getVariable("sofia_profile_name") or session:getVariable
 local context = session:getVariable("context") or ""
 
 local function trim(s)
-  return (s or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  local cleaned = (s or ""):gsub("^%s+", "")
+  cleaned = cleaned:gsub("%s+$", "")
+  return cleaned
 end
 
 local function looks_like_direct_sip_host(s)
@@ -43,14 +45,16 @@ local function shell_quote(s)
 end
 
 local function safe_filename(s)
-  return tostring(s or ""):gsub("[^%w%._%-]", "_")
+  local cleaned = tostring(s or ""):gsub("[^%w%._%-]", "_")
+  return cleaned
 end
 
 local function read_number_file(path)
   local f = io.open(path, "r")
   if not f then return 0 end
-  local value = tonumber(trim(f:read("*a")))
+  local raw = trim(f:read("*a"))
   f:close()
+  local value = tonumber(raw)
   return value or 0
 end
 
