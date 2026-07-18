@@ -1,5 +1,8 @@
 """
-db.py — работа с SQLite. Все деньги в целых центах (int), без float.
+db.py — работа с SQLite. Деньги и тарифы хранятся целыми числами без float.
+
+Внутренняя единица = 0.0001 USD. Старые имена колонок *_cents сохранены
+для мягкой миграции, но после миграции значения в них уже не центы.
 
 Модель разведена на два уровня:
   routes        — КУДА я отправляю трафик: направление + gateway у поставщика +
@@ -18,12 +21,15 @@ Concurrency: холды (reservations) + BEGIN IMMEDIATE + WAL, чтобы па�
 
 import hashlib
 import ipaddress
+import json
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
 
 DEFAULT_DB_PATH = Path(__file__).with_name("billing.db")
+E164_DATA_PATH = Path(__file__).with_name("data") / "e164_prefixes.json"
 
 
 def _database_path():
@@ -45,6 +51,8 @@ RESERVATION_BUFFER_SEC = 120
 # Правила тарификации (тариф задан за минуту). Посекундно = (1, 1).
 MIN_BILL_SEC = 1
 BILL_INCREMENT_SEC = 1
+MONEY_SCALE = 10000
+LEGACY_CENT_TO_MONEY_UNITS = 100
 
 
 def billed_seconds(billsec: int) -> int:
@@ -100,7 +108,7 @@ def init_db() -> None:
             prefix           TEXT    NOT NULL,       -- '61'
             gateway_name     TEXT    NOT NULL,       -- имя sofia-gateway, напр. 'lexico'
             tech_prefix      TEXT    NOT NULL DEFAULT '',  -- техпрефикс перед номером, напр. '999001'
-            cost_rate_cents  INTEGER NOT NULL,       -- закупка за минуту
+            cost_rate_cents  INTEGER NOT NULL,       -- legacy name; 0.0001 USD/min units
             active           INTEGER NOT NULL DEFAULT 1,
             created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
         );
@@ -115,7 +123,7 @@ def init_db() -> None:
             client_tech_prefix TEXT   NOT NULL DEFAULT '',
             prefix           TEXT    NOT NULL,
             destination_name TEXT    NOT NULL,
-            sell_rate_cents  INTEGER NOT NULL
+            sell_rate_cents  INTEGER NOT NULL        -- legacy name; 0.0001 USD/min units
         );
         CREATE INDEX IF NOT EXISTS idx_crates_client ON client_rates(client_id, prefix);
 
@@ -181,6 +189,23 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_sip_hits_created ON sip_hits(created_at);
         CREATE INDEX IF NOT EXISTS idx_sip_hits_ip ON sip_hits(sip_ip);
 
+        CREATE TABLE IF NOT EXISTS e164_prefixes (
+            prefix          TEXT PRIMARY KEY,
+            country         TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_e164_prefixes_country ON e164_prefixes(country);
+
+        CREATE TABLE IF NOT EXISTS e164_countries (
+            country         TEXT PRIMARY KEY,
+            primary_prefix  TEXT NOT NULL DEFAULT '',
+            prefix_count    INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS app_meta (
+            key             TEXT PRIMARY KEY,
+            value           TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS reservations (
             id             INTEGER PRIMARY KEY AUTOINCREMENT,
             client_id      INTEGER NOT NULL REFERENCES clients(id),
@@ -226,6 +251,26 @@ def init_db() -> None:
     for col, sql in cdr_migrations.items():
         if col not in cdr_cols:
             conn.execute(sql)
+    scale_row = conn.execute("SELECT value FROM app_meta WHERE key = 'money_scale'").fetchone()
+    if scale_row is None:
+        for table, col in (
+            ("clients", "balance_cents"),
+            ("reservations", "reserved_cents"),
+            ("terminators", "cost_rate_cents"),
+            ("client_rates", "sell_rate_cents"),
+            ("cdr", "sell_rate_cents"),
+            ("cdr", "cost_rate_cents"),
+            ("cdr", "charged_cents"),
+            ("cdr", "margin_cents"),
+            ("sip_hits", "sell_rate_cents"),
+            ("sip_hits", "cost_rate_cents"),
+        ):
+            conn.execute(f"UPDATE {table} SET {col} = {col} * ?", (LEGACY_CENT_TO_MONEY_UNITS,))
+        conn.execute(
+            "INSERT OR REPLACE INTO app_meta (key, value) VALUES ('money_scale', ?)",
+            (str(MONEY_SCALE),),
+        )
+    ensure_e164_loaded(conn)
     conn.commit()
     conn.close()
 
@@ -262,6 +307,147 @@ def pick_ip(value, seed=""):
     return ips[int(digest, 16) % len(ips)]
 
 
+def canonical_direction_name(value):
+    value = (value or "").strip()
+    value = re.sub(r",\s*Mobile\b", "", value, flags=re.IGNORECASE).strip()
+    if not value:
+        return ""
+    known = {
+        "uk": "UK",
+        "usa": "USA",
+        "u.s.a.": "USA",
+    }
+    return known.get(value.lower(), value.title() if value.islower() else value)
+
+
+def normalize_phone_number(value):
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if digits.startswith("00") and len(digits) > 2:
+        return digits[2:]
+    return digits
+
+
+def _common_prefix(values):
+    values = [v for v in values if v]
+    if not values:
+        return ""
+    prefix = values[0]
+    for value in values[1:]:
+        while prefix and not value.startswith(prefix):
+            prefix = prefix[:-1]
+    return prefix
+
+
+def _e164_data_version():
+    if not E164_DATA_PATH.exists():
+        return ""
+    st = E164_DATA_PATH.stat()
+    return f"{st.st_size}:{st.st_mtime_ns}"
+
+
+def ensure_e164_loaded(conn):
+    """Load compact E.164 country prefixes into SQLite once per data version."""
+    version = _e164_data_version()
+    if not version:
+        return
+    current = conn.execute("SELECT value FROM app_meta WHERE key = 'e164_data_version'").fetchone()
+    count = conn.execute("SELECT COUNT(*) AS c FROM e164_prefixes").fetchone()["c"]
+    if current is not None and current["value"] == version and count > 0:
+        return
+
+    with E164_DATA_PATH.open("r", encoding="utf-8") as fh:
+        data = json.load(fh)
+
+    prefix_rows = []
+    country_rows = []
+    for raw_country, prefixes in data.items():
+        country = canonical_direction_name(raw_country)
+        clean_prefixes = sorted(
+            {"".join(ch for ch in str(prefix) if ch.isdigit()) for prefix in prefixes},
+            key=lambda p: (len(p), p),
+        )
+        clean_prefixes = [p for p in clean_prefixes if p]
+        if not country or not clean_prefixes:
+            continue
+        prefix_rows.extend((prefix, country) for prefix in clean_prefixes)
+        country_rows.append((country, _common_prefix(clean_prefixes), len(clean_prefixes)))
+
+    conn.execute("DELETE FROM e164_prefixes")
+    conn.execute("DELETE FROM e164_countries")
+    conn.executemany(
+        "INSERT OR REPLACE INTO e164_prefixes (prefix, country) VALUES (?, ?)",
+        prefix_rows,
+    )
+    conn.executemany(
+        "INSERT OR REPLACE INTO e164_countries (country, primary_prefix, prefix_count) VALUES (?, ?, ?)",
+        country_rows,
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO app_meta (key, value) VALUES ('e164_data_version', ?)",
+        (version,),
+    )
+
+
+def resolve_e164(conn, destination):
+    """Return the country for a destination by longest E.164 prefix match."""
+    digits = normalize_phone_number(destination)
+    max_len = min(len(digits), 15)
+    for length in range(max_len, 0, -1):
+        prefix = digits[:length]
+        row = conn.execute(
+            "SELECT p.prefix, p.country, c.primary_prefix, c.prefix_count "
+            "FROM e164_prefixes p LEFT JOIN e164_countries c ON c.country = p.country "
+            "WHERE p.prefix = ?",
+            (prefix,),
+        ).fetchone()
+        if row is not None:
+            return row
+    return None
+
+
+def get_e164_country(conn, country):
+    country = canonical_direction_name(country)
+    if not country:
+        return None
+    return conn.execute(
+        "SELECT * FROM e164_countries WHERE country = ?",
+        (country,),
+    ).fetchone()
+
+
+def direction_matches(country_a, country_b):
+    return canonical_direction_name(country_a) == canonical_direction_name(country_b)
+
+
+def is_countrywide_prefix(conn, country, prefix):
+    row = get_e164_country(conn, country)
+    if row is None:
+        return False
+    return normalize_phone_number(prefix) == row["primary_prefix"]
+
+
+def destination_matches_route(conn, destination, prefix, destination_name):
+    destination = normalize_phone_number(destination)
+    prefix = normalize_phone_number(prefix)
+    if prefix and destination.startswith(prefix):
+        return True
+    resolved = resolve_e164(conn, destination)
+    if resolved is None:
+        return False
+    return (
+        direction_matches(destination_name, resolved["country"])
+        and is_countrywide_prefix(conn, destination_name, prefix)
+    )
+
+
+def list_e164_countries(conn):
+    rows = conn.execute(
+        "SELECT country, primary_prefix, prefix_count "
+        "FROM e164_countries ORDER BY country"
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def get_client_by_ip(conn, sip_ip):
     candidates = split_ip_list(sip_ip)
     if not candidates and (sip_ip or "").strip():
@@ -289,7 +475,7 @@ def match_client_rate(conn, client_id, destination):
 
 def match_client_rate_for_destination(conn, client_id, destination):
     """Тариф клиента + номер без входящего клиентского техпрефикса."""
-    destination = str(destination or "")
+    destination = normalize_phone_number(destination)
     rows = conn.execute(
         "SELECT * FROM client_rates WHERE client_id = ? "
         "ORDER BY length(client_tech_prefix) DESC, length(prefix) DESC, id",
@@ -304,7 +490,7 @@ def match_client_rate_for_destination(conn, client_id, destination):
             routed_destination = destination[len(client_tech_prefix):]
             if not routed_destination:
                 continue
-        if routed_destination.startswith(r["prefix"]):
+        if destination_matches_route(conn, routed_destination, r["prefix"], r["destination_name"]):
             return r, routed_destination, client_tech_prefix
     return None
 
@@ -329,7 +515,7 @@ def match_active_terminator(conn, destination):
         "SELECT * FROM terminators WHERE active = 1 ORDER BY length(prefix) DESC",
     ).fetchall()
     for r in rows:
-        if destination.startswith(r["prefix"]):
+        if destination_matches_route(conn, destination, r["prefix"], r["destination_name"]):
             return r
     return None
 
