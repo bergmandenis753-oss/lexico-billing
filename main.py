@@ -217,6 +217,23 @@ def _safe_record_sip_hit(data: ReserveIn, *, status_text: str, stage: str, reaso
     except Exception as exc:
         print(f'[SIP HIT WARN] failed to record hit call={data.call_uuid}: {exc}')
 
+@app.post('/api/sip-guard', dependencies=API_AUTH)
+def sip_guard(data: ReserveIn):
+    conn = db.get_conn()
+    try:
+        client = db.get_client_by_ip(conn, data.sip_ip)
+        if client is None:
+            reason = f'IP {data.sip_ip} не в whitelist'
+            _safe_record_sip_hit(data, status_text='blocked', stage='client_lookup', reason=reason)
+            raise HTTPException(403, reason)
+        if not client['active']:
+            reason = 'Клиент найден, но выключен'
+            _safe_record_sip_hit(data, status_text='blocked', stage='client_status', reason=reason, client=client)
+            raise HTTPException(403, reason)
+        return {'allowed': True, 'client_id': client['id'], 'client_name': client['name']}
+    finally:
+        conn.close()
+
 @app.post('/api/reserve', dependencies=API_AUTH)
 def reserve(data: ReserveIn):
     conn = db.get_conn()
@@ -573,8 +590,11 @@ def _new_direction_preview(conn, *, client, route, destination: str, prefix: str
     dial_destination = destination
     if client_tech_prefix and destination.startswith(client_tech_prefix):
         dial_destination = destination[len(client_tech_prefix):]
-    if not dial_destination.startswith(prefix):
-        return {'ok': False, 'stage': 'prefix', 'message': f'Номер после клиентского техпрефикса должен начинаться с {prefix}', 'client': dict(client), 'terminator': dict(route), 'input_destination': destination, 'dial_destination': dial_destination, 'client_tech_prefix': client_tech_prefix}
+    if not db.destination_matches_route(conn, dial_destination, prefix, route['destination_name']):
+        resolved = db.resolve_e164(conn, dial_destination)
+        resolved_name = resolved['country'] if resolved is not None else ''
+        hint = f" E.164 определил: {resolved_name}." if resolved_name else ''
+        return {'ok': False, 'stage': 'prefix', 'message': f'Номер после клиентского техпрефикса должен относиться к {route["destination_name"]} / {prefix}.{hint}', 'client': dict(client), 'terminator': dict(route), 'input_destination': destination, 'dial_destination': dial_destination, 'client_tech_prefix': client_tech_prefix}
     group = db.get_termination_group(conn, route['gateway_group_id'] if 'gateway_group_id' in route.keys() else None)
     gateway_name = (route['gateway_name'] or '').strip()
     route_ips = route['ips'] or ''
@@ -619,6 +639,12 @@ def create_direction(data: DirectionIn):
         if not gateway_name and (not db.split_ip_list(route_ips)):
             conn.rollback()
             raise HTTPException(400, 'У терминатора нет gateway/IP')
+        country = db.get_e164_country(conn, data.destination_name)
+        if country is not None and data.prefix != country['primary_prefix']:
+            raise HTTPException(
+                400,
+                f'Для {country["country"]} используйте основной E.164 префикс {country["primary_prefix"]}, тогда покроются все подпрефиксы страны',
+            )
         existing = conn.execute('SELECT * FROM client_rates WHERE client_id = ? AND client_tech_prefix = ? AND prefix = ?', (data.client_id, data.client_tech_prefix, data.prefix)).fetchone()
         created = existing is None
         if existing is None:
@@ -683,7 +709,7 @@ def ensure_ops_client_route(data: OpsClientRouteIn):
             created_terminator = True
         sell_rate = data.sell_rate_cents
         if sell_rate is None:
-            sell_rate = max(int(route['cost_rate_cents']) + 4, 1)
+            sell_rate = max(int(route['cost_rate_cents']) + 400, 1)
         existing_rate = conn.execute('SELECT * FROM client_rates WHERE client_id = ? AND client_tech_prefix = ? AND prefix = ?', (client['id'], data.client_tech_prefix, data.prefix)).fetchone()
         if existing_rate is None:
             cur = conn.execute('INSERT INTO client_rates (client_id, terminator_id, client_tech_prefix, prefix, destination_name, sell_rate_cents) VALUES (?, ?, ?, ?, ?, ?)', (client['id'], route['id'], data.client_tech_prefix, data.prefix, data.destination_name, sell_rate))
@@ -709,11 +735,12 @@ def dashboard_data():
     client_rates = conn.execute('SELECT cr.*, c.name AS client_name, t.name AS terminator_name FROM client_rates cr JOIN clients c ON c.id = cr.client_id LEFT JOIN terminators t ON t.id = cr.terminator_id ORDER BY cr.client_id').fetchall()
     cdr = conn.execute('SELECT cd.*, c.name AS client_name, c.sip_ip AS client_sip_ip, c.currency AS client_currency FROM cdr cd LEFT JOIN clients c ON c.id = cd.client_id ORDER BY cd.id DESC LIMIT 10').fetchall()
     sip_hits = conn.execute('SELECT sh.*, c.currency AS client_currency FROM sip_hits sh LEFT JOIN clients c ON c.id = sh.client_id ORDER BY sh.id DESC LIMIT 50').fetchall()
+    e164_directions = db.list_e164_countries(conn)
     total_balance = conn.execute('SELECT COALESCE(SUM(balance_cents),0) AS s FROM clients').fetchone()['s']
     margin_today = conn.execute("SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE date(started_at)=date('now')").fetchone()['s']
     margin_month = conn.execute("SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE strftime('%Y-%m', started_at)=strftime('%Y-%m','now')").fetchone()['s']
     conn.close()
-    return {'clients': [dict(r) for r in clients], 'termination_groups': [dict(r) for r in groups], 'terminators': [dict(r) for r in terminators], 'client_rates': [dict(r) for r in client_rates], 'cdr': [dict(r) for r in cdr], 'sip_hits': [dict(r) for r in sip_hits], 'summary': {'total_balance_cents': total_balance, 'margin_today_cents': margin_today, 'margin_month_cents': margin_month}}
+    return {'clients': [dict(r) for r in clients], 'termination_groups': [dict(r) for r in groups], 'terminators': [dict(r) for r in terminators], 'client_rates': [dict(r) for r in client_rates], 'cdr': [dict(r) for r in cdr], 'sip_hits': [dict(r) for r in sip_hits], 'e164_directions': e164_directions, 'summary': {'total_balance_cents': total_balance, 'margin_today_cents': margin_today, 'margin_month_cents': margin_month}}
 
 @app.get('/', response_class=HTMLResponse, dependencies=ADMIN_AUTH)
 def dashboard(request: Request):
