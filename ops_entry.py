@@ -1,5 +1,7 @@
 from pydantic import BaseModel
 
+import admin_delete_patch
+import admin_management_patch
 import client_portal
 import main_compat
 
@@ -158,3 +160,5 @@ def ops_diagnostics():
 
 
 client_portal.install(app, main, db)
+admin_management_patch.install(app, main, db, main_compat)
+admin_delete_patch.install(app, main, db)
