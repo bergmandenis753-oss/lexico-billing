@@ -69,6 +69,8 @@
 </header>
 
 <main>
+  <datalist id="direction-options"></datalist>
+
   <div class="cards">
     <div class="card"><div class="lbl">Суммарный баланс</div><div class="val" id="c-balance">—</div></div>
     <div class="card"><div class="lbl">Маржа за сегодня</div><div class="val" id="c-today">—</div></div>
@@ -172,7 +174,7 @@
   <form id="route-form">
     <label>Название (поставщик)</label><input id="rt-name" placeholder="Lexico" required autofocus>
     <label>Терминационная группа</label><select id="rt-group" required></select>
-    <label>Направление</label><input id="rt-dest" value="Australia" required>
+    <label>Направление</label><input id="rt-dest" list="direction-options" value="Australia" required>
     <label>Префикс</label><input id="rt-prefix" value="61" required>
     <label>Техпрефикс поставщика (можно пусто)</label><input id="rt-tech" placeholder="999001">
     <label>Закупочная цена за минуту (в валюте)</label><input id="rt-cost" type="number" step="0.0001" min="0" required>
@@ -187,7 +189,7 @@
   <form id="rate-form">
     <label>Оригинатор</label><select id="ra-client" required></select>
     <label>Терминатор (через кого слать)</label><select id="ra-term" required></select>
-    <label>Направление</label><input id="ra-dest" value="Australia" required>
+    <label>Направление</label><input id="ra-dest" list="direction-options" value="Australia" required>
     <label>Клиентский техпрефикс (можно пусто)</label><input id="ra-client-tech" placeholder="101">
     <label>Префикс</label><input id="ra-prefix" value="61" required>
     <label>Цена продажи за минуту (в валюте)</label><input id="ra-sell" type="number" step="0.0001" min="0" required>
@@ -201,7 +203,7 @@
   <form id="direction-form">
     <label>Оригинатор</label><select id="di-client" required></select>
     <label>Терминатор / поставщик</label><select id="di-term" required></select>
-    <label>Направление</label><input id="di-dest" placeholder="Czechia" required>
+    <label>Направление</label><input id="di-dest" list="direction-options" placeholder="Czech Republic" required>
     <label>Префикс страны/направления</label><input id="di-prefix" placeholder="420" required>
     <label>Клиентский техпрефикс (если клиент шлёт его нам)</label><input id="di-client-tech" placeholder="101">
     <label>Цена продажи за минуту (в валюте)</label><input id="di-sell" type="number" step="0.0001" min="0.0001" required>
@@ -238,15 +240,26 @@ let groupMap = {};
 let termList = [];
 let topupClientId = null;
 let loadInFlight = false;
+let directionList = [];
+let directionMap = {};
 
-const money = (c, cur) => ((Number(c)||0)/100).toFixed(2) + (cur ? ' ' + cur : '');
-const rate  = (c, cur) => ((Number(c)||0)/100).toFixed(4) + (cur ? ' ' + cur : '');  // цены за минуту — до 4 знаков
+const MONEY_SCALE = 10000;
+const money = (u, cur) => ((Number(u)||0)/MONEY_SCALE).toFixed(4) + (cur ? ' ' + cur : '');
+const rate  = (u, cur) => ((Number(u)||0)/MONEY_SCALE).toFixed(4) + (cur ? ' ' + cur : '');
 const esc = s => String(s ?? '').replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
 const val = s => {
   const v = String(s ?? '').trim();
   return v ? esc(v) : '<span class="mut">—</span>';
 };
 const emptyRow = n => `<tr><td class="empty" colspan="${n}">Нет данных</td></tr>`;
+function parseMoneyUnits(value, label) {
+  const s = String(value ?? '').trim().replace(',', '.');
+  if (!s) return 0;
+  const m = s.match(/^(\d+)(?:\.(\d{0,4}))?$/);
+  if (!m) throw new Error(`${label}: максимум 4 знака после точки`);
+  return Number(m[1]) * MONEY_SCALE + Number((m[2] || '').padEnd(4, '0'));
+}
+const inputMoneyUnits = (id, label) => parseMoneyUnits(document.getElementById(id).value, label);
 
 async function api(path, method, body) {
   const r = await fetch(path, {
@@ -277,6 +290,12 @@ async function load(manual = false) {
   groupMap = {};
   groupList.forEach(g => groupMap[g.id] = g);
   termList = d.terminators || [];
+  directionList = d.e164_directions || [];
+  directionMap = {};
+  directionList.forEach(x => directionMap[x.country] = x);
+  document.getElementById('direction-options').innerHTML = directionList.map(x =>
+    `<option value="${esc(x.country)}">${esc(x.primary_prefix)} · ${x.prefix_count} префиксов</option>`
+  ).join('');
 
   document.getElementById('t-clients').innerHTML = d.clients.map(c => `
     <tr>
@@ -416,7 +435,7 @@ document.getElementById('client-form').addEventListener('submit', async e => {
       name: document.getElementById('cl-name').value,
       sip_ip: document.getElementById('cl-ip').value,
       currency: document.getElementById('cl-cur').value || 'USD',
-      balance_cents: Math.round(parseFloat(document.getElementById('cl-bal').value || '0') * 100)
+      balance_cents: inputMoneyUnits('cl-bal', 'Баланс')
     });
     clientDlg.close(); e.target.reset(); load();
   } catch (err) { alert('Ошибка: ' + err.message); }
@@ -443,6 +462,14 @@ function openTermDlg() {
   if (!sel.innerHTML) { alert('Сначала создайте терминационную группу'); return; }
   routeDlg.showModal();
 }
+function fillDirectionPrefix(directionInputId, prefixInputId, force = false) {
+  const direction = document.getElementById(directionInputId).value.trim();
+  const prefixInput = document.getElementById(prefixInputId);
+  const match = directionMap[direction];
+  if (match && (force || !prefixInput.value.trim())) {
+    prefixInput.value = match.primary_prefix;
+  }
+}
 document.getElementById('route-form').addEventListener('submit', async e => {
   e.preventDefault();
   try {
@@ -454,7 +481,7 @@ document.getElementById('route-form').addEventListener('submit', async e => {
       prefix: document.getElementById('rt-prefix').value,
       gateway_name: '',
       tech_prefix: document.getElementById('rt-tech').value || '',
-      cost_rate_cents: Math.round(parseFloat(document.getElementById('rt-cost').value) * 100),
+      cost_rate_cents: inputMoneyUnits('rt-cost', 'Закупка'),
       active: document.getElementById('rt-active').checked
     });
     routeDlg.close(); e.target.reset(); load();
@@ -471,6 +498,9 @@ function openRateDlg() {
   if (!ts.innerHTML) { alert('Сначала создайте терминатор'); return; }
   rateDlg.showModal();
 }
+document.getElementById('rt-dest').addEventListener('change', () => fillDirectionPrefix('rt-dest', 'rt-prefix', true));
+document.getElementById('ra-dest').addEventListener('change', () => fillDirectionPrefix('ra-dest', 'ra-prefix', true));
+document.getElementById('di-dest').addEventListener('change', () => fillDirectionPrefix('di-dest', 'di-prefix', true));
 document.getElementById('rate-form').addEventListener('submit', async e => {
   e.preventDefault();
   try {
@@ -480,7 +510,7 @@ document.getElementById('rate-form').addEventListener('submit', async e => {
       client_tech_prefix: document.getElementById('ra-client-tech').value || '',
       destination_name: document.getElementById('ra-dest').value,
       prefix: document.getElementById('ra-prefix').value,
-      sell_rate_cents: Math.round(parseFloat(document.getElementById('ra-sell').value) * 100)
+      sell_rate_cents: inputMoneyUnits('ra-sell', 'Продажа')
     });
     rateDlg.close(); load();
   } catch (err) { alert('Ошибка: ' + err.message); }
@@ -520,7 +550,7 @@ function directionPayload() {
     destination_name: document.getElementById('di-dest').value.trim(),
     prefix: document.getElementById('di-prefix').value.trim(),
     client_tech_prefix: document.getElementById('di-client-tech').value.trim(),
-    sell_rate_cents: Math.round(parseFloat(document.getElementById('di-sell').value || '0') * 100)
+    sell_rate_cents: inputMoneyUnits('di-sell', 'Продажа')
   };
 }
 
@@ -582,7 +612,7 @@ document.getElementById('topup-form').addEventListener('submit', async e => {
   e.preventDefault();
   try {
     await api(`/api/clients/${topupClientId}/topup`, 'POST',
-      { amount_cents: Math.round(parseFloat(document.getElementById('tu-amount').value) * 100) });
+      { amount_cents: inputMoneyUnits('tu-amount', 'Сумма пополнения') });
     topupDlg.close(); load();
   } catch (err) { alert('Ошибка: ' + err.message); }
 });
