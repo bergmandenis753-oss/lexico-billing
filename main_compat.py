@@ -75,7 +75,55 @@ async def dashboard_scale_guard(request: Request, call_next):
     return response
 
 
-_remove_routes({"/", "/api/dashboard-data"})
+_remove_routes({"/", "/api/dashboard-data", "/api/firewall-whitelist"})
+
+
+@app.get("/api/firewall-whitelist", dependencies=main.API_AUTH)
+def firewall_whitelist():
+    conn = db.get_conn()
+    try:
+        entries = []
+        seen = set()
+
+        def add_entries(raw_ips, **meta):
+            for token in db.split_ip_list(raw_ips):
+                if token in seen:
+                    continue
+                seen.add(token)
+                entries.append({"ip": token, **meta})
+
+        clients = conn.execute(
+            "SELECT id, name, sip_ip FROM clients WHERE active = 1 ORDER BY id"
+        ).fetchall()
+        for row in clients:
+            add_entries(row["sip_ip"], source="client", client_id=row["id"], client_name=row["name"])
+
+        groups = conn.execute(
+            "SELECT id, name, ips FROM termination_groups WHERE active = 1 ORDER BY id"
+        ).fetchall()
+        for row in groups:
+            add_entries(row["ips"], source="termination_group", group_id=row["id"], group_name=row["name"])
+
+        terminators = conn.execute(
+            "SELECT t.id, t.name, t.ips, t.gateway_group_id, g.name AS group_name, g.ips AS group_ips "
+            "FROM terminators t "
+            "LEFT JOIN termination_groups g ON g.id = t.gateway_group_id "
+            "WHERE t.active = 1 ORDER BY t.id"
+        ).fetchall()
+        for row in terminators:
+            add_entries(row["ips"], source="terminator", terminator_id=row["id"], terminator_name=row["name"])
+            add_entries(
+                row["group_ips"],
+                source="terminator_group",
+                terminator_id=row["id"],
+                terminator_name=row["name"],
+                group_id=row["gateway_group_id"],
+                group_name=row["group_name"],
+            )
+
+        return {"ok": True, "entries": entries}
+    finally:
+        conn.close()
 
 
 @app.get("/api/dashboard-data", dependencies=main.ADMIN_AUTH)
