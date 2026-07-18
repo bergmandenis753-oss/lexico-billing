@@ -1,3 +1,6 @@
+from fastapi import Request
+
+
 def apply(ai_diag):
     original_summary = ai_diag._pcap_summary
     original_install = ai_diag.install
@@ -67,7 +70,7 @@ def apply(ai_diag):
         remove_routes(app, "/api/dashboard-data")
 
         @app.get("/api/dashboard-data", dependencies=main.ADMIN_AUTH)
-        def dashboard_data(request):
+        def dashboard_data(request: Request):
             conn = db.get_conn()
             try:
                 clients = conn.execute("SELECT * FROM clients ORDER BY id").fetchall()
