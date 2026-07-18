@@ -10,6 +10,8 @@ Set these variables in Railway before exposing the service:
 ADMIN_USER=your-admin-login
 ADMIN_PASSWORD=use-a-long-random-password
 API_SECRET_KEY=use-a-different-long-random-secret
+OPENAI_API_KEY=sk-proj-... # optional, enables the dashboard AI call analyst
+OPENAI_MODEL=gpt-4.1-mini # optional override
 ```
 
 The app fails closed when these variables are missing:
@@ -33,6 +35,16 @@ X-API-Key: <API_SECRET_KEY>
 ```
 
 `/healthz` is intentionally public so Railway can check that the app is alive.
+
+## Read-only call analyst
+
+The dashboard has a read-only AI assistant for recent SIP/CDR diagnostics.
+It can explain the latest call attempts, but it cannot edit clients, routes,
+balances, whitelist, or FreeSWITCH.
+
+For full SIP ladder analysis, run `freeswitch/pcap_collector.py` on the
+FreeSWITCH server. It watches SIP packets on UDP 5060/5080, parses compact
+headers, and posts them to `/api/pcap-events` with `API_SECRET_KEY`.
 
 ## Persistent database on Railway
 
