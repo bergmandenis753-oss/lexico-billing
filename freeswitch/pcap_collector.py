@@ -150,6 +150,7 @@ def post_events(events):
         headers={
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
+            "X-Money-Scale": "10000",
         },
         method="POST",
     )
