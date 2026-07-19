@@ -20,6 +20,13 @@ def _rows(rows):
     return [dict(row) for row in rows]
 
 
+def _ensure_deleted_at(conn):
+    cols = [row["name"] for row in conn.execute("PRAGMA table_info(clients)").fetchall()]
+    if "deleted_at" not in cols:
+        conn.execute("ALTER TABLE clients ADD COLUMN deleted_at TEXT")
+        conn.commit()
+
+
 def _money(value, db, currency="USD"):
     return f"{(int(value or 0) / db.MONEY_SCALE):.4f} {currency or 'USD'}"
 
@@ -40,6 +47,7 @@ def install(app, main, db):
     def dashboard_data():
         conn = db.get_conn()
         try:
+            _ensure_deleted_at(conn)
             clients = conn.execute("SELECT * FROM clients WHERE deleted_at IS NULL ORDER BY id").fetchall()
             groups = conn.execute("SELECT * FROM termination_groups ORDER BY name").fetchall()
             terminators = conn.execute(
