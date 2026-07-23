@@ -103,7 +103,10 @@ def ingest_pcap_events(data: PcapEventsIn):
 
 
 @app.get("/api/ops/diagnostics", dependencies=main.API_AUTH)
-def ops_diagnostics():
+def ops_diagnostics(limit: int = 100, cdr_limit: int = 50, pcap_limit: int = 200):
+    hit_limit = max(1, min(int(limit or 100), 1000))
+    cdr_limit = max(1, min(int(cdr_limit or 50), 500))
+    pcap_limit = max(1, min(int(pcap_limit or 200), 1000))
     conn = db.get_conn()
     try:
         clients = _limited_rows(conn, "SELECT * FROM clients ORDER BY id")
@@ -120,20 +123,22 @@ def ops_diagnostics():
             "SELECT cr.*, c.name AS client_name, t.name AS terminator_name "
             "FROM client_rates cr JOIN clients c ON c.id = cr.client_id "
             "LEFT JOIN terminators t ON t.id = cr.terminator_id "
-            "ORDER BY cr.id DESC LIMIT 120",
+            "ORDER BY cr.id DESC LIMIT 500",
         )
         cdr = _limited_rows(
             conn,
             "SELECT cd.*, c.name AS client_name, c.sip_ip AS client_sip_ip, "
             "c.currency AS client_currency FROM cdr cd LEFT JOIN clients c ON c.id = cd.client_id "
-            "ORDER BY cd.id DESC LIMIT 50",
+            "ORDER BY cd.id DESC LIMIT ?",
+            (cdr_limit,),
         )
         sip_hits = _limited_rows(
             conn,
             "SELECT sh.*, c.currency AS client_currency FROM sip_hits sh "
-            "LEFT JOIN clients c ON c.id = sh.client_id ORDER BY sh.id DESC LIMIT 100",
+            "LEFT JOIN clients c ON c.id = sh.client_id ORDER BY sh.id DESC LIMIT ?",
+            (hit_limit,),
         )
-        pcap_events = _limited_rows(conn, "SELECT * FROM pcap_events ORDER BY id DESC LIMIT 200")
+        pcap_events = _limited_rows(conn, "SELECT * FROM pcap_events ORDER BY id DESC LIMIT ?", (pcap_limit,))
         total_balance = conn.execute("SELECT COALESCE(SUM(balance_cents),0) AS s FROM clients").fetchone()["s"]
         margin_today = conn.execute(
             "SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE date(started_at)=date('now')"
