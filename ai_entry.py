@@ -2,6 +2,13 @@ import main_compat
 
 
 try:
+    import client_route_isolation_patch
+    client_route_isolation_patch.install(main_compat.app, main_compat.main, main_compat.db)
+except Exception as exc:
+    print(f"[billing route isolation warn] patch was not loaded: {exc}")
+
+
+try:
     import ai_diag
     try:
         import ai_diag_patch
