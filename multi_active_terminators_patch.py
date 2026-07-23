@@ -18,15 +18,6 @@ def _model_fields(data):
     return {key: value for key, value in values.items() if value is not None}
 
 
-def _deactivate_same_tech(conn, *, prefix, tech_prefix, exclude_id=None):
-    sql = "UPDATE terminators SET active = 0 WHERE prefix = ? AND COALESCE(tech_prefix, '') = ?"
-    params = [prefix, tech_prefix or ""]
-    if exclude_id is not None:
-        sql += " AND id != ?"
-        params.append(exclude_id)
-    conn.execute(sql, params)
-
-
 def install(app, main, db):
     _remove_routes(app, "/api/terminators", {"POST"})
     _remove_routes(app, "/api/terminators/{tid}", {"PATCH"})
@@ -42,8 +33,6 @@ def install(app, main, db):
             if group is None and (not data.gateway_name.strip()) and (not db.split_ip_list(data.ips)):
                 raise HTTPException(400, "Укажите gateway или IP терминатора")
             conn.execute("BEGIN IMMEDIATE")
-            if data.active:
-                _deactivate_same_tech(conn, prefix=data.prefix, tech_prefix=data.tech_prefix)
             cur = conn.execute(
                 "INSERT INTO terminators "
                 "(name, gateway_group_id, ips, destination_name, prefix, gateway_name, tech_prefix, cost_rate_cents, active) "
@@ -88,11 +77,6 @@ def install(app, main, db):
                 conn.rollback()
                 raise HTTPException(400, "Укажите gateway или IP терминатора")
 
-            will_be_active = bool(fields.get("active", row["active"]))
-            next_prefix = fields.get("prefix", row["prefix"])
-            next_tech_prefix = fields.get("tech_prefix", row["tech_prefix"] if "tech_prefix" in row.keys() else "") or ""
-            if will_be_active:
-                _deactivate_same_tech(conn, prefix=next_prefix, tech_prefix=next_tech_prefix, exclude_id=tid)
             if "active" in fields:
                 fields["active"] = int(fields["active"])
             sets = ", ".join(f"{key} = ?" for key in fields)
@@ -111,12 +95,6 @@ def install(app, main, db):
             if row is None:
                 conn.rollback()
                 raise HTTPException(404, "Терминатор не найден")
-            _deactivate_same_tech(
-                conn,
-                prefix=row["prefix"],
-                tech_prefix=row["tech_prefix"] if "tech_prefix" in row.keys() else "",
-                exclude_id=tid,
-            )
             conn.execute("UPDATE terminators SET active = 1 WHERE id = ?", (tid,))
             conn.commit()
             return {"ok": True}
