@@ -32,6 +32,14 @@ def _ensure_deleted_at(conn):
         conn.commit()
 
 
+def _repair_originator_names(conn):
+    conn.execute(
+        "UPDATE clients SET name = ? WHERE deleted_at IS NULL AND sip_ip = ? AND name != ?",
+        ("Vladimir", "65.109.53.18", "Vladimir"),
+    )
+    conn.commit()
+
+
 def _money(value, db, currency="USD"):
     return f"{(int(value or 0) / db.MONEY_SCALE):.4f} {currency or 'USD'}"
 
@@ -63,6 +71,7 @@ def install(app, main, db):
         conn = db.get_conn()
         try:
             _ensure_deleted_at(conn)
+            _repair_originator_names(conn)
             clients = conn.execute("SELECT * FROM clients WHERE deleted_at IS NULL ORDER BY id").fetchall()
             groups = conn.execute("SELECT * FROM termination_groups ORDER BY name").fetchall()
             terminators = conn.execute(
