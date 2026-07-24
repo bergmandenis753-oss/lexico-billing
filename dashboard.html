@@ -31,6 +31,8 @@
   button.small { padding:4px 9px; font-size:12px; }
   button.danger { background:transparent; border:1px solid var(--line); color:var(--bad); }
   button:hover { opacity:.9; }
+  .link-btn { background:transparent; border:0; color:var(--txt); padding:0; font:inherit; font-weight:600; text-align:left; }
+  .link-btn:hover { color:var(--accent); opacity:1; }
   .right { text-align:right; }
   .mut { color:var(--mut); }
   dialog { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:12px; padding:20px; width:340px; }
@@ -299,7 +301,7 @@ async function load(manual = false) {
 
   document.getElementById('t-clients').innerHTML = d.clients.map(c => `
     <tr>
-      <td>${esc(c.name)}</td>
+      <td><button class="link-btn" onclick="editClientName(${c.id})" title="Изменить имя">${esc(c.name)}</button></td>
       <td class="mut">${esc(c.sip_ip)}</td>
       <td class="right">${money(c.balance_cents, c.currency)}</td>
       <td>${c.active ? '<span class="badge on">активен</span>' : '<span class="badge off">выкл</span>'}</td>
@@ -616,6 +618,18 @@ document.getElementById('topup-form').addEventListener('submit', async e => {
     topupDlg.close(); load();
   } catch (err) { alert('Ошибка: ' + err.message); }
 });
+async function editClientName(id) {
+  const c = clientMap[id];
+  if (!c) return;
+  const name = prompt('Новое имя оригинатора', c.name || '');
+  if (name === null) return;
+  const clean = name.trim();
+  if (!clean) { alert('Имя не может быть пустым'); return; }
+  try {
+    await api(`/api/clients/${id}`, 'PATCH', {name: clean});
+    await load(true);
+  } catch (e) { alert(e.message); }
+}
 
 // ---- действия с роутами/тарифами ----
 async function delGroup(id) { if(!confirm('Удалить группу?'))return; try { await api(`/api/termination-groups/${id}`,'DELETE'); load(); } catch(e){ alert(e.message);} }
