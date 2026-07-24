@@ -326,7 +326,7 @@ async function load(manual = false) {
       <td>${esc(r.destination_name)}</td>
       <td class="mut">${esc(r.prefix)}</td>
       <td class="mut">${esc(r.tech_prefix || '')}</td>
-      <td class="right">${rate(r.cost_rate_cents, c0)}</td>
+      <td class="right"><button class="manage-link-btn" onclick="editRouteCost(${r.id})" title="Изменить закупку">${rate(r.cost_rate_cents, c0)}</button></td>
       <td>${r.active ? '<span class="badge on">активен</span>' : '<span class="badge off">резерв</span>'}</td>
       <td class="right">
         ${r.active ? '' : `<button class="small" onclick="activateRoute(${r.id})">Сделать активным</button> `}
@@ -622,6 +622,17 @@ async function delGroup(id) { if(!confirm('Удалить группу?'))return
 async function activateRoute(id) { try { await api(`/api/terminators/${id}/activate`,'POST'); load(); } catch(e){ alert(e.message);} }
 async function delRoute(id) { if(!confirm('Удалить терминатор?'))return; try { await api(`/api/terminators/${id}`,'DELETE'); load(); } catch(e){ alert(e.message);} }
 async function delRate(id) { if(!confirm('Удалить тариф?'))return; try { await api(`/api/client-rates/${id}`,'DELETE'); load(); } catch(e){ alert(e.message);} }
+async function editRouteCost(id) {
+  const r = termList.find(x => Number(x.id) === Number(id));
+  if (!r) return;
+  const current = ((Number(r.cost_rate_cents) || 0) / MONEY_SCALE).toFixed(4);
+  const value = prompt(`Новая закупка для ${r.name} / ${r.destination_name}`, current);
+  if (value === null) return;
+  try {
+    await api(`/api/terminators/${id}`, 'PATCH', {cost_rate_cents: parseMoneyUnits(value, 'Закупка')});
+    await load(true);
+  } catch(e) { alert(e.message); }
+}
 
 load();
 setInterval(() => load(), 5000);
