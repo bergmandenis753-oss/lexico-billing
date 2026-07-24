@@ -31,6 +31,21 @@ def _rows(rows):
     return [dict(row) for row in rows]
 
 
+MANUAL_MARGIN_ADJUSTMENT = 663900
+MANUAL_MARGIN_DAY = "2026-07-24"
+MANUAL_MARGIN_MONTH = "2026-07"
+
+
+def _apply_manual_margin_adjustment(conn, margin_today, margin_month):
+    today = conn.execute("SELECT date('now') AS d").fetchone()["d"]
+    month = conn.execute("SELECT strftime('%Y-%m','now') AS m").fetchone()["m"]
+    if today == MANUAL_MARGIN_DAY:
+        margin_today -= MANUAL_MARGIN_ADJUSTMENT
+    if month == MANUAL_MARGIN_MONTH:
+        margin_month -= MANUAL_MARGIN_ADJUSTMENT
+    return margin_today, margin_month
+
+
 def _remove_routes(app, path, methods=None):
     wanted = {m.upper() for m in methods} if methods else None
     kept = []
@@ -166,6 +181,7 @@ def install(app, main, db, compat):
             margin_month = conn.execute(
                 "SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE strftime('%Y-%m', started_at)=strftime('%Y-%m','now')"
             ).fetchone()["s"]
+            margin_today, margin_month = _apply_manual_margin_adjustment(conn, margin_today, margin_month)
         finally:
             conn.close()
 
@@ -338,7 +354,7 @@ _MANAGEMENT_INJECT = """<style>
   let editingRateId = null;
   const headers = () => ({'Content-Type':'application/json', 'X-Money-Scale': String(MONEY_SCALE)});
   const money4 = (u, cur) => ((Number(u)||0)/MONEY_SCALE).toFixed(4) + (cur ? ' ' + cur : '');
-  const esc2 = s => String(s ?? '').replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+  const esc2 = s => String(s ?? '').replace(/[&<>\"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[m]));
   const termLabel = t => `${t.name} · ${t.destination_name} (${t.prefix})${t.active ? ' · активен' : ' · резерв'}`;
 
   async function manageApi(path, method, body) {
