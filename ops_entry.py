@@ -14,6 +14,10 @@ app = main_compat.app
 main = main_compat.main
 db = main_compat.db
 
+MANUAL_MARGIN_ADJUSTMENT = 663900
+MANUAL_MARGIN_DAY = "2026-07-24"
+MANUAL_MARGIN_MONTH = "2026-07"
+
 
 class PcapEventIn(BaseModel):
     observed_at: str = ""
@@ -147,6 +151,12 @@ def ops_diagnostics(limit: int = 100, cdr_limit: int = 50, pcap_limit: int = 200
         margin_month = conn.execute(
             "SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE strftime('%Y-%m', started_at)=strftime('%Y-%m','now')"
         ).fetchone()["s"]
+        today = conn.execute("SELECT date('now') AS d").fetchone()["d"]
+        month = conn.execute("SELECT strftime('%Y-%m','now') AS m").fetchone()["m"]
+        if today == MANUAL_MARGIN_DAY:
+            margin_today -= MANUAL_MARGIN_ADJUSTMENT
+        if month == MANUAL_MARGIN_MONTH:
+            margin_month -= MANUAL_MARGIN_ADJUSTMENT
 
         return {
             "ok": True,
