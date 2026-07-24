@@ -99,7 +99,7 @@ def install(app, main, db):
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
-  <title>Lexico VoIP - кабинет клиента</title>
+  <title>SloTELL - кабинет клиента</title>
   <style>
     :root {{
       --bg: #0b111d;
@@ -165,7 +165,7 @@ def install(app, main, db):
 <body>
   <header>
     <div>
-      <div class="brand">Lexico VoIP</div>
+      <div class="brand">SloTELL</div>
       <div class="muted">Личный кабинет клиента</div>
     </div>
     <a class="refresh" href="">Обновить</a>
