@@ -249,6 +249,12 @@ const MONEY_SCALE = 10000;
 const money = (u, cur) => ((Number(u)||0)/MONEY_SCALE).toFixed(4) + (cur ? ' ' + cur : '');
 const rate  = (u, cur) => ((Number(u)||0)/MONEY_SCALE).toFixed(4) + (cur ? ' ' + cur : '');
 const esc = s => String(s ?? '').replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+const termLabel = (t, cur = '') => {
+  const parts = [t.name, `${t.destination_name} (${t.prefix})`];
+  if (t.tech_prefix) parts.push(`TP ${t.tech_prefix}`);
+  parts.push(`buy ${rate(t.cost_rate_cents, cur)}`);
+  return parts.filter(Boolean).join(' · ');
+};
 const val = s => {
   const v = String(s ?? '').trim();
   return v ? esc(v) : '<span class="mut">—</span>';
@@ -338,9 +344,12 @@ async function load(manual = false) {
 
   document.getElementById('t-rates').innerHTML = d.client_rates.map(r => {
     const cur = (clientMap[r.client_id]||{}).currency || '';
+    const term = r.terminator_name
+      ? [r.terminator_name, r.terminator_tech_prefix ? `TP ${r.terminator_tech_prefix}` : '', `buy ${rate(r.terminator_cost_rate_cents, cur)}`].filter(Boolean).join(' · ')
+      : '';
     return `<tr>
       <td>${esc(r.client_name)}</td>
-      <td>${r.terminator_name ? esc(r.terminator_name) : '<span class="mut">— (активный)</span>'}</td>
+      <td>${term ? esc(term) : '<span class="mut">— (активный)</span>'}</td>
       <td>${esc(r.destination_name)}</td>
       <td class="mut">${r.client_tech_prefix ? esc(r.client_tech_prefix) : '—'}</td>
       <td class="mut">${esc(r.prefix)}</td>
@@ -496,7 +505,8 @@ function openRateDlg() {
   sel.innerHTML = Object.values(clientMap).map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
   if (!sel.innerHTML) { alert('Сначала создайте оригинатора'); return; }
   const ts = document.getElementById('ra-term');
-  ts.innerHTML = termList.map(t => `<option value="${t.id}">${esc(t.name)} · ${esc(t.destination_name)} (${esc(t.prefix)})</option>`).join('');
+  const cur = (Object.values(clientMap)[0]||{}).currency || '';
+  ts.innerHTML = termList.map(t => `<option value="${t.id}">${esc(termLabel(t, cur))}</option>`).join('');
   if (!ts.innerHTML) { alert('Сначала создайте терминатор'); return; }
   rateDlg.showModal();
 }
@@ -525,7 +535,8 @@ function fillDirectionTerms() {
   ts.innerHTML = activeTerms.map(t => {
     const group = groupMap[t.gateway_group_id] || {};
     const gw = t.gateway_name || group.gateway_name || group.ips || t.ips || 'без gateway/IP';
-    return `<option value="${t.id}">${esc(t.name)} · ${esc(t.destination_name)} (${esc(t.prefix)}) · ${esc(gw)}</option>`;
+    const cur = (Object.values(clientMap)[0]||{}).currency || '';
+    return `<option value="${t.id}">${esc(termLabel(t, cur))} · ${esc(gw)}</option>`;
   }).join('');
   return Boolean(ts.innerHTML);
 }
