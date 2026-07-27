@@ -528,7 +528,7 @@ def create_client_rate(data: ClientRateIn):
 @app.get('/api/client-rates', dependencies=ADMIN_AUTH)
 def list_client_rates():
     conn = db.get_conn()
-    rows = conn.execute('SELECT cr.*, c.name AS client_name, t.name AS terminator_name FROM client_rates cr JOIN clients c ON c.id = cr.client_id LEFT JOIN terminators t ON t.id = cr.terminator_id ORDER BY cr.client_id').fetchall()
+    rows = conn.execute('SELECT cr.*, c.name AS client_name, t.name AS terminator_name, t.cost_rate_cents AS terminator_cost_rate_cents, t.tech_prefix AS terminator_tech_prefix FROM client_rates cr JOIN clients c ON c.id = cr.client_id LEFT JOIN terminators t ON t.id = cr.terminator_id ORDER BY cr.client_id').fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -732,7 +732,7 @@ def dashboard_data():
     clients = conn.execute('SELECT * FROM clients ORDER BY id').fetchall()
     groups = conn.execute('SELECT * FROM termination_groups ORDER BY name').fetchall()
     terminators = conn.execute('SELECT t.*, g.name AS gateway_group_name, g.ips AS gateway_group_ips, g.gateway_name AS gateway_group_gateway_name FROM terminators t LEFT JOIN termination_groups g ON g.id = t.gateway_group_id ORDER BY t.prefix, t.active DESC, t.id').fetchall()
-    client_rates = conn.execute('SELECT cr.*, c.name AS client_name, t.name AS terminator_name FROM client_rates cr JOIN clients c ON c.id = cr.client_id LEFT JOIN terminators t ON t.id = cr.terminator_id ORDER BY cr.client_id').fetchall()
+    client_rates = conn.execute('SELECT cr.*, c.name AS client_name, t.name AS terminator_name, t.cost_rate_cents AS terminator_cost_rate_cents, t.tech_prefix AS terminator_tech_prefix FROM client_rates cr JOIN clients c ON c.id = cr.client_id LEFT JOIN terminators t ON t.id = cr.terminator_id ORDER BY cr.client_id').fetchall()
     cdr = conn.execute('SELECT cd.*, c.name AS client_name, c.sip_ip AS client_sip_ip, c.currency AS client_currency FROM cdr cd LEFT JOIN clients c ON c.id = cd.client_id ORDER BY cd.id DESC LIMIT 10').fetchall()
     sip_hits = conn.execute('SELECT sh.*, c.currency AS client_currency FROM sip_hits sh LEFT JOIN clients c ON c.id = sh.client_id ORDER BY sh.id DESC LIMIT 50').fetchall()
     e164_directions = db.list_e164_countries(conn)
