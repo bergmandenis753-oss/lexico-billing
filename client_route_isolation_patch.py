@@ -51,19 +51,25 @@ def _validate_client_route(conn, main, db, data):
 
 
 def _drop_unsafe_client_rate_indexes(conn):
-    """Keep only indexes that do not make routes global across originators."""
+    """Drop unique indexes that prevent route pools for the same client TP/prefix."""
     for idx in conn.execute("PRAGMA index_list(client_rates)").fetchall():
         if not idx["unique"]:
             continue
         idx_name = idx["name"]
         safe_name = idx_name.replace('"', '""')
         idx_cols = [r["name"] for r in conn.execute(f'PRAGMA index_info("{safe_name}")').fetchall()]
-        if idx_cols != ["client_id", "client_tech_prefix", "prefix"]:
+        if "terminator_id" in idx_cols:
+            continue
+        try:
             conn.execute(f'DROP INDEX IF EXISTS "{safe_name}"')
+        except Exception:
+            pass
 
 
 def _upsert_client_route(conn, data, *, update_existing=True):
     client_id = int(data["client_id"])
+    terminator_id = data.get("terminator_id")
+    terminator_id = int(terminator_id) if terminator_id is not None else None
     tech = _clean(data.get("client_tech_prefix"))
     prefix = _clean(data.get("prefix"))
     dest = _clean(data.get("destination_name"))
@@ -72,23 +78,23 @@ def _upsert_client_route(conn, data, *, update_existing=True):
     existing = conn.execute(
         "SELECT * FROM client_rates "
         "WHERE client_id = ? AND COALESCE(client_tech_prefix, '') = ? AND prefix = ? "
+        "AND COALESCE(terminator_id, -1) = COALESCE(?, -1) "
         "ORDER BY id LIMIT 1",
-        (client_id, tech, prefix),
+        (client_id, tech, prefix, terminator_id),
     ).fetchone()
     if existing is None:
         cur = conn.execute(
             "INSERT INTO client_rates "
             "(client_id, terminator_id, client_tech_prefix, prefix, destination_name, sell_rate_cents) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (client_id, data.get("terminator_id"), tech, prefix, dest, int(data["sell_rate_cents"])),
+            (client_id, terminator_id, tech, prefix, dest, int(data["sell_rate_cents"])),
         )
         return cur.lastrowid, True
     if not update_existing:
-        raise HTTPException(409, "Такое направление у этого оригинатора уже есть")
+        raise HTTPException(409, "Такое направление у этого оригинатора и терминатора уже есть")
     conn.execute(
-        "UPDATE client_rates SET terminator_id = ?, destination_name = ?, sell_rate_cents = ? "
-        "WHERE id = ?",
-        (data.get("terminator_id"), dest, int(data["sell_rate_cents"]), existing["id"]),
+        "UPDATE client_rates SET destination_name = ?, sell_rate_cents = ? WHERE id = ?",
+        (dest, int(data["sell_rate_cents"]), existing["id"]),
     )
     return existing["id"], False
 
@@ -136,7 +142,7 @@ def install(app, main, db):
             ]
             return {
                 "ok": True,
-                "route_key": "client_id + client_tech_prefix + prefix",
+                "route_key": "client_id + client_tech_prefix + prefix + terminator_id",
                 "indexes": indexes,
                 "routes": routes,
             }
