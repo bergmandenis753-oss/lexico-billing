@@ -4,7 +4,6 @@ import admin_delete_patch
 import admin_management_patch
 import billing_ui_fix_patch
 import client_connection_patch
-import client_connection_merge_patch
 import client_route_isolation_patch
 import client_portal
 import main_compat
@@ -190,4 +189,3 @@ route_pool_patch.install(db)
 reserve_balance_patch.install(app, main, db)
 multi_active_terminators_patch.install(app, main, db)
 client_route_isolation_patch.install(app, main, db)
-client_connection_merge_patch.install(app, main, db)
