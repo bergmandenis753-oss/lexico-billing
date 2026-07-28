@@ -3,7 +3,6 @@ from pydantic import BaseModel
 import admin_delete_patch
 import admin_management_patch
 import billing_ui_fix_patch
-import client_connection_patch
 import client_route_isolation_patch
 import client_portal
 import main_compat
@@ -184,7 +183,6 @@ client_portal.install(app, main, db)
 admin_management_patch.install(app, main, db, main_compat)
 admin_delete_patch.install(app, main, db)
 billing_ui_fix_patch.install(app, main, db)
-client_connection_patch.install(app, main, db)
 route_pool_patch.install(db)
 reserve_balance_patch.install(app, main, db)
 multi_active_terminators_patch.install(app, main, db)
