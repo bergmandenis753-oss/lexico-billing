@@ -44,7 +44,12 @@ def install(app, main, db):
             if not client["active"]:
                 raise HTTPException(403, "Клиент неактивен")
             stage = "client_rate"
-            rate_match = db.match_client_rate_for_destination(conn, client["id"], data.destination)
+            route_seed = (
+                data.call_uuid
+                or data.sip_call_id
+                or f"{data.sip_ip}:{data.sip_port}:{data.clid}:{data.destination}:{now_ts}"
+            )
+            rate_match = db.match_client_rate_for_destination(conn, client["id"], data.destination, route_seed)
             if rate_match is None:
                 raise HTTPException(403, f"Нет тарифа клиента для {data.destination}")
             rate, dial_destination, client_tech_prefix = rate_match
