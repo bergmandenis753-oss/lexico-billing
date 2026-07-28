@@ -170,7 +170,7 @@ def _answer_for_callback(data, callback_data):
 
 _alert_lock = threading.Lock()
 _alert_started = False
-_last_alert_sent = {}
+_last_balance_by_client = None
 
 
 def _alert_interval_seconds(name, default_value, minimum):
@@ -182,24 +182,38 @@ def _alert_interval_seconds(name, default_value, minimum):
 
 
 def _check_low_balance_alerts():
+    global _last_balance_by_client
     data = bot._load_diagnostics()
-    rows = _low_balance_rows(data)
-    if not rows:
-        _last_alert_sent.clear()
+    threshold = _low_balance_threshold_cents(data)
+    scale = int(data.get("money_scale") or 10000)
+    current = {}
+    crossed = []
+
+    for client in data.get("clients", []):
+        if not bool(client.get("active", 1)):
+            continue
+        client_id = str(client.get("id"))
+        balance = int(client.get("balance_cents") or 0)
+        current[client_id] = balance
+        previous = None if _last_balance_by_client is None else _last_balance_by_client.get(client_id)
+        if previous is not None and previous >= threshold and balance < threshold:
+            crossed.append(client)
+
+    _last_balance_by_client = current
+    if not crossed:
         return
+
     chat_ids = bot._allowed_chat_ids()
     if not chat_ids:
         return
-    now = time.time()
-    reminder = _alert_interval_seconds("LOW_BALANCE_REMINDER_SECONDS", 3600, 300)
-    fingerprint = tuple(str(client.get("id")) for client in rows)
-    message = _low_balance_text(data)
+
+    lines = [f"Баланс упал ниже {bot._money(threshold, scale, 'USD')}:"]
+    for client in sorted(crossed, key=lambda item: int(item.get("balance_cents") or 0)):
+        cur = client.get("currency") or "USD"
+        lines.append(f"{bot._client_name(client)}: {bot._money(client.get('balance_cents'), scale, cur)}")
+    message = "\n".join(lines)
     for chat_id in chat_ids:
-        last_fingerprint, last_time = _last_alert_sent.get(str(chat_id), (None, 0))
-        if last_fingerprint == fingerprint and now - last_time < reminder:
-            continue
         bot._send_message(chat_id, message, bot.MAIN_MENU)
-        _last_alert_sent[str(chat_id)] = (fingerprint, now)
 
 
 def _low_balance_loop():
