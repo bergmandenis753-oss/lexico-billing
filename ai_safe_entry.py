@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse
 
 import ai_diag
 import ai_diag_patch
+import e164_route_patch
 import main_compat
 
 
@@ -12,6 +13,7 @@ app = main_compat.app
 main = main_compat.main
 db = main_compat.db
 
+e164_route_patch.apply(db)
 ai_diag_patch.apply(ai_diag)
 ai_diag._ensure_pcap_table(db)
 
