@@ -4,6 +4,7 @@ import textwrap
 import urllib.error
 import urllib.parse
 import urllib.request
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
@@ -246,6 +247,74 @@ def _balances_text(data):
     return "\n".join(lines)
 
 
+def _parse_amount_units(value, scale):
+    try:
+        amount = Decimal(str(value).replace(",", "."))
+    except InvalidOperation:
+        raise ValueError("Сумма должна быть числом, например 150 или 10.25")
+    if amount <= 0:
+        raise ValueError("Сумма должна быть больше нуля")
+    units = int((amount * Decimal(scale)).to_integral_value())
+    if units <= 0:
+        raise ValueError("Сумма слишком маленькая")
+    return units
+
+
+def _find_client(data, query):
+    query = str(query or "").strip()
+    if not query:
+        return None
+    clients = data.get("clients", [])
+    for client in clients:
+        if str(client.get("id")) == query:
+            return client
+    lowered = query.casefold()
+    exact = [client for client in clients if _client_name(client).strip().casefold() == lowered]
+    if len(exact) == 1:
+        return exact[0]
+    partial = [client for client in clients if lowered in _client_name(client).strip().casefold()]
+    return partial[0] if len(partial) == 1 else None
+
+
+def _adjust_client_balance(client_id, amount_units, reason):
+    base = _billing_base_url()
+    if not base:
+        raise RuntimeError("BILLING_API_BASE_URL не задан")
+    return _post_json(
+        f"{base}/api/ops/client-balance-adjust",
+        {"client_id": int(client_id), "amount_cents": int(amount_units), "reason": reason},
+        headers=_billing_headers(),
+    )
+
+
+def _refund_text(data, text):
+    parts = str(text or "").split()
+    if len(parts) < 3:
+        return (
+            "Формат:\n"
+            "/refund <клиент или ID> <сумма>\n\n"
+            "Примеры:\n"
+            "/refund cash Germany 150\n"
+            "/refund 14 10.25"
+        )
+    amount_raw = parts[-1]
+    client_query = " ".join(parts[1:-1])
+    scale = int(data.get("money_scale") or 10000)
+    client = _find_client(data, client_query)
+    if not client:
+        return f"Клиент не найден или найдено несколько: {client_query}"
+    units = _parse_amount_units(amount_raw, scale)
+    result = _adjust_client_balance(client["id"], -units, f"telegram refund: {amount_raw}")
+    cur = client.get("currency") or "USD"
+    return "\n".join(
+        [
+            f"Списал с {_client_name(client)}: {_money(units, scale, cur)}",
+            f"Было: {_money(result.get('old_balance_cents'), scale, cur)}",
+            f"Стало: {_money(result.get('balance_cents'), scale, cur)}",
+        ]
+    )
+
+
 def _hits_text(data, client_id=None):
     hits = data.get("sip_hits", [])
     if client_id is not None:
@@ -368,6 +437,8 @@ def _openai_analysis(data, question, fallback):
 def _answer_for_text(data, text):
     text = (text or "").strip()
     cmd = text.lower()
+    if cmd.startswith("/refund ") or cmd.startswith("refund "):
+        return _refund_text(data, text), MAIN_MENU
     if cmd in {"/start", "/help", "меню"}:
         return _menu_text(data), MAIN_MENU
     if cmd in {"/clients", "клиенты"}:
