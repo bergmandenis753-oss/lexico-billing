@@ -4,6 +4,7 @@ import re
 
 from fastapi import HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel
 
 import db
 import main
@@ -135,6 +136,36 @@ def firewall_whitelist():
     finally:
         conn.close()
 
+
+
+
+class OpsBalanceAdjustIn(BaseModel):
+    client_id: int
+    amount_cents: int
+    reason: str = ""
+
+
+@app.post("/api/ops/client-balance-adjust", dependencies=main.API_AUTH)
+def ops_client_balance_adjust(data: OpsBalanceAdjustIn):
+    if data.amount_cents == 0:
+        raise HTTPException(400, "amount_cents must be non-zero")
+    conn = db.get_conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        client = conn.execute("SELECT * FROM clients WHERE id = ?", (data.client_id,)).fetchone()
+        if client is None:
+            conn.rollback()
+            raise HTTPException(404, "Клиент не найден")
+        old_balance = int(client["balance_cents"])
+        new_balance = old_balance + int(data.amount_cents)
+        if new_balance < 0:
+            conn.rollback()
+            raise HTTPException(409, "Корректировка уведет баланс ниже нуля")
+        conn.execute("UPDATE clients SET balance_cents = ? WHERE id = ?", (new_balance, data.client_id))
+        conn.commit()
+        return {"ok": True, "client_id": data.client_id, "old_balance_cents": old_balance, "adjustment_cents": int(data.amount_cents), "balance_cents": new_balance}
+    finally:
+        conn.close()
 
 @app.post("/api/finalize", dependencies=main.API_AUTH)
 def finalize(data: main.FinalizeIn):
