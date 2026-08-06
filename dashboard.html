@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>Lexico VoIP — биллинг</title>
 <style>
   :root { --bg:#0f1420; --card:#1a2130; --line:#2a3446; --txt:#e6ebf2; --mut:#8a96a8; --accent:#3f8cff; --good:#37c26a; --bad:#ff5a5a; }
@@ -31,8 +34,6 @@
   button.small { padding:4px 9px; font-size:12px; }
   button.danger { background:transparent; border:1px solid var(--line); color:var(--bad); }
   button:hover { opacity:.9; }
-  .link-btn { background:transparent; border:0; color:var(--txt); padding:0; font:inherit; font-weight:600; text-align:left; }
-  .link-btn:hover { color:var(--accent); opacity:1; }
   .right { text-align:right; }
   .mut { color:var(--mut); }
   dialog { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:12px; padding:20px; width:340px; }
@@ -61,6 +62,14 @@
   .hit-table tr.rejected-hit td { background:rgba(255,90,90,.055); }
   .hit-table tr.allowed-hit td { background:rgba(55,194,106,.035); }
   .refresh-status { color:var(--mut); font-size:12px; margin-right:10px; }
+  .ai-box { background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .ai-log { min-height:120px; max-height:360px; overflow:auto; padding:14px; white-space:pre-wrap; }
+  .ai-msg { margin:0 0 12px; color:var(--txt); }
+  .ai-msg.user { color:#b9d3ff; }
+  .ai-msg.muted { color:var(--mut); }
+  .ai-form { display:flex; gap:10px; padding:12px; border-top:1px solid var(--line); }
+  .ai-form input { flex:1; min-width:0; border:1px solid var(--line); background:var(--bg); color:var(--txt); border-radius:7px; padding:8px; }
+  .ai-actions { display:flex; flex-wrap:wrap; gap:8px; padding:0 12px 12px; }
 </style>
 </head>
 <body>
@@ -144,6 +153,25 @@
       </table>
     </div>
   </section>
+
+  <section>
+    <div class="sec-head"><h2>AI помощник по звонкам</h2><span class="mut" id="ai-state">готов</span></div>
+    <div class="ai-box">
+      <div class="ai-log" id="ai-log">
+        <div class="ai-msg muted">Спроси про последний звонок, 408/503, баланс, whitelist или почему CDR не посчитался.</div>
+      </div>
+      <div class="ai-actions">
+        <button class="small ghost" onclick="askAi('Разбери последний SIP-хит полностью: PCAP, CDR, маршрут, кто виноват и что проверить.')">Последний хит</button>
+        <button class="small ghost" onclick="askAi('Почему последний звонок не списал баланс? Был ли настоящий connect/200 OK?')">Баланс</button>
+        <button class="small ghost" onclick="askAi('Покажи по последним попыткам: какие IP не в whitelist и какие звонки ушли на терминатора.')">Whitelist</button>
+        <button class="small ghost" onclick="askAi('Есть ли в последних звонках early media или voicemail без 200 OK?')">Early media</button>
+      </div>
+      <form class="ai-form" id="ai-form">
+        <input id="ai-question" placeholder="Например: почему последний звонок дал 408?">
+        <button type="submit">Разобрать</button>
+      </form>
+    </div>
+  </section>
 </main>
 
 <!-- Добавить клиента -->
@@ -180,6 +208,7 @@
     <label>Префикс</label><input id="rt-prefix" value="61" required>
     <label>Техпрефикс поставщика (можно пусто)</label><input id="rt-tech" placeholder="999001">
     <label>Закупочная цена за минуту (в валюте)</label><input id="rt-cost" type="number" step="0.0001" min="0" required>
+    <label>Billing cycle</label><select id="rt-billing-cycle"><option value="1/1">1/1</option><option value="60/1">60/1</option></select>
     <label style="display:flex;align-items:center;gap:8px"><input id="rt-active" type="checkbox" checked style="width:auto;margin:0"> Сделать активным</label>
     <div class="row"><button type="button" class="ghost" onclick="routeDlg.close()">Отмена</button><button type="submit">Создать</button></div>
   </form>
@@ -195,6 +224,7 @@
     <label>Клиентский техпрефикс (можно пусто)</label><input id="ra-client-tech" placeholder="101">
     <label>Префикс</label><input id="ra-prefix" value="61" required>
     <label>Цена продажи за минуту (в валюте)</label><input id="ra-sell" type="number" step="0.0001" min="0" required>
+    <label>Billing cycle</label><select id="ra-billing-cycle"><option value="1/1">1/1</option><option value="60/1">60/1</option></select>
     <div class="row"><button type="button" class="ghost" onclick="rateDlg.close()">Отмена</button><button type="submit">Создать</button></div>
   </form>
 </dialog>
@@ -209,6 +239,7 @@
     <label>Префикс страны/направления</label><input id="di-prefix" placeholder="420" required>
     <label>Клиентский техпрефикс (если клиент шлёт его нам)</label><input id="di-client-tech" placeholder="101">
     <label>Цена продажи за минуту (в валюте)</label><input id="di-sell" type="number" step="0.0001" min="0.0001" required>
+    <label>Billing cycle</label><select id="di-billing-cycle"><option value="1/1">1/1</option><option value="60/1">60/1</option></select>
     <label>Тестовый номер (можно пусто)</label><input id="di-test-number" placeholder="101420777123456">
     <div id="di-preview" class="check" style="display:none"></div>
     <div class="row">
@@ -249,10 +280,25 @@ const MONEY_SCALE = 10000;
 const money = (u, cur) => ((Number(u)||0)/MONEY_SCALE).toFixed(4) + (cur ? ' ' + cur : '');
 const rate  = (u, cur) => ((Number(u)||0)/MONEY_SCALE).toFixed(4) + (cur ? ' ' + cur : '');
 const esc = s => String(s ?? '').replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+const cycle = v => String(v || '1/1').trim() || '1/1';
+const defaultBillingCycle = (dest, prefix) => {
+  const d = String(dest || '').trim().toLowerCase();
+  const p = String(prefix || '').replace(/\D/g, '');
+  return (d === 'china' || d === 'китай' || p === '86') ? '60/1' : '1/1';
+};
+function syncBillingCycle(destId, prefixId, cycleId) {
+  const el = document.getElementById(cycleId);
+  if (!el) return;
+  el.value = defaultBillingCycle(
+    document.getElementById(destId)?.value,
+    document.getElementById(prefixId)?.value
+  );
+}
 const termLabel = (t, cur = '') => {
-  const parts = [t.name, `${t.destination_name} (${t.prefix})`];
+  const parts = [t.name];
+  parts.push(`${t.destination_name} ${t.prefix}`);
   if (t.tech_prefix) parts.push(`TP ${t.tech_prefix}`);
-  parts.push(`buy ${rate(t.cost_rate_cents, cur)}`);
+  parts.push(`buy ${rate(t.cost_rate_cents, cur)} ${cycle(t.billing_cycle)}`);
   return parts.filter(Boolean).join(' · ');
 };
 const val = s => {
@@ -270,12 +316,49 @@ function parseMoneyUnits(value, label) {
 const inputMoneyUnits = (id, label) => parseMoneyUnits(document.getElementById(id).value, label);
 
 async function api(path, method, body) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
   const r = await fetch(path, {
-    method, headers: {'Content-Type':'application/json'},
-    body: body ? JSON.stringify(body) : undefined
-  });
+    method, headers: {'Content-Type':'application/json', 'X-Money-Scale': String(MONEY_SCALE)},
+    body: body ? JSON.stringify(body) : undefined,
+    signal: controller.signal
+  }).finally(() => clearTimeout(timeout));
   if (!r.ok) { throw new Error(await r.text()); }
   return r.json();
+}
+
+function pushAiMessage(text, kind = '') {
+  const log = document.getElementById('ai-log');
+  const div = document.createElement('div');
+  div.className = `ai-msg ${kind}`;
+  div.textContent = text;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+async function askAi(question) {
+  const q = String(question || document.getElementById('ai-question').value || '').trim();
+  if (!q) return;
+  document.getElementById('ai-question').value = '';
+  document.getElementById('ai-state').textContent = 'анализирую...';
+  pushAiMessage('Ты: ' + q, 'user');
+  try {
+    const result = await api('/api/ai/analyze', 'POST', {question: q, limit: 50});
+    const prefix = result.source === 'openai' ? 'AI' : 'Локальный разбор';
+    let text = `${prefix}: ${result.analysis}`;
+    if (result.source !== 'openai' && result.ai_error) {
+      text += `\n\nOpenAI сейчас не подключён/не ответил: ${result.ai_error}`;
+    }
+    if (result.pcap_events_count === 0) {
+      text += '\n\nPCAP-событий пока нет: проверь, запущен ли сборщик на SIP-сервере.';
+    }
+    pushAiMessage(text);
+    document.getElementById('ai-state').textContent =
+      result.source === 'openai' ? 'ответ OpenAI' : 'локальный ответ';
+  } catch (err) {
+    pushAiMessage('Ошибка анализа: ' + err.message, 'muted');
+    document.getElementById('ai-state').textContent = 'ошибка';
+  }
 }
 
 async function load(manual = false) {
@@ -284,7 +367,13 @@ async function load(manual = false) {
   const status = document.getElementById('refresh-status');
   if (status) status.textContent = manual ? 'обновляю...' : 'автообновление...';
   try {
-  const r = await fetch('/api/dashboard-data', {cache:'no-store'});
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  const r = await fetch('/api/dashboard-data', {
+    cache:'no-store',
+    headers: {'X-Money-Scale': String(MONEY_SCALE)},
+    signal: controller.signal
+  }).finally(() => clearTimeout(timeout));
   if (!r.ok) { throw new Error(await r.text()); }
   const d = await r.json();
   const cur = (d.clients[0] && d.clients[0].currency) || '';
@@ -307,7 +396,7 @@ async function load(manual = false) {
 
   document.getElementById('t-clients').innerHTML = d.clients.map(c => `
     <tr>
-      <td><button class="link-btn" onclick="editClientName(${c.id})" title="Изменить имя">${esc(c.name)}</button></td>
+      <td>${esc(c.name)}</td>
       <td class="mut">${esc(c.sip_ip)}</td>
       <td class="right">${money(c.balance_cents, c.currency)}</td>
       <td>${c.active ? '<span class="badge on">активен</span>' : '<span class="badge off">выкл</span>'}</td>
@@ -334,7 +423,7 @@ async function load(manual = false) {
       <td>${esc(r.destination_name)}</td>
       <td class="mut">${esc(r.prefix)}</td>
       <td class="mut">${esc(r.tech_prefix || '')}</td>
-      <td class="right"><button class="manage-link-btn" onclick="editRouteCost(${r.id})" title="Изменить закупку">${rate(r.cost_rate_cents, c0)}</button></td>
+      <td class="right">${rate(r.cost_rate_cents, c0)}<div class="mut">${esc(cycle(r.billing_cycle))}</div></td>
       <td>${r.active ? '<span class="badge on">активен</span>' : '<span class="badge off">резерв</span>'}</td>
       <td class="right">
         ${r.active ? '' : `<button class="small" onclick="activateRoute(${r.id})">Сделать активным</button> `}
@@ -344,16 +433,16 @@ async function load(manual = false) {
 
   document.getElementById('t-rates').innerHTML = d.client_rates.map(r => {
     const cur = (clientMap[r.client_id]||{}).currency || '';
-    const term = r.terminator_name
-      ? [r.terminator_name, r.terminator_tech_prefix ? `TP ${r.terminator_tech_prefix}` : '', `buy ${rate(r.terminator_cost_rate_cents, cur)}`].filter(Boolean).join(' · ')
-      : '';
+    const label = r.terminator_name
+      ? [r.terminator_name, r.terminator_tech_prefix ? `TP ${r.terminator_tech_prefix}` : '', `buy ${rate(r.terminator_cost_rate_cents, cur)} ${cycle(r.terminator_billing_cycle)}`].filter(Boolean).join(' · ')
+      : '— (активный)';
     return `<tr>
       <td>${esc(r.client_name)}</td>
-      <td>${term ? esc(term) : '<span class="mut">— (активный)</span>'}</td>
+      <td>${r.terminator_name ? esc(label) : '<span class="mut">— (активный)</span>'}</td>
       <td>${esc(r.destination_name)}</td>
       <td class="mut">${r.client_tech_prefix ? esc(r.client_tech_prefix) : '—'}</td>
       <td class="mut">${esc(r.prefix)}</td>
-      <td class="right">${rate(r.sell_rate_cents, cur)}</td>
+      <td class="right">${rate(r.sell_rate_cents, cur)}<div class="mut">${esc(cycle(r.billing_cycle))}</div></td>
       <td class="right"><button class="small danger" onclick="delRate(${r.id})">✕</button></td>
     </tr>`; }).join('') || emptyRow(7);
 
@@ -471,6 +560,7 @@ function openTermDlg() {
   const sel = document.getElementById('rt-group');
   sel.innerHTML = groupList.map(g => `<option value="${g.id}">${esc(g.name)} · ${esc(g.ips || g.gateway_name || '')}</option>`).join('');
   if (!sel.innerHTML) { alert('Сначала создайте терминационную группу'); return; }
+  syncBillingCycle('rt-dest', 'rt-prefix', 'rt-billing-cycle');
   routeDlg.showModal();
 }
 function fillDirectionPrefix(directionInputId, prefixInputId, force = false) {
@@ -493,6 +583,7 @@ document.getElementById('route-form').addEventListener('submit', async e => {
       gateway_name: '',
       tech_prefix: document.getElementById('rt-tech').value || '',
       cost_rate_cents: inputMoneyUnits('rt-cost', 'Закупка'),
+      billing_cycle: document.getElementById('rt-billing-cycle').value,
       active: document.getElementById('rt-active').checked
     });
     routeDlg.close(); e.target.reset(); load();
@@ -508,11 +599,15 @@ function openRateDlg() {
   const cur = (Object.values(clientMap)[0]||{}).currency || '';
   ts.innerHTML = termList.map(t => `<option value="${t.id}">${esc(termLabel(t, cur))}</option>`).join('');
   if (!ts.innerHTML) { alert('Сначала создайте терминатор'); return; }
+  syncBillingCycle('ra-dest', 'ra-prefix', 'ra-billing-cycle');
   rateDlg.showModal();
 }
-document.getElementById('rt-dest').addEventListener('change', () => fillDirectionPrefix('rt-dest', 'rt-prefix', true));
-document.getElementById('ra-dest').addEventListener('change', () => fillDirectionPrefix('ra-dest', 'ra-prefix', true));
-document.getElementById('di-dest').addEventListener('change', () => fillDirectionPrefix('di-dest', 'di-prefix', true));
+document.getElementById('rt-dest').addEventListener('change', () => { fillDirectionPrefix('rt-dest', 'rt-prefix', true); syncBillingCycle('rt-dest', 'rt-prefix', 'rt-billing-cycle'); });
+document.getElementById('rt-prefix').addEventListener('input', () => syncBillingCycle('rt-dest', 'rt-prefix', 'rt-billing-cycle'));
+document.getElementById('ra-dest').addEventListener('change', () => { fillDirectionPrefix('ra-dest', 'ra-prefix', true); syncBillingCycle('ra-dest', 'ra-prefix', 'ra-billing-cycle'); });
+document.getElementById('ra-prefix').addEventListener('input', () => syncBillingCycle('ra-dest', 'ra-prefix', 'ra-billing-cycle'));
+document.getElementById('di-dest').addEventListener('change', () => { fillDirectionPrefix('di-dest', 'di-prefix', true); syncBillingCycle('di-dest', 'di-prefix', 'di-billing-cycle'); });
+document.getElementById('di-prefix').addEventListener('input', () => syncBillingCycle('di-dest', 'di-prefix', 'di-billing-cycle'));
 document.getElementById('rate-form').addEventListener('submit', async e => {
   e.preventDefault();
   try {
@@ -522,7 +617,8 @@ document.getElementById('rate-form').addEventListener('submit', async e => {
       client_tech_prefix: document.getElementById('ra-client-tech').value || '',
       destination_name: document.getElementById('ra-dest').value,
       prefix: document.getElementById('ra-prefix').value,
-      sell_rate_cents: inputMoneyUnits('ra-sell', 'Продажа')
+      sell_rate_cents: inputMoneyUnits('ra-sell', 'Продажа'),
+      billing_cycle: document.getElementById('ra-billing-cycle').value
     });
     rateDlg.close(); load();
   } catch (err) { alert('Ошибка: ' + err.message); }
@@ -551,6 +647,7 @@ function openDirectionDlg() {
   document.getElementById('di-prefix').value = '';
   document.getElementById('di-client-tech').value = '';
   document.getElementById('di-sell').value = '';
+  syncBillingCycle('di-dest', 'di-prefix', 'di-billing-cycle');
   document.getElementById('di-test-number').value = '';
   showDirectionPreview(null);
   directionDlg.showModal();
@@ -563,7 +660,8 @@ function directionPayload() {
     destination_name: document.getElementById('di-dest').value.trim(),
     prefix: document.getElementById('di-prefix').value.trim(),
     client_tech_prefix: document.getElementById('di-client-tech').value.trim(),
-    sell_rate_cents: inputMoneyUnits('di-sell', 'Продажа')
+    sell_rate_cents: inputMoneyUnits('di-sell', 'Продажа'),
+    billing_cycle: document.getElementById('di-billing-cycle').value
   };
 }
 
@@ -629,38 +727,20 @@ document.getElementById('topup-form').addEventListener('submit', async e => {
     topupDlg.close(); load();
   } catch (err) { alert('Ошибка: ' + err.message); }
 });
-async function editClientName(id) {
-  const c = clientMap[id];
-  if (!c) return;
-  const name = prompt('Новое имя оригинатора', c.name || '');
-  if (name === null) return;
-  const clean = name.trim();
-  if (!clean) { alert('Имя не может быть пустым'); return; }
-  try {
-    await api(`/api/clients/${id}`, 'PATCH', {name: clean});
-    await load(true);
-  } catch (e) { alert(e.message); }
-}
 
 // ---- действия с роутами/тарифами ----
 async function delGroup(id) { if(!confirm('Удалить группу?'))return; try { await api(`/api/termination-groups/${id}`,'DELETE'); load(); } catch(e){ alert(e.message);} }
 async function activateRoute(id) { try { await api(`/api/terminators/${id}/activate`,'POST'); load(); } catch(e){ alert(e.message);} }
 async function delRoute(id) { if(!confirm('Удалить терминатор?'))return; try { await api(`/api/terminators/${id}`,'DELETE'); load(); } catch(e){ alert(e.message);} }
 async function delRate(id) { if(!confirm('Удалить тариф?'))return; try { await api(`/api/client-rates/${id}`,'DELETE'); load(); } catch(e){ alert(e.message);} }
-async function editRouteCost(id) {
-  const r = termList.find(x => Number(x.id) === Number(id));
-  if (!r) return;
-  const current = ((Number(r.cost_rate_cents) || 0) / MONEY_SCALE).toFixed(4);
-  const value = prompt(`Новая закупка для ${r.name} / ${r.destination_name}`, current);
-  if (value === null) return;
-  try {
-    await api(`/api/terminators/${id}`, 'PATCH', {cost_rate_cents: parseMoneyUnits(value, 'Закупка')});
-    await load(true);
-  } catch(e) { alert(e.message); }
-}
 
 load();
 setInterval(() => load(), 5000);
+
+document.getElementById('ai-form').addEventListener('submit', e => {
+  e.preventDefault();
+  askAi();
+});
 </script>
 </body>
 </html>

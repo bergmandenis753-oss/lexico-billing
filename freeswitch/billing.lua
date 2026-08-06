@@ -149,6 +149,8 @@ end
 local max_seconds = jnum(body, "max_seconds")
 local sell = jnum(body, "sell_rate_cents")
 local cost = jnum(body, "cost_rate_cents")
+local sell_billing_cycle = jstr(body, "sell_billing_cycle") or "1/1"
+local cost_billing_cycle = jstr(body, "cost_billing_cycle") or "1/1"
 local client_id = jnum(body, "client_id")
 local gateway = trim(jstr(body, "gateway_name") or "")
 local route_ip = trim(jstr(body, "route_ip") or "")
@@ -222,7 +224,7 @@ if billsec <= 0 then
 end
 
 local fjson = string.format(
-  '{"client_id":%d,"call_uuid":"%s","sip_ip":"%s","clid":"%s","destination":"%s","client_tech_prefix":"%s","dial_destination":"%s","provider_number":"%s","billsec":%d,"sell_rate_cents":%d,"cost_rate_cents":%d,"gateway_name":"%s","route_ip":"%s","terminator_id":%d,"terminator_name":"%s","terminator_destination_name":"%s","terminator_prefix":"%s","terminator_tech_prefix":"%s","hangup_cause":"%s","bridge_hangup_cause":"%s","result":"%s"}',
+  '{"client_id":%d,"call_uuid":"%s","sip_ip":"%s","clid":"%s","destination":"%s","client_tech_prefix":"%s","dial_destination":"%s","provider_number":"%s","billsec":%d,"sell_rate_cents":%d,"cost_rate_cents":%d,"sell_billing_cycle":"%s","cost_billing_cycle":"%s","gateway_name":"%s","route_ip":"%s","terminator_id":%d,"terminator_name":"%s","terminator_destination_name":"%s","terminator_prefix":"%s","terminator_tech_prefix":"%s","hangup_cause":"%s","bridge_hangup_cause":"%s","result":"%s"}',
   client_id,
   json_escape(uuid),
   json_escape(client_ip),
@@ -234,6 +236,8 @@ local fjson = string.format(
   billsec,
   sell,
   cost,
+  json_escape(sell_billing_cycle),
+  json_escape(cost_billing_cycle),
   json_escape(used_route),
   json_escape(route_ip),
   terminator_id,
