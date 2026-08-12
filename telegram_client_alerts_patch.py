@@ -192,6 +192,20 @@ def install(app, bot, portal_globals):
             lines.append(f"client: {bot._client_name(client)}")
         return "\n".join(lines)
 
+    def client_balance_text(client, data):
+        scale = int(data.get("money_scale") or 10000)
+        cur = client.get("currency") or "USD"
+        balance = int(client.get("balance_cents") or 0)
+        credit_limit = int(client.get("credit_limit_cents") or 0)
+        lines = [
+            f"Клиент: {bot._client_name(client)}",
+            f"Баланс: {bot._money(balance, scale, cur)}",
+        ]
+        if credit_limit > 0:
+            lines.append(f"Кредитный лимит: {bot._money(credit_limit, scale, cur)}")
+            lines.append(f"Доступно: {bot._money(balance + credit_limit, scale, cur)}")
+        return "\n".join(lines)
+
     bot._answer_for_text = answer_for_text
     portal_globals["_check_low_balance_alerts"] = check_low_balance_alerts
     remove_webhook_route()
@@ -230,10 +244,22 @@ def install(app, bot, portal_globals):
             return {"ok": True, "blocked": True}
 
         text = str(message.get("text") or message.get("caption") or "").strip()
-        if text.lower() in {"/chatid", "chatid", "/id"}:
+        command = text.lower()
+        if command in {"/chatid", "chatid", "/id"}:
             try:
                 data = bot._load_diagnostics()
             except Exception:
                 data = {}
             bot._send_message(chat_id, client_chat_help(chat_id, data))
+        elif command in {"/balance", "balance", "/баланс", "баланс"}:
+            try:
+                data = bot._load_diagnostics()
+                client = client_for_alert_chat(data, chat_id)
+            except Exception:
+                data = {}
+                client = None
+            if client:
+                bot._send_message(chat_id, client_balance_text(client, data))
+            else:
+                bot._send_message(chat_id, "Чат не привязан к клиенту.")
         return {"ok": True, "client_chat": True}
