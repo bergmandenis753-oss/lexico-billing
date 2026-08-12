@@ -242,3 +242,7 @@ def _start_low_balance_monitor():
 bot._client_keyboard = _client_keyboard
 bot._answer_for_callback = _answer_for_callback
 bot._answer_for_text = _answer_for_text
+
+import telegram_client_alerts_patch
+
+telegram_client_alerts_patch.install(app, bot, globals())

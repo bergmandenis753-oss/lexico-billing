@@ -4,6 +4,7 @@ import admin_delete_patch
 import admin_management_patch
 import billing_ui_fix_patch
 import client_route_isolation_patch
+import client_telegram_alerts_patch
 import client_portal
 import credit_limit_patch
 import main_compat
@@ -191,3 +192,4 @@ multi_active_terminators_patch.install(app, main, db)
 client_route_isolation_patch.install(app, main, db)
 telegram_balance_patch.install(app, main, db)
 credit_limit_patch.install(app, main, db)
+client_telegram_alerts_patch.install(app, main, db)
