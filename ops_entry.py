@@ -7,6 +7,7 @@ import client_route_isolation_patch
 import client_telegram_alerts_patch
 import client_portal
 import credit_limit_patch
+import low_balance_settings_patch
 import main_compat
 import multi_active_terminators_patch
 import reserve_balance_patch
@@ -116,6 +117,7 @@ def ops_diagnostics(limit: int = 100, cdr_limit: int = 50, pcap_limit: int = 200
     hit_limit = max(1, min(int(limit or 100), 1000))
     cdr_limit = max(1, min(int(cdr_limit or 50), 500))
     pcap_limit = max(1, min(int(pcap_limit or 200), 1000))
+    low_balance_threshold_cents = low_balance_settings_patch.get_low_balance_threshold_cents(db)
     conn = db.get_conn()
     try:
         clients = _limited_rows(conn, "SELECT * FROM clients ORDER BY id")
@@ -165,6 +167,7 @@ def ops_diagnostics(limit: int = 100, cdr_limit: int = 50, pcap_limit: int = 200
         return {
             "ok": True,
             "money_scale": db.MONEY_SCALE,
+            "low_balance_threshold_cents": low_balance_threshold_cents,
             "summary": {
                 "total_balance_cents": total_balance,
                 "margin_today_cents": margin_today,
@@ -193,3 +196,4 @@ client_route_isolation_patch.install(app, main, db)
 telegram_balance_patch.install(app, main, db)
 credit_limit_patch.install(app, main, db)
 client_telegram_alerts_patch.install(app, main, db)
+low_balance_settings_patch.install(app, main, db)

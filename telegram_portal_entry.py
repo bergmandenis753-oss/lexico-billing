@@ -65,12 +65,70 @@ def _billing_topup(client_id, amount_cents):
 
 def _low_balance_threshold_cents(data):
     scale = int(data.get("money_scale") or 10000)
+    try:
+        stored = int(data.get("low_balance_threshold_cents") or 0)
+    except (TypeError, ValueError):
+        stored = 0
+    if stored > 0:
+        return stored
     raw = os.getenv("LOW_BALANCE_THRESHOLD_USD", "10").strip().replace(",", ".")
     try:
         amount = Decimal(raw)
     except InvalidOperation:
         amount = Decimal("10")
     return int((amount * scale).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def _set_low_balance_threshold(raw_amount):
+    base = bot._billing_base_url()
+    if not base:
+        raise RuntimeError("BILLING_API_BASE_URL не задан")
+    return bot._post_json(
+        f"{base}/api/ops/low-balance-threshold",
+        {"threshold_usd": str(raw_amount or "").strip()},
+        headers=bot._billing_headers(),
+    )
+
+
+def _low_balance_threshold_text(data):
+    scale = int(data.get("money_scale") or 10000)
+    threshold = _low_balance_threshold_cents(data)
+    return (
+        f"Текущий порог low-balance alert: {bot._money(threshold, scale, 'USD')}\n\n"
+        "Изменить:\n"
+        "/setthreshold 20\n"
+        "Можно дробно: /setthreshold 20.50"
+    )
+
+
+def _handle_low_balance_threshold_command(data, text):
+    parts = str(text or "").split(maxsplit=1)
+    if len(parts) == 1:
+        return _low_balance_threshold_text(data), bot.MAIN_MENU
+    scale = int(data.get("money_scale") or 10000)
+    result = _set_low_balance_threshold(parts[1])
+    threshold = int(result.get("threshold_cents") or _amount_to_minor(parts[1], scale))
+    return (
+        "Порог low-balance alert изменён.\n"
+        f"Новый порог: {bot._money(threshold, scale, result.get('currency') or 'USD')}",
+        bot.MAIN_MENU,
+    )
+
+
+_LOW_BALANCE_THRESHOLD_COMMANDS = {
+    "/threshold",
+    "threshold",
+    "/setthreshold",
+    "setthreshold",
+    "/setlow",
+    "setlow",
+    "/lowlimit",
+    "lowlimit",
+    "/alertlimit",
+    "alertlimit",
+    "/порог",
+    "порог",
+}
 
 
 def _low_balance_rows(data):
@@ -139,6 +197,9 @@ def _client_keyboard(client_id):
 
 def _answer_for_text(data, text):
     cmd = str(text or "").strip().lower()
+    first_word = cmd.split(maxsplit=1)[0] if cmd else ""
+    if first_word in _LOW_BALANCE_THRESHOLD_COMMANDS:
+        return _handle_low_balance_threshold_command(data, text)
     if cmd.startswith("/topup ") or cmd.startswith("/addbalance ") or cmd.startswith("/пополнить "):
         return _handle_topup_command(data, text)
     if cmd in {"/low", "низкие балансы", "низкий баланс"}:
