@@ -112,6 +112,27 @@ def max_seconds_for_balance(balance_units, rate_units, billing_cycle: str = DEFA
     return first + ((max_billable - first) // increment) * increment
 
 
+def client_credit_limit_units(client) -> int:
+    if client is None:
+        return 0
+    value = client["credit_limit_cents"] if "credit_limit_cents" in client.keys() else 0
+    return max(0, int(value or 0))
+
+
+def minimum_client_balance_units(client) -> int:
+    return -client_credit_limit_units(client)
+
+
+def available_client_units(client, held_units=0) -> int:
+    balance = int(client["balance_cents"] or 0)
+    return balance + client_credit_limit_units(client) - int(held_units or 0)
+
+
+def max_charge_units_for_client(client) -> int:
+    balance = int(client["balance_cents"] or 0)
+    return max(0, balance - minimum_client_balance_units(client))
+
+
 def get_conn() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=10)
@@ -130,6 +151,7 @@ def init_db() -> None:
             name          TEXT    NOT NULL,
             sip_ip        TEXT    NOT NULL UNIQUE,   -- whitelist по IP
             balance_cents INTEGER NOT NULL DEFAULT 0,
+            credit_limit_cents INTEGER NOT NULL DEFAULT 0,
             currency      TEXT    NOT NULL DEFAULT 'USD',
             active        INTEGER NOT NULL DEFAULT 1,
             created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -142,6 +164,7 @@ def init_db() -> None:
             name             TEXT    NOT NULL UNIQUE, -- account/gateway name: 'Lexico'
             ips              TEXT    NOT NULL DEFAULT '', -- IP через запятую
             gateway_name     TEXT    NOT NULL DEFAULT '', -- опциональный FreeSWITCH gateway
+            balance_cents    INTEGER NOT NULL DEFAULT 0, -- баланс у поставщика; 0.0001 USD units
             active           INTEGER NOT NULL DEFAULT 1,
             created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
         );
@@ -297,6 +320,9 @@ def init_db() -> None:
         CREATE UNIQUE INDEX IF NOT EXISTS idx_resv_uuid ON reservations(call_uuid);
         """
     )
+    client_cols = [r["name"] for r in conn.execute("PRAGMA table_info(clients)").fetchall()]
+    if "credit_limit_cents" not in client_cols:
+        conn.execute("ALTER TABLE clients ADD COLUMN credit_limit_cents INTEGER NOT NULL DEFAULT 0")
     # Мягкая миграция: добавляем terminator_id в старую таблицу client_rates.
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(client_rates)").fetchall()]
     if "terminator_id" not in cols:
@@ -316,6 +342,9 @@ def init_db() -> None:
         conn.execute("ALTER TABLE terminators ADD COLUMN billing_cycle TEXT NOT NULL DEFAULT '1/1'")
     if "balance_cents" not in term_cols:
         conn.execute("ALTER TABLE terminators ADD COLUMN balance_cents INTEGER NOT NULL DEFAULT 0")
+    group_cols = [r["name"] for r in conn.execute("PRAGMA table_info(termination_groups)").fetchall()]
+    if "balance_cents" not in group_cols:
+        conn.execute("ALTER TABLE termination_groups ADD COLUMN balance_cents INTEGER NOT NULL DEFAULT 0")
     cdr_cols = [r["name"] for r in conn.execute("PRAGMA table_info(cdr)").fetchall()]
     cdr_migrations = {
         "sip_ip": "ALTER TABLE cdr ADD COLUMN sip_ip TEXT NOT NULL DEFAULT ''",
@@ -350,6 +379,7 @@ def init_db() -> None:
     if scale_row is None:
         for table, col in (
             ("clients", "balance_cents"),
+            ("clients", "credit_limit_cents"),
             ("reservations", "reserved_cents"),
             ("terminators", "cost_rate_cents"),
             ("client_rates", "sell_rate_cents"),

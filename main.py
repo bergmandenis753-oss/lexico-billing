@@ -122,13 +122,15 @@ class ClientIn(BaseModel):
     name: str
     sip_ip: str
     currency: str = 'USD'
-    balance_cents: int = 0
+    balance_cents: int = Field(default=0, ge=0)
+    credit_limit_cents: int = Field(default=0, ge=0)
     active: bool = True
 
 class ClientUpdateIn(BaseModel):
     name: Optional[str] = None
     sip_ip: Optional[str] = None
     currency: Optional[str] = None
+    credit_limit_cents: Optional[int] = Field(default=None, ge=0)
     active: Optional[bool] = None
 
 class TopupIn(BaseModel):
@@ -141,12 +143,14 @@ class TerminationGroupIn(BaseModel):
     name: str
     ips: str = ''
     gateway_name: str = ''
+    balance_cents: int = Field(default=0, ge=0)
     active: bool = True
 
 class TerminationGroupUpdateIn(BaseModel):
     name: Optional[str] = None
     ips: Optional[str] = None
     gateway_name: Optional[str] = None
+    balance_cents: Optional[int] = None
     active: Optional[bool] = None
 
 class TerminatorIn(BaseModel):
@@ -353,9 +357,9 @@ def reserve(data: ReserveIn):
         provider_number = f"{route['tech_prefix'] or ''}{dial_destination}"
         stage = 'balance'
         held = db.active_hold_sum(conn, client['id'], now_ts)
-        available = client['balance_cents'] - held
+        available = db.available_client_units(client, held)
         if available <= 0:
-            raise HTTPException(403, 'Недостаточно средств (баланс занят активными звонками)')
+            raise HTTPException(403, 'Недостаточно средств (баланс/кредитный лимит занят активными звонками)')
         max_seconds = db.max_seconds_for_balance(available, rate['sell_rate_cents'], sell_billing_cycle)
         if max_seconds <= 0:
             raise HTTPException(403, 'Недостаточно средств на минуту разговора')
@@ -387,14 +391,16 @@ def finalize(data: FinalizeIn):
         if client is None:
             raise HTTPException(404, 'Клиент не найден')
         new_balance = client['balance_cents'] - charged
-        if new_balance < 0:
-            print(f"[FINALIZE WARN] client={data.client_id} call={data.call_uuid} charged={charged} > balance={client['balance_cents']}: clamp to 0")
-            charged = client['balance_cents']
-            new_balance = 0
+        min_balance = db.minimum_client_balance_units(client)
+        if new_balance < min_balance:
+            max_charge = db.max_charge_units_for_client(client)
+            print(f"[FINALIZE WARN] client={data.client_id} call={data.call_uuid} charged={charged} exceeds available credit={max_charge}: clamp to limit {min_balance}")
+            charged = min(charged, max_charge)
+            new_balance = client['balance_cents'] - charged
         margin = charged - cost
         conn.execute('UPDATE clients SET balance_cents = ? WHERE id = ?', (new_balance, data.client_id))
         if data.terminator_id is not None and cost:
-            conn.execute('UPDATE terminators SET balance_cents = balance_cents - ? WHERE id = ?', (cost, data.terminator_id))
+            conn.execute('UPDATE termination_groups SET balance_cents = balance_cents - ? WHERE id = (SELECT gateway_group_id FROM terminators WHERE id = ?)', (cost, data.terminator_id))
         conn.execute('INSERT INTO cdr (client_id, call_uuid, sip_ip, clid, destination, client_tech_prefix, dial_destination, provider_number, gateway_name, route_ip, terminator_id, terminator_name, terminator_destination_name, terminator_prefix, terminator_tech_prefix, hangup_cause, bridge_hangup_cause, result, billsec, sell_rate_cents, cost_rate_cents, sell_billing_cycle, cost_billing_cycle, charged_cents, margin_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (data.client_id, data.call_uuid, data.sip_ip, data.clid, data.destination, data.client_tech_prefix, data.dial_destination, data.provider_number, data.gateway_name, data.route_ip, data.terminator_id, data.terminator_name, data.terminator_destination_name, data.terminator_prefix, data.terminator_tech_prefix, data.hangup_cause, data.bridge_hangup_cause, data.result, data.billsec, data.sell_rate_cents, data.cost_rate_cents, sell_billing_cycle, cost_billing_cycle, charged, margin))
         conn.execute('DELETE FROM reservations WHERE call_uuid = ?', (data.call_uuid,))
         conn.commit()
@@ -409,7 +415,7 @@ def finalize(data: FinalizeIn):
 def create_client(data: ClientIn):
     conn = db.get_conn()
     try:
-        cur = conn.execute('INSERT INTO clients (name, sip_ip, balance_cents, currency, active) VALUES (?, ?, ?, ?, ?)', (data.name, data.sip_ip, data.balance_cents, data.currency, int(data.active)))
+        cur = conn.execute('INSERT INTO clients (name, sip_ip, balance_cents, credit_limit_cents, currency, active) VALUES (?, ?, ?, ?, ?, ?)', (data.name, data.sip_ip, data.balance_cents, data.credit_limit_cents, data.currency, int(data.active)))
         conn.commit()
         return {'id': cur.lastrowid}
     except db.sqlite3.IntegrityError:
@@ -465,7 +471,7 @@ def create_termination_group(data: TerminationGroupIn):
         raise HTTPException(400, 'Укажите IP группы или FreeSWITCH gateway')
     conn = db.get_conn()
     try:
-        cur = conn.execute('INSERT INTO termination_groups (name, ips, gateway_name, active) VALUES (?, ?, ?, ?)', (data.name, data.ips, data.gateway_name.strip(), int(data.active)))
+        cur = conn.execute('INSERT INTO termination_groups (name, ips, gateway_name, balance_cents, active) VALUES (?, ?, ?, ?, ?)', (data.name, data.ips, data.gateway_name.strip(), data.balance_cents, int(data.active)))
         conn.commit()
         return {'id': cur.lastrowid}
     except db.sqlite3.IntegrityError:
@@ -479,6 +485,19 @@ def list_termination_groups():
     rows = conn.execute('SELECT * FROM termination_groups ORDER BY name').fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+@app.post('/api/termination-groups/{gid}/topup', dependencies=ADMIN_WRITE_AUTH)
+def topup_termination_group(gid: int, data: BalanceAdjustIn):
+    conn = db.get_conn()
+    try:
+        cur = conn.execute('UPDATE termination_groups SET balance_cents = balance_cents + ? WHERE id = ?', (data.amount_cents, gid))
+        if cur.rowcount == 0:
+            raise HTTPException(404, 'Группа не найдена')
+        conn.commit()
+        row = conn.execute('SELECT balance_cents FROM termination_groups WHERE id = ?', (gid,)).fetchone()
+        return {'ok': True, 'balance_cents': row['balance_cents']}
+    finally:
+        conn.close()
 
 @app.delete('/api/termination-groups/{gid}', dependencies=ADMIN_WRITE_AUTH)
 def delete_termination_group(gid: int):
@@ -557,23 +576,6 @@ def update_terminator(tid: int, data: TerminatorUpdateIn):
     finally:
         conn.close()
 
-@app.post('/api/terminators/{tid}/activate', dependencies=ADMIN_WRITE_AUTH)
-def activate_terminator(tid: int):
-    """Сделать терминатор активным (остальные на этот префикс — в резерв)."""
-    conn = db.get_conn()
-    try:
-        conn.execute('BEGIN IMMEDIATE')
-        row = conn.execute('SELECT * FROM terminators WHERE id = ?', (tid,)).fetchone()
-        if row is None:
-            conn.rollback()
-            raise HTTPException(404, 'Терминатор не найден')
-        conn.execute('UPDATE terminators SET active = 0 WHERE prefix = ?', (row['prefix'],))
-        conn.execute('UPDATE terminators SET active = 1 WHERE id = ?', (tid,))
-        conn.commit()
-        return {'ok': True}
-    finally:
-        conn.close()
-
 @app.post('/api/terminators/{tid}/topup', dependencies=ADMIN_WRITE_AUTH)
 def topup_terminator(tid: int, data: BalanceAdjustIn):
     if data.amount_cents == 0:
@@ -588,6 +590,23 @@ def topup_terminator(tid: int, data: BalanceAdjustIn):
         row = conn.execute('SELECT balance_cents FROM terminators WHERE id = ?', (tid,)).fetchone()
         conn.commit()
         return {'ok': True, 'balance_cents': row['balance_cents']}
+    finally:
+        conn.close()
+
+@app.post('/api/terminators/{tid}/activate', dependencies=ADMIN_WRITE_AUTH)
+def activate_terminator(tid: int):
+    """Сделать терминатор активным (остальные на этот префикс — в резерв)."""
+    conn = db.get_conn()
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute('SELECT * FROM terminators WHERE id = ?', (tid,)).fetchone()
+        if row is None:
+            conn.rollback()
+            raise HTTPException(404, 'Терминатор не найден')
+        conn.execute('UPDATE terminators SET active = 0 WHERE prefix = ?', (row['prefix'],))
+        conn.execute('UPDATE terminators SET active = 1 WHERE id = ?', (tid,))
+        conn.commit()
+        return {'ok': True}
     finally:
         conn.close()
 
@@ -853,7 +872,7 @@ def dashboard_data(request: Request):
     conn = db.get_conn()
     clients = conn.execute('SELECT * FROM clients ORDER BY id').fetchall()
     groups = conn.execute('SELECT * FROM termination_groups ORDER BY name').fetchall()
-    terminators = conn.execute('SELECT t.*, g.name AS gateway_group_name, g.ips AS gateway_group_ips, g.gateway_name AS gateway_group_gateway_name FROM terminators t LEFT JOIN termination_groups g ON g.id = t.gateway_group_id ORDER BY t.prefix, t.active DESC, t.id').fetchall()
+    terminators = conn.execute('SELECT t.*, g.name AS gateway_group_name, g.ips AS gateway_group_ips, g.gateway_name AS gateway_group_gateway_name, g.balance_cents AS gateway_group_balance_cents FROM terminators t LEFT JOIN termination_groups g ON g.id = t.gateway_group_id ORDER BY t.prefix, t.active DESC, t.id').fetchall()
     client_rates = conn.execute('SELECT cr.*, c.name AS client_name, t.name AS terminator_name, t.cost_rate_cents AS terminator_cost_rate_cents, t.tech_prefix AS terminator_tech_prefix, t.billing_cycle AS terminator_billing_cycle FROM client_rates cr JOIN clients c ON c.id = cr.client_id LEFT JOIN terminators t ON t.id = cr.terminator_id ORDER BY cr.client_id').fetchall()
     cdr = conn.execute('SELECT cd.*, c.name AS client_name, c.sip_ip AS client_sip_ip, c.currency AS client_currency FROM cdr cd LEFT JOIN clients c ON c.id = cd.client_id ORDER BY cd.id DESC LIMIT 10').fetchall()
     sip_hits = conn.execute('SELECT sh.*, c.currency AS client_currency FROM sip_hits sh LEFT JOIN clients c ON c.id = sh.client_id ORDER BY sh.id DESC LIMIT 50').fetchall()
@@ -865,7 +884,7 @@ def dashboard_data(request: Request):
     if not _uses_current_money_scale(request):
         return {
             'money_scale': 100,
-            'clients': _legacy_dashboard_rows(clients, ('balance_cents',)),
+            'clients': _legacy_dashboard_rows(clients, ('balance_cents', 'credit_limit_cents')),
             'termination_groups': _dashboard_rows(groups),
             'terminators': _legacy_dashboard_rows(terminators, ('cost_rate_cents', 'balance_cents')),
             'client_rates': _legacy_dashboard_rows(client_rates, ('sell_rate_cents',)),
