@@ -156,6 +156,7 @@ def init_db() -> None:
             gateway_name     TEXT    NOT NULL,       -- имя sofia-gateway, напр. 'lexico'
             tech_prefix      TEXT    NOT NULL DEFAULT '',  -- техпрефикс перед номером, напр. '999001'
             cost_rate_cents  INTEGER NOT NULL,       -- legacy name; 0.0001 USD/min units
+            balance_cents    INTEGER NOT NULL DEFAULT 0, -- баланс у поставщика; 0.0001 USD units
             billing_cycle    TEXT    NOT NULL DEFAULT '1/1',
             active           INTEGER NOT NULL DEFAULT 1,
             created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -313,6 +314,8 @@ def init_db() -> None:
         conn.execute("ALTER TABLE terminators ADD COLUMN gateway_group_id INTEGER")
     if "billing_cycle" not in term_cols:
         conn.execute("ALTER TABLE terminators ADD COLUMN billing_cycle TEXT NOT NULL DEFAULT '1/1'")
+    if "balance_cents" not in term_cols:
+        conn.execute("ALTER TABLE terminators ADD COLUMN balance_cents INTEGER NOT NULL DEFAULT 0")
     cdr_cols = [r["name"] for r in conn.execute("PRAGMA table_info(cdr)").fetchall()]
     cdr_migrations = {
         "sip_ip": "ALTER TABLE cdr ADD COLUMN sip_ip TEXT NOT NULL DEFAULT ''",

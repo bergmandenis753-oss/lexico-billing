@@ -244,6 +244,11 @@ def finalize(data: main.FinalizeIn):
 
         margin = charged - cost
         conn.execute("UPDATE clients SET balance_cents = ? WHERE id = ?", (new_balance, data.client_id))
+        if data.terminator_id is not None and cost:
+            conn.execute(
+                "UPDATE terminators SET balance_cents = balance_cents - ? WHERE id = ?",
+                (cost, data.terminator_id),
+            )
         conn.execute(
             "INSERT INTO cdr (client_id, call_uuid, sip_ip, clid, destination, client_tech_prefix, "
             "dial_destination, provider_number, gateway_name, route_ip, terminator_id, terminator_name, "
@@ -654,7 +659,7 @@ def dashboard_data(request: Request):
             "money_scale": 100,
             "clients": _legacy_rows(clients, ("balance_cents",)),
             "termination_groups": _rows(groups),
-            "terminators": _legacy_rows(terminators, ("cost_rate_cents",)),
+            "terminators": _legacy_rows(terminators, ("cost_rate_cents", "balance_cents")),
             "client_rates": _legacy_rows(client_rates, ("sell_rate_cents",)),
             "cdr": _legacy_rows(cdr, ("sell_rate_cents", "cost_rate_cents", "charged_cents", "margin_cents")),
             "sip_hits": _legacy_rows(sip_hits, ("sell_rate_cents", "cost_rate_cents")),

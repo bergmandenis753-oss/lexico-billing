@@ -36,6 +36,7 @@
   button:hover { opacity:.9; }
   .right { text-align:right; }
   .mut { color:var(--mut); }
+  .money-neg { color:var(--bad); }
   dialog { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:12px; padding:20px; width:340px; }
   dialog.wide { width:min(680px, calc(100vw - 32px)); }
   dialog h3 { margin:0 0 14px; font-size:15px; }
@@ -112,7 +113,7 @@
   <section>
     <div class="sec-head"><h2>Терминаторы (кто даёт нам роут)</h2><button class="small" onclick="openTermDlg()">+ Терминатор</button></div>
     <table>
-      <thead><tr><th>Название</th><th>Группа</th><th>IP группы</th><th>Направление</th><th>Префикс</th><th>Техпрефикс</th><th class="right">Закупка</th><th>Статус</th><th></th></tr></thead>
+      <thead><tr><th>Название</th><th>Группа</th><th>IP группы</th><th>Направление</th><th>Префикс</th><th>Техпрефикс</th><th class="right">Закупка</th><th class="right">Баланс поставщика</th><th>Статус</th><th></th></tr></thead>
       <tbody id="t-routes"></tbody>
     </table>
   </section>
@@ -208,6 +209,7 @@
     <label>Префикс</label><input id="rt-prefix" value="61" required>
     <label>Техпрефикс поставщика (можно пусто)</label><input id="rt-tech" placeholder="999001">
     <label>Закупочная цена за минуту (в валюте)</label><input id="rt-cost" type="number" step="0.0001" min="0" required>
+    <label>Стартовый баланс поставщика (в валюте)</label><input id="rt-balance" type="number" step="0.0001" value="0">
     <label>Billing cycle</label><select id="rt-billing-cycle"><option value="1/1">1/1</option><option value="60/1">60/1</option></select>
     <label style="display:flex;align-items:center;gap:8px"><input id="rt-active" type="checkbox" checked style="width:auto;margin:0"> Сделать активным</label>
     <div class="row"><button type="button" class="ghost" onclick="routeDlg.close()">Отмена</button><button type="submit">Создать</button></div>
@@ -260,6 +262,16 @@
   </form>
 </dialog>
 
+<!-- Баланс терминатора -->
+<dialog id="term-topup-dlg">
+  <h3>Баланс поставщика</h3>
+  <form id="term-topup-form">
+    <label>Терминатор</label><input id="ttu-name" disabled>
+    <label>Сумма (+ пополнить, - коррекция)</label><input id="ttu-amount" type="number" step="0.0001" required autofocus>
+    <div class="row"><button type="button" class="ghost" onclick="termTopupDlg.close()">Отмена</button><button type="submit">Сохранить</button></div>
+  </form>
+</dialog>
+
 <script>
 const clientDlg = document.getElementById('client-dlg');
 const groupDlg  = document.getElementById('group-dlg');
@@ -267,11 +279,13 @@ const routeDlg  = document.getElementById('route-dlg');
 const rateDlg   = document.getElementById('rate-dlg');
 const directionDlg = document.getElementById('direction-dlg');
 const topupDlg  = document.getElementById('topup-dlg');
+const termTopupDlg = document.getElementById('term-topup-dlg');
 let clientMap = {};
 let groupList = [];
 let groupMap = {};
 let termList = [];
 let topupClientId = null;
+let termTopupId = null;
 let loadInFlight = false;
 let directionList = [];
 let directionMap = {};
@@ -279,6 +293,7 @@ let directionMap = {};
 const MONEY_SCALE = 10000;
 const money = (u, cur) => ((Number(u)||0)/MONEY_SCALE).toFixed(4) + (cur ? ' ' + cur : '');
 const rate  = (u, cur) => ((Number(u)||0)/MONEY_SCALE).toFixed(4) + (cur ? ' ' + cur : '');
+const balanceClass = u => Number(u || 0) < 0 ? 'right money-neg' : 'right';
 const esc = s => String(s ?? '').replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
 const cycle = v => String(v || '1/1').trim() || '1/1';
 const defaultBillingCycle = (dest, prefix) => {
@@ -313,7 +328,15 @@ function parseMoneyUnits(value, label) {
   if (!m) throw new Error(`${label}: максимум 4 знака после точки`);
   return Number(m[1]) * MONEY_SCALE + Number((m[2] || '').padEnd(4, '0'));
 }
+function parseSignedMoneyUnits(value, label) {
+  const s = String(value ?? '').trim().replace(',', '.');
+  if (!s) return 0;
+  const sign = s.startsWith('-') ? -1 : 1;
+  const raw = s.replace(/^[+-]/, '');
+  return sign * parseMoneyUnits(raw, label);
+}
 const inputMoneyUnits = (id, label) => parseMoneyUnits(document.getElementById(id).value, label);
+const inputSignedMoneyUnits = (id, label) => parseSignedMoneyUnits(document.getElementById(id).value, label);
 
 async function api(path, method, body) {
   const controller = new AbortController();
@@ -424,12 +447,14 @@ async function load(manual = false) {
       <td class="mut">${esc(r.prefix)}</td>
       <td class="mut">${esc(r.tech_prefix || '')}</td>
       <td class="right">${rate(r.cost_rate_cents, c0)}<div class="mut">${esc(cycle(r.billing_cycle))}</div></td>
+      <td class="${balanceClass(r.balance_cents)}">${money(r.balance_cents, c0)}</td>
       <td>${r.active ? '<span class="badge on">активен</span>' : '<span class="badge off">резерв</span>'}</td>
       <td class="right">
         ${r.active ? '' : `<button class="small" onclick="activateRoute(${r.id})">Сделать активным</button> `}
+        <button class="small ghost" onclick="openTermTopup(${r.id})">± Баланс</button>
         <button class="small danger" onclick="delRoute(${r.id})">✕</button>
       </td>
-    </tr>`; }).join('') || emptyRow(9);
+    </tr>`; }).join('') || emptyRow(10);
 
   document.getElementById('t-rates').innerHTML = d.client_rates.map(r => {
     const cur = (clientMap[r.client_id]||{}).currency || '';
@@ -583,6 +608,7 @@ document.getElementById('route-form').addEventListener('submit', async e => {
       gateway_name: '',
       tech_prefix: document.getElementById('rt-tech').value || '',
       cost_rate_cents: inputMoneyUnits('rt-cost', 'Закупка'),
+      balance_cents: inputMoneyUnits('rt-balance', 'Баланс поставщика'),
       billing_cycle: document.getElementById('rt-billing-cycle').value,
       active: document.getElementById('rt-active').checked
     });
@@ -725,6 +751,22 @@ document.getElementById('topup-form').addEventListener('submit', async e => {
     await api(`/api/clients/${topupClientId}/topup`, 'POST',
       { amount_cents: inputMoneyUnits('tu-amount', 'Сумма пополнения') });
     topupDlg.close(); load();
+  } catch (err) { alert('Ошибка: ' + err.message); }
+});
+
+function openTermTopup(id) {
+  termTopupId = id;
+  const t = termList.find(x => Number(x.id) === Number(id)) || {};
+  document.getElementById('ttu-name').value = [t.name, t.destination_name, t.prefix].filter(Boolean).join(' · ') || ('#' + id);
+  document.getElementById('ttu-amount').value = '';
+  termTopupDlg.showModal();
+}
+document.getElementById('term-topup-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  try {
+    await api(`/api/terminators/${termTopupId}/topup`, 'POST',
+      { amount_cents: inputSignedMoneyUnits('ttu-amount', 'Сумма баланса поставщика') });
+    termTopupDlg.close(); load();
   } catch (err) { alert('Ошибка: ' + err.message); }
 });
 

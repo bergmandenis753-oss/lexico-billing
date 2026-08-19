@@ -134,6 +134,9 @@ class ClientUpdateIn(BaseModel):
 class TopupIn(BaseModel):
     amount_cents: int = Field(gt=0)
 
+class BalanceAdjustIn(BaseModel):
+    amount_cents: int
+
 class TerminationGroupIn(BaseModel):
     name: str
     ips: str = ''
@@ -155,6 +158,7 @@ class TerminatorIn(BaseModel):
     gateway_name: str = ''
     tech_prefix: str = ''
     cost_rate_cents: int = Field(ge=0)
+    balance_cents: int = 0
     billing_cycle: str = db.DEFAULT_BILLING_CYCLE
     active: bool = True
 
@@ -167,6 +171,7 @@ class TerminatorUpdateIn(BaseModel):
     gateway_name: Optional[str] = None
     tech_prefix: Optional[str] = None
     cost_rate_cents: Optional[int] = None
+    balance_cents: Optional[int] = None
     billing_cycle: Optional[str] = None
     active: Optional[bool] = None
 
@@ -388,6 +393,8 @@ def finalize(data: FinalizeIn):
             new_balance = 0
         margin = charged - cost
         conn.execute('UPDATE clients SET balance_cents = ? WHERE id = ?', (new_balance, data.client_id))
+        if data.terminator_id is not None and cost:
+            conn.execute('UPDATE terminators SET balance_cents = balance_cents - ? WHERE id = ?', (cost, data.terminator_id))
         conn.execute('INSERT INTO cdr (client_id, call_uuid, sip_ip, clid, destination, client_tech_prefix, dial_destination, provider_number, gateway_name, route_ip, terminator_id, terminator_name, terminator_destination_name, terminator_prefix, terminator_tech_prefix, hangup_cause, bridge_hangup_cause, result, billsec, sell_rate_cents, cost_rate_cents, sell_billing_cycle, cost_billing_cycle, charged_cents, margin_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (data.client_id, data.call_uuid, data.sip_ip, data.clid, data.destination, data.client_tech_prefix, data.dial_destination, data.provider_number, data.gateway_name, data.route_ip, data.terminator_id, data.terminator_name, data.terminator_destination_name, data.terminator_prefix, data.terminator_tech_prefix, data.hangup_cause, data.bridge_hangup_cause, data.result, data.billsec, data.sell_rate_cents, data.cost_rate_cents, sell_billing_cycle, cost_billing_cycle, charged, margin))
         conn.execute('DELETE FROM reservations WHERE call_uuid = ?', (data.call_uuid,))
         conn.commit()
@@ -501,7 +508,7 @@ def create_terminator(data: TerminatorIn):
         conn.execute('BEGIN IMMEDIATE')
         if data.active:
             conn.execute('UPDATE terminators SET active = 0 WHERE prefix = ?', (data.prefix,))
-        cur = conn.execute('INSERT INTO terminators (name, gateway_group_id, ips, destination_name, prefix, gateway_name, tech_prefix, cost_rate_cents, billing_cycle, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (data.name, data.gateway_group_id, data.ips, data.destination_name, data.prefix, data.gateway_name, data.tech_prefix, data.cost_rate_cents, billing_cycle, int(data.active)))
+        cur = conn.execute('INSERT INTO terminators (name, gateway_group_id, ips, destination_name, prefix, gateway_name, tech_prefix, cost_rate_cents, balance_cents, billing_cycle, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (data.name, data.gateway_group_id, data.ips, data.destination_name, data.prefix, data.gateway_name, data.tech_prefix, data.cost_rate_cents, data.balance_cents, billing_cycle, int(data.active)))
         conn.commit()
         return {'id': cur.lastrowid}
     finally:
@@ -564,6 +571,23 @@ def activate_terminator(tid: int):
         conn.execute('UPDATE terminators SET active = 1 WHERE id = ?', (tid,))
         conn.commit()
         return {'ok': True}
+    finally:
+        conn.close()
+
+@app.post('/api/terminators/{tid}/topup', dependencies=ADMIN_WRITE_AUTH)
+def topup_terminator(tid: int, data: BalanceAdjustIn):
+    if data.amount_cents == 0:
+        raise HTTPException(400, 'Сумма не должна быть 0')
+    conn = db.get_conn()
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        cur = conn.execute('UPDATE terminators SET balance_cents = balance_cents + ? WHERE id = ?', (data.amount_cents, tid))
+        if cur.rowcount == 0:
+            conn.rollback()
+            raise HTTPException(404, 'Терминатор не найден')
+        row = conn.execute('SELECT balance_cents FROM terminators WHERE id = ?', (tid,)).fetchone()
+        conn.commit()
+        return {'ok': True, 'balance_cents': row['balance_cents']}
     finally:
         conn.close()
 
@@ -843,7 +867,7 @@ def dashboard_data(request: Request):
             'money_scale': 100,
             'clients': _legacy_dashboard_rows(clients, ('balance_cents',)),
             'termination_groups': _dashboard_rows(groups),
-            'terminators': _legacy_dashboard_rows(terminators, ('cost_rate_cents',)),
+            'terminators': _legacy_dashboard_rows(terminators, ('cost_rate_cents', 'balance_cents')),
             'client_rates': _legacy_dashboard_rows(client_rates, ('sell_rate_cents',)),
             'cdr': _legacy_dashboard_rows(cdr, ('sell_rate_cents', 'cost_rate_cents', 'charged_cents', 'margin_cents')),
             'sip_hits': _legacy_dashboard_rows(sip_hits, ('sell_rate_cents', 'cost_rate_cents')),
