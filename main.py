@@ -527,7 +527,7 @@ def create_terminator(data: TerminatorIn):
         conn.execute('BEGIN IMMEDIATE')
         if data.active:
             conn.execute('UPDATE terminators SET active = 0 WHERE prefix = ?', (data.prefix,))
-        cur = conn.execute('INSERT INTO terminators (name, gateway_group_id, ips, destination_name, prefix, gateway_name, tech_prefix, cost_rate_cents, balance_cents, billing_cycle, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (data.name, data.gateway_group_id, data.ips, data.destination_name, data.prefix, data.gateway_name, data.tech_prefix, data.cost_rate_cents, data.balance_cents, billing_cycle, int(data.active)))
+        cur = conn.execute('INSERT INTO terminators (name, gateway_group_id, ips, destination_name, prefix, gateway_name, tech_prefix, cost_rate_cents, balance_cents, billing_cycle, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (data.name, data.gateway_group_id, data.ips, data.destination_name, data.prefix, data.gateway_name, data.tech_prefix, data.cost_rate_cents, 0, billing_cycle, int(data.active)))
         conn.commit()
         return {'id': cur.lastrowid}
     finally:
@@ -543,6 +543,7 @@ def list_terminators():
 @app.patch('/api/terminators/{tid}', dependencies=ADMIN_WRITE_AUTH)
 def update_terminator(tid: int, data: TerminatorUpdateIn):
     fields = {k: v for k, v in data.dict().items() if v is not None}
+    fields.pop('balance_cents', None)
     if not fields:
         raise HTTPException(400, 'Нет полей для обновления')
     if 'billing_cycle' in fields:
@@ -583,11 +584,19 @@ def topup_terminator(tid: int, data: BalanceAdjustIn):
     conn = db.get_conn()
     try:
         conn.execute('BEGIN IMMEDIATE')
-        cur = conn.execute('UPDATE terminators SET balance_cents = balance_cents + ? WHERE id = ?', (data.amount_cents, tid))
-        if cur.rowcount == 0:
+        row = conn.execute('SELECT gateway_group_id FROM terminators WHERE id = ?', (tid,)).fetchone()
+        if row is None:
             conn.rollback()
             raise HTTPException(404, 'Терминатор не найден')
-        row = conn.execute('SELECT balance_cents FROM terminators WHERE id = ?', (tid,)).fetchone()
+        gid = row['gateway_group_id']
+        if gid is None:
+            conn.rollback()
+            raise HTTPException(400, 'У терминатора нет терминационной группы')
+        cur = conn.execute('UPDATE termination_groups SET balance_cents = balance_cents + ? WHERE id = ?', (data.amount_cents, gid))
+        if cur.rowcount == 0:
+            conn.rollback()
+            raise HTTPException(404, 'Терминационная группа не найдена')
+        row = conn.execute('SELECT balance_cents FROM termination_groups WHERE id = ?', (gid,)).fetchone()
         conn.commit()
         return {'ok': True, 'balance_cents': row['balance_cents']}
     finally:
