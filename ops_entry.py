@@ -120,12 +120,11 @@ def _reconcile_missing_supplier_balances(limit=200, terminator_name="", started_
         params.append(started_after)
     elif auto_window_hours:
         try:
-            hours = int(auto_window_hours)
+            hours = max(1, min(int(auto_window_hours), 168))
         except Exception:
-            hours = 0
-        if hours > 0:
-            where.append("started_at >= datetime('now', ?)")
-            params.append(f"-{min(hours, 720)} hours")
+            hours = 72
+        where.append("started_at >= datetime('now', ?)")
+        params.append(f"-{hours} hours")
 
     ensure_schema(db)
     conn = db.get_conn()
@@ -346,8 +345,8 @@ def _install_supplier_dashboard_reconcile():
     @app.get("/api/dashboard-data", dependencies=main.ADMIN_AUTH)
     def dashboard_data_with_supplier_reconcile(request: Request):
         try:
-            hours = os.getenv("SUPPLIER_BALANCE_AUTO_RECONCILE_HOURS", "0")
-            _reconcile_missing_supplier_balances(limit=1000, auto_window_hours=hours)
+            hours = os.getenv("SUPPLIER_BALANCE_AUTO_RECONCILE_HOURS", "72")
+            _reconcile_missing_supplier_balances(limit=500, auto_window_hours=hours)
         except Exception as exc:
             print(f"supplier balance auto reconcile skipped: {exc}")
         if original_dashboard_data is not None:
