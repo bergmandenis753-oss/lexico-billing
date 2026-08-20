@@ -6,6 +6,7 @@ import billing_ui_fix_patch
 import client_route_isolation_patch
 import client_telegram_alerts_patch
 import client_portal
+import credit_limit_calls
 import credit_limit_patch
 import low_balance_settings_patch
 import main_compat
@@ -22,6 +23,7 @@ db = main_compat.db
 MANUAL_MARGIN_ADJUSTMENT = 663900
 MANUAL_MARGIN_DAY = "2026-07-24"
 MANUAL_MARGIN_MONTH = "2026-07"
+BUILD_MARKER = "ops-supplier-balance-reconcile-2026-08-20"
 
 
 class PcapEventIn(BaseModel):
@@ -46,6 +48,21 @@ class PcapEventIn(BaseModel):
 
 class PcapEventsIn(BaseModel):
     events: list[PcapEventIn]
+
+
+class SupplierBalanceReconcileIn(BaseModel):
+    terminator_name: str = ""
+    started_after: str = ""
+    limit: int = 200
+
+
+class _FinalizeRowData:
+    def __init__(self, row):
+        self.call_uuid = row["call_uuid"] or ""
+        self.terminator_id = row["terminator_id"]
+        self.terminator_name = row["terminator_name"] or ""
+        self.gateway_name = row["gateway_name"] or ""
+        self.route_ip = row["route_ip"] or ""
 
 
 PCAP_COLUMNS = (
@@ -166,6 +183,12 @@ def ops_diagnostics(limit: int = 100, cdr_limit: int = 50, pcap_limit: int = 200
 
         return {
             "ok": True,
+            "build_marker": BUILD_MARKER,
+            "finalize_routes": [
+                getattr(route, "name", "")
+                for route in app.router.routes
+                if getattr(route, "path", "") == "/api/finalize"
+            ],
             "money_scale": db.MONEY_SCALE,
             "low_balance_threshold_cents": low_balance_threshold_cents,
             "summary": {
@@ -185,6 +208,75 @@ def ops_diagnostics(limit: int = 100, cdr_limit: int = 50, pcap_limit: int = 200
         conn.close()
 
 
+@app.post("/api/ops/reconcile-supplier-balances", dependencies=main.API_AUTH)
+def reconcile_supplier_balances(data: SupplierBalanceReconcileIn):
+    limit = max(1, min(int(data.limit or 200), 1000))
+    terminator_name = (data.terminator_name or "").strip()
+    started_after = (data.started_after or "").strip()
+    where = [
+        "COALESCE(supplier_balance_debit_cents, 0) = 0",
+        "COALESCE(billsec, 0) > 0",
+        "COALESCE(cost_rate_cents, 0) > 0",
+    ]
+    params = []
+    if terminator_name:
+        where.append("(terminator_name = ? OR termination_group_name = ?)")
+        params.extend([terminator_name, terminator_name])
+    if started_after:
+        where.append("started_at >= ?")
+        params.append(started_after)
+
+    conn = db.get_conn()
+    fixed = []
+    try:
+        rows = conn.execute(
+            f"SELECT * FROM cdr WHERE {' AND '.join(where)} ORDER BY id ASC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+        conn.execute("BEGIN IMMEDIATE")
+        for row in rows:
+            cost_units = db.charge_units(
+                int(row["cost_rate_cents"] or 0),
+                int(row["billsec"] or 0),
+                db.normalize_billing_cycle(row["cost_billing_cycle"] or "60/60"),
+            )
+            group_id, group_name, supplier_debit = credit_limit_calls._deduct_termination_group_balance(
+                conn,
+                db,
+                _FinalizeRowData(row),
+                cost_units,
+            )
+            if not supplier_debit:
+                continue
+            conn.execute(
+                "UPDATE cdr SET termination_group_id = ?, termination_group_name = ?, "
+                "supplier_balance_debit_cents = ? WHERE id = ?",
+                (group_id, group_name, supplier_debit, row["id"]),
+            )
+            fixed.append(
+                {
+                    "cdr_id": row["id"],
+                    "call_uuid": row["call_uuid"],
+                    "terminator_name": row["terminator_name"],
+                    "termination_group_id": group_id,
+                    "termination_group_name": group_name,
+                    "supplier_balance_debit_cents": supplier_debit,
+                }
+            )
+        conn.commit()
+        return {
+            "ok": True,
+            "fixed": len(fixed),
+            "total_supplier_balance_debit_cents": sum(item["supplier_balance_debit_cents"] for item in fixed),
+            "rows": fixed,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 client_portal.install(app, main, db)
 admin_management_patch.install(app, main, db, main_compat)
 admin_delete_patch.install(app, main, db)
@@ -197,3 +289,7 @@ telegram_balance_patch.install(app, main, db)
 credit_limit_patch.install(app, main, db)
 client_telegram_alerts_patch.install(app, main, db)
 low_balance_settings_patch.install(app, main, db)
+
+# Keep billing call routes last: some optional patches also touch API routes,
+# and supplier balance deduction must run on every finalized call.
+credit_limit_patch.install(app, main, db)
