@@ -227,6 +227,9 @@ def init_db() -> None:
             cost_billing_cycle TEXT NOT NULL DEFAULT '1/1',
             charged_cents   INTEGER NOT NULL,
             margin_cents    INTEGER NOT NULL,
+            termination_group_id INTEGER,
+            termination_group_name TEXT NOT NULL DEFAULT '',
+            supplier_balance_debit_cents INTEGER NOT NULL DEFAULT 0,
             started_at      TEXT    NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_cdr_started ON cdr(started_at);
@@ -363,6 +366,9 @@ def init_db() -> None:
         "result": "ALTER TABLE cdr ADD COLUMN result TEXT NOT NULL DEFAULT ''",
         "sell_billing_cycle": "ALTER TABLE cdr ADD COLUMN sell_billing_cycle TEXT NOT NULL DEFAULT '1/1'",
         "cost_billing_cycle": "ALTER TABLE cdr ADD COLUMN cost_billing_cycle TEXT NOT NULL DEFAULT '1/1'",
+        "termination_group_id": "ALTER TABLE cdr ADD COLUMN termination_group_id INTEGER",
+        "termination_group_name": "ALTER TABLE cdr ADD COLUMN termination_group_name TEXT NOT NULL DEFAULT ''",
+        "supplier_balance_debit_cents": "ALTER TABLE cdr ADD COLUMN supplier_balance_debit_cents INTEGER NOT NULL DEFAULT 0",
     }
     for col, sql in cdr_migrations.items():
         if col not in cdr_cols:

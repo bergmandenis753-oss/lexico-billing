@@ -277,6 +277,61 @@ def _row_value(row, key, default=None):
         return default
     return row[key] if key in row.keys() else default
 
+def _clean_lookup_text(value) -> str:
+    return str(value or '').strip().lower()
+
+def _resolve_finalize_termination_group(conn, data: FinalizeIn):
+    if data.terminator_id is not None:
+        row = conn.execute(
+            "SELECT g.id, g.name FROM terminators t "
+            "LEFT JOIN termination_groups g ON g.id = t.gateway_group_id "
+            "WHERE t.id = ? AND g.id IS NOT NULL",
+            (data.terminator_id,),
+        ).fetchone()
+        if row is not None:
+            return row
+
+    names = []
+    terminator_name = _clean_lookup_text(data.terminator_name)
+    if terminator_name:
+        names.append(terminator_name)
+    gateway_name = _clean_lookup_text(data.gateway_name)
+    if gateway_name and gateway_name not in {'direct ip', 'manual'}:
+        names.append(gateway_name)
+    for name in names:
+        row = conn.execute(
+            "SELECT id, name FROM termination_groups "
+            "WHERE lower(name) = ? OR lower(gateway_name) = ? "
+            "ORDER BY active DESC, id LIMIT 1",
+            (name, name),
+        ).fetchone()
+        if row is not None:
+            return row
+
+    route_ip = str(data.route_ip or '').strip()
+    if route_ip:
+        rows = conn.execute("SELECT id, name, ips FROM termination_groups WHERE active = 1 ORDER BY id").fetchall()
+        for row in rows:
+            for token in db.split_ip_list(row['ips']):
+                if db.ip_token_matches(route_ip, token):
+                    return row
+    return None
+
+def _deduct_termination_group_balance(conn, data: FinalizeIn, cost_units: int):
+    cost_units = int(cost_units or 0)
+    if cost_units <= 0:
+        return None, '', 0
+    group = _resolve_finalize_termination_group(conn, data)
+    if group is None:
+        print(
+            f"[SUPPLIER BALANCE WARN] group not found for call={data.call_uuid} "
+            f"terminator_id={data.terminator_id} terminator={data.terminator_name} "
+            f"gateway={data.gateway_name} route_ip={data.route_ip} cost={cost_units}"
+        )
+        return None, '', 0
+    conn.execute("UPDATE termination_groups SET balance_cents = balance_cents - ? WHERE id = ?", (cost_units, group['id']))
+    return group['id'], group['name'], cost_units
+
 def _safe_record_sip_hit(data: ReserveIn, *, status_text: str, stage: str, reason: str='', client=None, rate=None, route=None, gateway_name: str='', route_ip: str='', dial_destination: str='', provider_number: str='', client_tech_prefix: str='', max_seconds: Optional[int]=None, sell_billing_cycle: str=db.DEFAULT_BILLING_CYCLE, cost_billing_cycle: str=db.DEFAULT_BILLING_CYCLE):
     try:
         db.record_sip_hit({'call_uuid': data.call_uuid or '', 'sip_ip': data.sip_ip, 'sip_port': data.sip_port, 'clid': data.clid, 'destination': data.destination, 'client_id': _row_value(client, 'id'), 'client_name': _row_value(client, 'name', ''), 'client_tech_prefix': client_tech_prefix, 'dial_destination': dial_destination, 'provider_number': provider_number, 'gateway_name': gateway_name, 'route_ip': route_ip, 'terminator_id': _row_value(route, 'id'), 'terminator_name': _row_value(route, 'name', ''), 'terminator_destination_name': _row_value(route, 'destination_name', ''), 'terminator_prefix': _row_value(route, 'prefix', ''), 'status': status_text, 'stage': stage, 'reason': reason, 'max_seconds': max_seconds, 'sell_rate_cents': _row_value(rate, 'sell_rate_cents', 0) or 0, 'cost_rate_cents': _row_value(route, 'cost_rate_cents', 0) or 0, 'sell_billing_cycle': db.normalize_billing_cycle(sell_billing_cycle), 'cost_billing_cycle': db.normalize_billing_cycle(cost_billing_cycle), 'user_agent': data.user_agent, 'sip_call_id': data.sip_call_id, 'profile': data.profile, 'context': data.context})
@@ -399,12 +454,11 @@ def finalize(data: FinalizeIn):
             new_balance = client['balance_cents'] - charged
         margin = charged - cost
         conn.execute('UPDATE clients SET balance_cents = ? WHERE id = ?', (new_balance, data.client_id))
-        if data.terminator_id is not None and cost:
-            conn.execute('UPDATE termination_groups SET balance_cents = balance_cents - ? WHERE id = (SELECT gateway_group_id FROM terminators WHERE id = ?)', (cost, data.terminator_id))
-        conn.execute('INSERT INTO cdr (client_id, call_uuid, sip_ip, clid, destination, client_tech_prefix, dial_destination, provider_number, gateway_name, route_ip, terminator_id, terminator_name, terminator_destination_name, terminator_prefix, terminator_tech_prefix, hangup_cause, bridge_hangup_cause, result, billsec, sell_rate_cents, cost_rate_cents, sell_billing_cycle, cost_billing_cycle, charged_cents, margin_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (data.client_id, data.call_uuid, data.sip_ip, data.clid, data.destination, data.client_tech_prefix, data.dial_destination, data.provider_number, data.gateway_name, data.route_ip, data.terminator_id, data.terminator_name, data.terminator_destination_name, data.terminator_prefix, data.terminator_tech_prefix, data.hangup_cause, data.bridge_hangup_cause, data.result, data.billsec, data.sell_rate_cents, data.cost_rate_cents, sell_billing_cycle, cost_billing_cycle, charged, margin))
+        termination_group_id, termination_group_name, supplier_debit = _deduct_termination_group_balance(conn, data, cost)
+        conn.execute('INSERT INTO cdr (client_id, call_uuid, sip_ip, clid, destination, client_tech_prefix, dial_destination, provider_number, gateway_name, route_ip, terminator_id, terminator_name, terminator_destination_name, terminator_prefix, terminator_tech_prefix, hangup_cause, bridge_hangup_cause, result, billsec, sell_rate_cents, cost_rate_cents, sell_billing_cycle, cost_billing_cycle, charged_cents, margin_cents, termination_group_id, termination_group_name, supplier_balance_debit_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (data.client_id, data.call_uuid, data.sip_ip, data.clid, data.destination, data.client_tech_prefix, data.dial_destination, data.provider_number, data.gateway_name, data.route_ip, data.terminator_id, data.terminator_name, data.terminator_destination_name, data.terminator_prefix, data.terminator_tech_prefix, data.hangup_cause, data.bridge_hangup_cause, data.result, data.billsec, data.sell_rate_cents, data.cost_rate_cents, sell_billing_cycle, cost_billing_cycle, charged, margin, termination_group_id, termination_group_name, supplier_debit))
         conn.execute('DELETE FROM reservations WHERE call_uuid = ?', (data.call_uuid,))
         conn.commit()
-        return {'ok': True, 'charged_cents': charged, 'margin_cents': margin, 'balance_cents': new_balance, 'billsec': data.billsec, 'billed_seconds': bsec, 'sell_billing_cycle': sell_billing_cycle, 'cost_billing_cycle': cost_billing_cycle}
+        return {'ok': True, 'charged_cents': charged, 'margin_cents': margin, 'balance_cents': new_balance, 'billsec': data.billsec, 'billed_seconds': bsec, 'sell_billing_cycle': sell_billing_cycle, 'cost_billing_cycle': cost_billing_cycle, 'termination_group_id': termination_group_id, 'termination_group_name': termination_group_name, 'supplier_balance_debit_cents': supplier_debit}
     except HTTPException:
         conn.rollback()
         raise

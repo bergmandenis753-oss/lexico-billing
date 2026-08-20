@@ -246,18 +246,14 @@ def finalize(data: main.FinalizeIn):
 
         margin = charged - cost
         conn.execute("UPDATE clients SET balance_cents = ? WHERE id = ?", (new_balance, data.client_id))
-        if data.terminator_id is not None and cost:
-            conn.execute(
-                "UPDATE termination_groups SET balance_cents = balance_cents - ? "
-                "WHERE id = (SELECT gateway_group_id FROM terminators WHERE id = ?)",
-                (cost, data.terminator_id),
-            )
+        termination_group_id, termination_group_name, supplier_debit = main._deduct_termination_group_balance(conn, data, cost)
         conn.execute(
             "INSERT INTO cdr (client_id, call_uuid, sip_ip, clid, destination, client_tech_prefix, "
             "dial_destination, provider_number, gateway_name, route_ip, terminator_id, terminator_name, "
             "terminator_destination_name, terminator_prefix, terminator_tech_prefix, hangup_cause, "
             "bridge_hangup_cause, result, billsec, sell_rate_cents, cost_rate_cents, sell_billing_cycle, "
-            "cost_billing_cycle, charged_cents, margin_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "cost_billing_cycle, charged_cents, margin_cents, termination_group_id, termination_group_name, "
+            "supplier_balance_debit_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 data.client_id,
                 data.call_uuid,
@@ -284,6 +280,9 @@ def finalize(data: main.FinalizeIn):
                 cost_billing_cycle,
                 charged,
                 margin,
+                termination_group_id,
+                termination_group_name,
+                supplier_debit,
             ),
         )
 
@@ -326,7 +325,19 @@ def finalize(data: main.FinalizeIn):
 
         conn.execute("DELETE FROM reservations WHERE call_uuid = ?", (data.call_uuid,))
         conn.commit()
-        return {"ok": True, "charged_cents": charged, "margin_cents": margin, "balance_cents": new_balance, "billsec": data.billsec, "billed_seconds": bsec, "sell_billing_cycle": sell_billing_cycle, "cost_billing_cycle": cost_billing_cycle}
+        return {
+            "ok": True,
+            "charged_cents": charged,
+            "margin_cents": margin,
+            "balance_cents": new_balance,
+            "billsec": data.billsec,
+            "billed_seconds": bsec,
+            "sell_billing_cycle": sell_billing_cycle,
+            "cost_billing_cycle": cost_billing_cycle,
+            "termination_group_id": termination_group_id,
+            "termination_group_name": termination_group_name,
+            "supplier_balance_debit_cents": supplier_debit,
+        }
     except HTTPException:
         conn.rollback()
         raise
