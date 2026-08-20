@@ -312,19 +312,6 @@ def _remove_route(path, methods):
     ]
 
 
-_remove_route("/api/dashboard-data", {"GET"})
-
-
-@app.get("/api/dashboard-data", dependencies=main.ADMIN_AUTH)
-def dashboard_data_with_supplier_reconcile(request: Request):
-    try:
-        hours = os.getenv("SUPPLIER_BALANCE_AUTO_RECONCILE_HOURS", "72")
-        _reconcile_missing_supplier_balances(limit=500, auto_window_hours=hours)
-    except Exception as exc:
-        print(f"supplier balance auto reconcile skipped: {exc}")
-    return main_compat.dashboard_data(request)
-
-
 client_portal.install(app, main, db)
 admin_management_patch.install(app, main, db, main_compat)
 admin_delete_patch.install(app, main, db)
@@ -341,3 +328,32 @@ low_balance_settings_patch.install(app, main, db)
 # Keep billing call routes last: some optional patches also touch API routes,
 # and supplier balance deduction must run on every finalized call.
 credit_limit_patch.install(app, main, db)
+
+
+def _install_supplier_dashboard_reconcile():
+    original_dashboard_data = None
+    for route in app.router.routes:
+        if (
+            getattr(route, "path", "") == "/api/dashboard-data"
+            and "GET" in set(getattr(route, "methods", set()) or set())
+        ):
+            original_dashboard_data = getattr(route, "endpoint", None)
+            break
+
+    _remove_route("/api/dashboard-data", {"GET"})
+
+    @app.get("/api/dashboard-data", dependencies=main.ADMIN_AUTH)
+    def dashboard_data_with_supplier_reconcile(request: Request):
+        try:
+            hours = os.getenv("SUPPLIER_BALANCE_AUTO_RECONCILE_HOURS", "72")
+            _reconcile_missing_supplier_balances(limit=500, auto_window_hours=hours)
+        except Exception as exc:
+            print(f"supplier balance auto reconcile skipped: {exc}")
+        if original_dashboard_data is not None:
+            return original_dashboard_data(request)
+        return main_compat.dashboard_data(request)
+
+    return dashboard_data_with_supplier_reconcile
+
+
+_install_supplier_dashboard_reconcile()
