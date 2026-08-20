@@ -1,3 +1,6 @@
+import os
+
+from fastapi import Request
 from pydantic import BaseModel
 
 import admin_delete_patch
@@ -6,6 +9,7 @@ import billing_ui_fix_patch
 import client_route_isolation_patch
 import client_telegram_alerts_patch
 import client_portal
+from credit_limit_common import ensure_schema
 import credit_limit_calls
 import credit_limit_patch
 import low_balance_settings_patch
@@ -23,7 +27,7 @@ db = main_compat.db
 MANUAL_MARGIN_ADJUSTMENT = 663900
 MANUAL_MARGIN_DAY = "2026-07-24"
 MANUAL_MARGIN_MONTH = "2026-07"
-BUILD_MARKER = "ops-supplier-balance-reconcile-2026-08-20"
+BUILD_MARKER = "ops-supplier-dashboard-reconcile-2026-08-20"
 
 
 class PcapEventIn(BaseModel):
@@ -96,6 +100,85 @@ def _rows(rows):
 
 def _limited_rows(conn, query, params=()):
     return _rows(conn.execute(query, params).fetchall())
+
+
+def _reconcile_missing_supplier_balances(limit=200, terminator_name="", started_after="", auto_window_hours=None):
+    limit = max(1, min(int(limit or 200), 1000))
+    terminator_name = (terminator_name or "").strip()
+    started_after = (started_after or "").strip()
+    where = [
+        "COALESCE(supplier_balance_debit_cents, 0) = 0",
+        "COALESCE(billsec, 0) > 0",
+        "COALESCE(cost_rate_cents, 0) > 0",
+    ]
+    params = []
+    if terminator_name:
+        where.append("(terminator_name = ? OR termination_group_name = ?)")
+        params.extend([terminator_name, terminator_name])
+    if started_after:
+        where.append("started_at >= ?")
+        params.append(started_after)
+    elif auto_window_hours:
+        try:
+            hours = max(1, min(int(auto_window_hours), 168))
+        except Exception:
+            hours = 72
+        where.append("started_at >= datetime('now', ?)")
+        params.append(f"-{hours} hours")
+
+    ensure_schema(db)
+    conn = db.get_conn()
+    fixed = []
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(
+            f"SELECT * FROM cdr WHERE {' AND '.join(where)} ORDER BY id ASC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+        for row in rows:
+            cost_units = db.charge_units(
+                int(row["cost_rate_cents"] or 0),
+                int(row["billsec"] or 0),
+                db.normalize_billing_cycle(row["cost_billing_cycle"] or "60/60"),
+            )
+            group_id, group_name, supplier_debit = credit_limit_calls._deduct_termination_group_balance(
+                conn,
+                db,
+                _FinalizeRowData(row),
+                cost_units,
+            )
+            if not supplier_debit:
+                continue
+            updated = conn.execute(
+                "UPDATE cdr SET termination_group_id = ?, termination_group_name = ?, "
+                "supplier_balance_debit_cents = ? WHERE id = ? "
+                "AND COALESCE(supplier_balance_debit_cents, 0) = 0",
+                (group_id, group_name, supplier_debit, row["id"]),
+            ).rowcount
+            if not updated:
+                continue
+            fixed.append(
+                {
+                    "cdr_id": row["id"],
+                    "call_uuid": row["call_uuid"],
+                    "terminator_name": row["terminator_name"],
+                    "termination_group_id": group_id,
+                    "termination_group_name": group_name,
+                    "supplier_balance_debit_cents": supplier_debit,
+                }
+            )
+        conn.commit()
+        return {
+            "ok": True,
+            "fixed": len(fixed),
+            "total_supplier_balance_debit_cents": sum(item["supplier_balance_debit_cents"] for item in fixed),
+            "rows": fixed,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 @app.post("/api/pcap-events", dependencies=main.API_AUTH)
@@ -210,71 +293,36 @@ def ops_diagnostics(limit: int = 100, cdr_limit: int = 50, pcap_limit: int = 200
 
 @app.post("/api/ops/reconcile-supplier-balances", dependencies=main.API_AUTH)
 def reconcile_supplier_balances(data: SupplierBalanceReconcileIn):
-    limit = max(1, min(int(data.limit or 200), 1000))
-    terminator_name = (data.terminator_name or "").strip()
-    started_after = (data.started_after or "").strip()
-    where = [
-        "COALESCE(supplier_balance_debit_cents, 0) = 0",
-        "COALESCE(billsec, 0) > 0",
-        "COALESCE(cost_rate_cents, 0) > 0",
-    ]
-    params = []
-    if terminator_name:
-        where.append("(terminator_name = ? OR termination_group_name = ?)")
-        params.extend([terminator_name, terminator_name])
-    if started_after:
-        where.append("started_at >= ?")
-        params.append(started_after)
+    return _reconcile_missing_supplier_balances(
+        limit=data.limit,
+        terminator_name=data.terminator_name,
+        started_after=data.started_after,
+    )
 
-    conn = db.get_conn()
-    fixed = []
+
+def _remove_route(path, methods):
+    wanted = {method.upper() for method in methods}
+    app.router.routes = [
+        route
+        for route in app.router.routes
+        if not (
+            getattr(route, "path", "") == path
+            and set(getattr(route, "methods", set()) or set()) & wanted
+        )
+    ]
+
+
+_remove_route("/api/dashboard-data", {"GET"})
+
+
+@app.get("/api/dashboard-data", dependencies=main.ADMIN_AUTH)
+def dashboard_data_with_supplier_reconcile(request: Request):
     try:
-        rows = conn.execute(
-            f"SELECT * FROM cdr WHERE {' AND '.join(where)} ORDER BY id ASC LIMIT ?",
-            (*params, limit),
-        ).fetchall()
-        conn.execute("BEGIN IMMEDIATE")
-        for row in rows:
-            cost_units = db.charge_units(
-                int(row["cost_rate_cents"] or 0),
-                int(row["billsec"] or 0),
-                db.normalize_billing_cycle(row["cost_billing_cycle"] or "60/60"),
-            )
-            group_id, group_name, supplier_debit = credit_limit_calls._deduct_termination_group_balance(
-                conn,
-                db,
-                _FinalizeRowData(row),
-                cost_units,
-            )
-            if not supplier_debit:
-                continue
-            conn.execute(
-                "UPDATE cdr SET termination_group_id = ?, termination_group_name = ?, "
-                "supplier_balance_debit_cents = ? WHERE id = ?",
-                (group_id, group_name, supplier_debit, row["id"]),
-            )
-            fixed.append(
-                {
-                    "cdr_id": row["id"],
-                    "call_uuid": row["call_uuid"],
-                    "terminator_name": row["terminator_name"],
-                    "termination_group_id": group_id,
-                    "termination_group_name": group_name,
-                    "supplier_balance_debit_cents": supplier_debit,
-                }
-            )
-        conn.commit()
-        return {
-            "ok": True,
-            "fixed": len(fixed),
-            "total_supplier_balance_debit_cents": sum(item["supplier_balance_debit_cents"] for item in fixed),
-            "rows": fixed,
-        }
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+        hours = os.getenv("SUPPLIER_BALANCE_AUTO_RECONCILE_HOURS", "72")
+        _reconcile_missing_supplier_balances(limit=500, auto_window_hours=hours)
+    except Exception as exc:
+        print(f"supplier balance auto reconcile skipped: {exc}")
+    return main_compat.dashboard_data(request)
 
 
 client_portal.install(app, main, db)
