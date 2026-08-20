@@ -58,6 +58,105 @@ def _rows(rows):
     return [dict(row) for row in rows]
 
 
+def _clean_lookup_text(value):
+    return re.sub(r"\s+", " ", str(value or "").strip()).lower()
+
+
+def _clean_route_ip(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("direct:"):
+        text = text.split(":", 1)[1]
+    if "@" in text:
+        text = text.rsplit("@", 1)[1]
+    if text.count(":") == 1:
+        host, port = text.rsplit(":", 1)
+        if port.isdigit():
+            text = host
+    return text.strip()
+
+
+def _resolve_finalize_termination_group(conn, data):
+    hit = None
+    if getattr(data, "call_uuid", ""):
+        hit = conn.execute(
+            "SELECT route_ip, gateway_name, terminator_id, terminator_name "
+            "FROM sip_hits WHERE call_uuid = ? ORDER BY id DESC LIMIT 1",
+            (data.call_uuid,),
+        ).fetchone()
+
+    terminator_id = getattr(data, "terminator_id", None)
+    if terminator_id is None and hit is not None:
+        terminator_id = hit["terminator_id"]
+    if terminator_id is not None:
+        row = conn.execute(
+            "SELECT g.id, g.name FROM terminators t "
+            "JOIN termination_groups g ON g.id = t.gateway_group_id "
+            "WHERE t.id = ? LIMIT 1",
+            (terminator_id,),
+        ).fetchone()
+        if row is not None:
+            return row
+
+    names = []
+    for value in (
+        getattr(data, "terminator_name", ""),
+        hit["terminator_name"] if hit is not None else "",
+        getattr(data, "gateway_name", ""),
+        hit["gateway_name"] if hit is not None else "",
+    ):
+        name = _clean_lookup_text(value)
+        if name and name not in {"direct ip", "direct", "manual"} and name not in names:
+            names.append(name)
+    for name in names:
+        row = conn.execute(
+            "SELECT id, name FROM termination_groups "
+            "WHERE lower(trim(name)) = ? OR lower(trim(gateway_name)) = ? "
+            "ORDER BY active DESC, id LIMIT 1",
+            (name, name),
+        ).fetchone()
+        if row is not None:
+            return row
+
+    ip_candidates = []
+    for value in (
+        getattr(data, "route_ip", ""),
+        hit["route_ip"] if hit is not None else "",
+        getattr(data, "gateway_name", ""),
+        hit["gateway_name"] if hit is not None else "",
+    ):
+        ip = _clean_route_ip(value)
+        if ip and ip not in ip_candidates:
+            ip_candidates.append(ip)
+    if ip_candidates:
+        groups = conn.execute("SELECT id, name, ips FROM termination_groups WHERE active = 1 ORDER BY id").fetchall()
+        for candidate in ip_candidates:
+            for group in groups:
+                for token in db.split_ip_list(group["ips"]):
+                    if db.ip_token_matches(candidate, _clean_route_ip(token)):
+                        return group
+    return None
+
+
+def _deduct_termination_group_balance(conn, data, cost_units):
+    cost_units = int(cost_units or 0)
+    if cost_units <= 0:
+        return None, "", 0
+    group = _resolve_finalize_termination_group(conn, data)
+    if group is None:
+        print(
+            f"[SUPPLIER BALANCE WARN] group not found for call={getattr(data, 'call_uuid', '')} "
+            f"terminator_id={getattr(data, 'terminator_id', None)} "
+            f"terminator={getattr(data, 'terminator_name', '')} "
+            f"gateway={getattr(data, 'gateway_name', '')} route_ip={getattr(data, 'route_ip', '')} "
+            f"cost={cost_units}"
+        )
+        return None, "", 0
+    conn.execute("UPDATE termination_groups SET balance_cents = balance_cents - ? WHERE id = ?", (cost_units, group["id"]))
+    return group["id"], group["name"], cost_units
+
+
 def _remove_routes(paths):
     app.router.routes = [
         route for route in app.router.routes
@@ -246,7 +345,7 @@ def finalize(data: main.FinalizeIn):
 
         margin = charged - cost
         conn.execute("UPDATE clients SET balance_cents = ? WHERE id = ?", (new_balance, data.client_id))
-        termination_group_id, termination_group_name, supplier_debit = main._deduct_termination_group_balance(conn, data, cost)
+        termination_group_id, termination_group_name, supplier_debit = _deduct_termination_group_balance(conn, data, cost)
         conn.execute(
             "INSERT INTO cdr (client_id, call_uuid, sip_ip, clid, destination, client_tech_prefix, "
             "dial_destination, provider_number, gateway_name, route_ip, terminator_id, terminator_name, "
