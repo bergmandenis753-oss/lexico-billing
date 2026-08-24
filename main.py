@@ -321,16 +321,18 @@ def _deduct_termination_group_balance(conn, data: FinalizeIn, cost_units: int):
     cost_units = int(cost_units or 0)
     if cost_units <= 0:
         return None, '', 0
+
     group = _resolve_finalize_termination_group(conn, data)
     if group is None:
         print(
-            f"[SUPPLIER BALANCE WARN] group not found for call={data.call_uuid} "
+            f"[SUPPLIER BALANCE WARN] call={data.call_uuid} cost={cost_units} "
             f"terminator_id={data.terminator_id} terminator={data.terminator_name} "
-            f"gateway={data.gateway_name} route_ip={data.route_ip} cost={cost_units}"
+            f"gateway={data.gateway_name} route_ip={data.route_ip}: group not found"
         )
         return None, '', 0
-    conn.execute("UPDATE termination_groups SET balance_cents = balance_cents - ? WHERE id = ?", (cost_units, group['id']))
-    return group['id'], group['name'], cost_units
+
+    # Supplier balances are manual/info-only; finalize must not mutate them live.
+    return group['id'], group['name'], 0
 
 def _safe_record_sip_hit(data: ReserveIn, *, status_text: str, stage: str, reason: str='', client=None, rate=None, route=None, gateway_name: str='', route_ip: str='', dial_destination: str='', provider_number: str='', client_tech_prefix: str='', max_seconds: Optional[int]=None, sell_billing_cycle: str=db.DEFAULT_BILLING_CYCLE, cost_billing_cycle: str=db.DEFAULT_BILLING_CYCLE):
     try:
