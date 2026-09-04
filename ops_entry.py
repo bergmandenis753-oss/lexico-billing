@@ -13,6 +13,7 @@ import multi_active_terminators_patch
 import reserve_balance_patch
 import route_pool_patch
 import telegram_balance_patch
+import terminator_balance_patch
 
 
 app = main_compat.app
@@ -195,5 +196,6 @@ multi_active_terminators_patch.install(app, main, db)
 client_route_isolation_patch.install(app, main, db)
 telegram_balance_patch.install(app, main, db)
 credit_limit_patch.install(app, main, db)
+terminator_balance_patch.install(app, main, db)
 client_telegram_alerts_patch.install(app, main, db)
 low_balance_settings_patch.install(app, main, db)
