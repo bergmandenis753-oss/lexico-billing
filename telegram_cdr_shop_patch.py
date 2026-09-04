@@ -103,6 +103,7 @@ def install(app, bot):
         return
     bot._cdr_shop_patch_installed = True
 
+    pending_by_chat = {}
     base_client_keyboard = bot._client_keyboard
     base_answer_for_callback = bot._answer_for_callback
     base_answer_for_text = bot._answer_for_text
@@ -119,7 +120,10 @@ def install(app, bot):
     def cdr_shop_help(client_id, client_name):
         return (
             f"CDR shop для {client_name}.\n"
-            "Напиши длительность фильтра командой:\n"
+            "Напиши длительность фильтра следующим сообщением:\n"
+            "5\n"
+            "05:10\n\n"
+            "Или командой:\n"
             f"/cdrshop {client_id} 5\n"
             f"/cdrshop {client_id} 05:10\n\n"
             "5 = минут, 05:10 = минуты:секунды."
@@ -156,6 +160,42 @@ def install(app, bot):
         report = _load_client_cdr_duration(bot, client_id, min_billsec)
         return _format_duration_report(bot, client, report), client_keyboard(client_id)
 
+    def set_pending(chat_id, callback_data):
+        chat_key = str(chat_id)
+        callback_text = str(callback_data or "")
+        if callback_text.startswith("client_cdr_shop:"):
+            pending_by_chat[chat_key] = callback_text.split(":", 1)[1]
+            return
+        if callback_text in {"menu", "clients"} or callback_text.startswith("client:"):
+            pending_by_chat.pop(chat_key, None)
+
+    def answer_pending(data, chat_id, text):
+        raw = str(text or "").strip()
+        if not raw:
+            return None
+        first_word = raw.lower().split(maxsplit=1)[0]
+        first_word = first_word.split("@", 1)[0]
+        if first_word in cdr_shop_commands:
+            pending_by_chat.pop(str(chat_id), None)
+            return None
+        if first_word.startswith("/") or raw.lower() in {"меню", "клиенты", "баланс", "балансы"}:
+            pending_by_chat.pop(str(chat_id), None)
+            return None
+
+        client_id = pending_by_chat.get(str(chat_id))
+        if not client_id:
+            return None
+        client = bot._client_by_id(data, client_id)
+        if not client:
+            pending_by_chat.pop(str(chat_id), None)
+            return "Клиент не найден.", bot.MAIN_MENU
+        try:
+            min_billsec = _parse_duration_seconds(raw)
+        except ValueError as exc:
+            return f"Не понял длительность: {exc}\n\nНапиши, например: 5 или 05:10", client_keyboard(client_id)
+        report = _load_client_cdr_duration(bot, client_id, min_billsec)
+        return _format_duration_report(bot, client, report), client_keyboard(client_id)
+
     def answer_for_text(data, text):
         raw = str(text or "").strip()
         cmd = raw.lower()
@@ -174,6 +214,8 @@ def install(app, bot):
             return cdr_shop_help(client_id, bot._client_name(client)), client_keyboard(client_id)
         return base_answer_for_callback(data, callback_data)
 
+    bot._cdr_shop_set_pending = set_pending
+    bot._cdr_shop_answer_pending = answer_pending
     bot._client_keyboard = client_keyboard
     bot._answer_for_callback = answer_for_callback
     bot._answer_for_text = answer_for_text
