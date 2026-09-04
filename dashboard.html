@@ -36,9 +36,6 @@
   button:hover { opacity:.9; }
   .right { text-align:right; }
   .mut { color:var(--mut); }
-  .money-neg { color:var(--bad); }
-  .money-ok { color:var(--good); }
-  .client-actions { display:flex; gap:7px; justify-content:flex-end; flex-wrap:wrap; }
   dialog { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:12px; padding:20px; width:340px; }
   dialog.wide { width:min(680px, calc(100vw - 32px)); }
   dialog h3 { margin:0 0 14px; font-size:15px; }
@@ -99,7 +96,7 @@
   <section>
     <div class="sec-head"><h2>Оригинаторы (кому даём роут)</h2><button class="small" onclick="clientDlg.showModal()">+ Оригинатор</button></div>
     <table>
-      <thead><tr><th>Имя</th><th>IP</th><th class="right">Баланс</th><th class="right">Кредитный лимит</th><th class="right">Доступно</th><th>Статус</th><th></th></tr></thead>
+      <thead><tr><th>Имя</th><th>IP</th><th class="right">Баланс</th><th>Статус</th><th></th></tr></thead>
       <tbody id="t-clients"></tbody>
     </table>
   </section>
@@ -107,7 +104,7 @@
   <section>
     <div class="sec-head"><h2>Терминационные группы (gateway/IP аккаунты)</h2><button class="small" onclick="groupDlg.showModal()">+ Группа</button></div>
     <table>
-      <thead><tr><th>Имя аккаунта</th><th>IP</th><th>FreeSWITCH gateway</th><th class="right">Баланс</th><th>Статус</th><th></th></tr></thead>
+      <thead><tr><th>Имя аккаунта</th><th>IP</th><th>FreeSWITCH gateway</th><th>Статус</th><th></th></tr></thead>
       <tbody id="t-groups"></tbody>
     </table>
   </section>
@@ -185,7 +182,6 @@
     <label>SIP IP (whitelist)</label><input id="cl-ip" placeholder="203.0.113.10" required>
     <label>Валюта</label><input id="cl-cur" value="USD" required>
     <label>Стартовый баланс (в валюте)</label><input id="cl-bal" type="number" step="0.01" min="0" value="0">
-    <label>Кредитный лимит (в валюте)</label><input id="cl-credit" type="number" step="0.01" min="0" value="0">
     <div class="row"><button type="button" class="ghost" onclick="clientDlg.close()">Отмена</button><button type="submit">Создать</button></div>
   </form>
 </dialog>
@@ -197,7 +193,6 @@
     <label>Имя аккаунта / группы</label><input id="gr-name" placeholder="Lexico" required autofocus>
     <label>IP аккаунта (через запятую)</label><input id="gr-ips" placeholder="195.219.39.9, 195.219.39.14, 195.219.39.39" required>
     <label>FreeSWITCH gateway (можно пусто)</label><input id="gr-gw" placeholder="lexico или пусто для direct IP">
-    <label>Стартовый баланс поставщика (в валюте)</label><input id="gr-balance" type="number" step="0.0001" value="0">
     <label style="display:flex;align-items:center;gap:8px"><input id="gr-active" type="checkbox" checked style="width:auto;margin:0"> Активна</label>
     <div class="row"><button type="button" class="ghost" onclick="groupDlg.close()">Отмена</button><button type="submit">Создать</button></div>
   </form>
@@ -265,27 +260,6 @@
   </form>
 </dialog>
 
-<!-- Баланс терминатора -->
-<dialog id="term-topup-dlg">
-  <h3>Баланс поставщика</h3>
-  <form id="term-topup-form">
-    <label>Поставщик / маршрут</label><input id="ttu-name" disabled>
-    <label>Сумма (+ пополнить, - коррекция)</label><input id="ttu-amount" type="number" step="0.0001" required autofocus>
-    <div class="row"><button type="button" class="ghost" onclick="termTopupDlg.close()">Отмена</button><button type="submit">Сохранить</button></div>
-  </form>
-</dialog>
-
-<!-- Кредитный лимит -->
-<dialog id="credit-dlg">
-  <h3>Кредитный лимит</h3>
-  <form id="credit-form">
-    <label>Клиент</label><input id="cr-client" disabled>
-    <label>Текущий баланс</label><input id="cr-balance" disabled>
-    <label>Лимит долга (в валюте)</label><input id="cr-limit" type="number" step="0.01" min="0" required autofocus>
-    <div class="row"><button type="button" class="ghost" onclick="creditDlg.close()">Отмена</button><button type="submit">Сохранить</button></div>
-  </form>
-</dialog>
-
 <script>
 const clientDlg = document.getElementById('client-dlg');
 const groupDlg  = document.getElementById('group-dlg');
@@ -293,16 +267,11 @@ const routeDlg  = document.getElementById('route-dlg');
 const rateDlg   = document.getElementById('rate-dlg');
 const directionDlg = document.getElementById('direction-dlg');
 const topupDlg  = document.getElementById('topup-dlg');
-const termTopupDlg = document.getElementById('term-topup-dlg');
-const creditDlg = document.getElementById('credit-dlg');
 let clientMap = {};
 let groupList = [];
 let groupMap = {};
 let termList = [];
 let topupClientId = null;
-let termTopupId = null;
-let termTopupKind = 'terminator';
-let creditClientId = null;
 let loadInFlight = false;
 let directionList = [];
 let directionMap = {};
@@ -310,8 +279,6 @@ let directionMap = {};
 const MONEY_SCALE = 10000;
 const money = (u, cur) => ((Number(u)||0)/MONEY_SCALE).toFixed(4) + (cur ? ' ' + cur : '');
 const rate  = (u, cur) => ((Number(u)||0)/MONEY_SCALE).toFixed(4) + (cur ? ' ' + cur : '');
-const moneyInput = u => ((Number(u)||0)/MONEY_SCALE).toFixed(4).replace(/0+$/, '').replace(/\.$/, '') || '0';
-const balanceClass = u => Number(u || 0) < 0 ? 'right money-neg' : 'right';
 const esc = s => String(s ?? '').replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
 const cycle = v => String(v || '1/1').trim() || '1/1';
 const defaultBillingCycle = (dest, prefix) => {
@@ -346,15 +313,7 @@ function parseMoneyUnits(value, label) {
   if (!m) throw new Error(`${label}: максимум 4 знака после точки`);
   return Number(m[1]) * MONEY_SCALE + Number((m[2] || '').padEnd(4, '0'));
 }
-function parseSignedMoneyUnits(value, label) {
-  const s = String(value ?? '').trim().replace(',', '.');
-  if (!s) return 0;
-  const sign = s.startsWith('-') ? -1 : 1;
-  const raw = s.replace(/^[+-]/, '');
-  return sign * parseMoneyUnits(raw, label);
-}
 const inputMoneyUnits = (id, label) => parseMoneyUnits(document.getElementById(id).value, label);
-const inputSignedMoneyUnits = (id, label) => parseSignedMoneyUnits(document.getElementById(id).value, label);
 
 async function api(path, method, body) {
   const controller = new AbortController();
@@ -435,30 +394,23 @@ async function load(manual = false) {
     `<option value="${esc(x.country)}">${esc(x.primary_prefix)} · ${x.prefix_count} префиксов</option>`
   ).join('');
 
-  document.getElementById('t-clients').innerHTML = d.clients.map(c => {
-    const limit = Number(c.credit_limit_cents) || 0;
-    const available = (Number(c.balance_cents) || 0) + limit;
-    return `
+  document.getElementById('t-clients').innerHTML = d.clients.map(c => `
     <tr>
       <td>${esc(c.name)}</td>
       <td class="mut">${esc(c.sip_ip)}</td>
-      <td class="${balanceClass(c.balance_cents)}">${money(c.balance_cents, c.currency)}</td>
-      <td class="right">${limit ? money(limit, c.currency) : '<span class="mut">—</span>'}</td>
-      <td class="${balanceClass(available)}">${money(available, c.currency)}</td>
+      <td class="right">${money(c.balance_cents, c.currency)}</td>
       <td>${c.active ? '<span class="badge on">активен</span>' : '<span class="badge off">выкл</span>'}</td>
-      <td class="right"><div class="client-actions"><button class="small ghost" onclick="openCredit(${c.id})">Кредит</button><button class="small" onclick="openTopup(${c.id})">+ Пополнить</button></div></td>
-    </tr>`;
-  }).join('') || emptyRow(7);
+      <td class="right"><button class="small" onclick="openTopup(${c.id})">+ Пополнить</button></td>
+    </tr>`).join('') || emptyRow(5);
 
   document.getElementById('t-groups').innerHTML = groupList.map(g => `
     <tr>
       <td>${esc(g.name)}</td>
       <td class="mut">${esc(g.ips || '')}</td>
       <td>${g.gateway_name ? esc(g.gateway_name) : '<span class="mut">direct IP</span>'}</td>
-      <td class="${balanceClass(g.balance_cents)}">${money(g.balance_cents, (d.clients[0]||{}).currency || 'USD')}</td>
       <td>${g.active ? '<span class="badge on">активна</span>' : '<span class="badge off">выкл</span>'}</td>
-      <td class="right"><button class="small ghost" onclick="openGroupTopup(${g.id})">± Баланс</button> <button class="small danger" onclick="delGroup(${g.id})">✕</button></td>
-    </tr>`).join('') || emptyRow(6);
+      <td class="right"><button class="small danger" onclick="delGroup(${g.id})">✕</button></td>
+    </tr>`).join('') || emptyRow(5);
 
   document.getElementById('t-routes').innerHTML = d.terminators.map(r => {
     const c0 = (d.clients[0]||{}).currency || '';
@@ -583,8 +535,7 @@ document.getElementById('client-form').addEventListener('submit', async e => {
       name: document.getElementById('cl-name').value,
       sip_ip: document.getElementById('cl-ip').value,
       currency: document.getElementById('cl-cur').value || 'USD',
-      balance_cents: inputMoneyUnits('cl-bal', 'Баланс'),
-      credit_limit_cents: inputMoneyUnits('cl-credit', 'Кредитный лимит')
+      balance_cents: inputMoneyUnits('cl-bal', 'Баланс')
     });
     clientDlg.close(); e.target.reset(); load();
   } catch (err) { alert('Ошибка: ' + err.message); }
@@ -598,7 +549,6 @@ document.getElementById('group-form').addEventListener('submit', async e => {
       name: document.getElementById('gr-name').value,
       ips: document.getElementById('gr-ips').value,
       gateway_name: document.getElementById('gr-gw').value || '',
-      balance_cents: inputMoneyUnits('gr-balance', 'Баланс поставщика'),
       active: document.getElementById('gr-active').checked
     });
     groupDlg.close(); e.target.reset(); load();
@@ -775,51 +725,6 @@ document.getElementById('topup-form').addEventListener('submit', async e => {
     await api(`/api/clients/${topupClientId}/topup`, 'POST',
       { amount_cents: inputMoneyUnits('tu-amount', 'Сумма пополнения') });
     topupDlg.close(); load();
-  } catch (err) { alert('Ошибка: ' + err.message); }
-});
-
-function openTermTopup(id) {
-  termTopupKind = 'terminator';
-  termTopupId = id;
-  const t = termList.find(x => Number(x.id) === Number(id)) || {};
-  document.getElementById('ttu-name').value = [t.name, t.destination_name, t.prefix].filter(Boolean).join(' · ') || ('#' + id);
-  document.getElementById('ttu-amount').value = '';
-  termTopupDlg.showModal();
-}
-function openGroupTopup(id) {
-  termTopupKind = 'group';
-  termTopupId = id;
-  const g = groupMap[id] || {};
-  document.getElementById('ttu-name').value = g.name || ('#' + id);
-  document.getElementById('ttu-amount').value = '';
-  termTopupDlg.showModal();
-}
-document.getElementById('term-topup-form').addEventListener('submit', async e => {
-  e.preventDefault();
-  try {
-    const path = termTopupKind === 'group' ? `/api/termination-groups/${termTopupId}/topup` : `/api/terminators/${termTopupId}/topup`;
-    await api(path, 'POST',
-      { amount_cents: inputSignedMoneyUnits('ttu-amount', 'Сумма баланса поставщика') });
-    termTopupDlg.close(); load();
-  } catch (err) { alert('Ошибка: ' + err.message); }
-});
-
-// ---- кредитный лимит ----
-function openCredit(id) {
-  creditClientId = id;
-  const c = clientMap[id] || {};
-  document.getElementById('cr-client').value = c.name || ('#' + id);
-  document.getElementById('cr-balance').value = money(c.balance_cents, c.currency);
-  document.getElementById('cr-limit').value = moneyInput(c.credit_limit_cents);
-  creditDlg.showModal();
-}
-document.getElementById('credit-form').addEventListener('submit', async e => {
-  e.preventDefault();
-  try {
-    await api(`/api/clients/${creditClientId}`, 'PATCH', {
-      credit_limit_cents: inputMoneyUnits('cr-limit', 'Кредитный лимит')
-    });
-    creditDlg.close(); load();
   } catch (err) { alert('Ошибка: ' + err.message); }
 });
 

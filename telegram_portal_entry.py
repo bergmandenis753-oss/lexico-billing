@@ -1,7 +1,6 @@
 import os
 import threading
 import time
-import urllib.parse
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 import telegram_standalone as bot
@@ -30,17 +29,6 @@ def _load_client_portal_link(client_id):
     return bot._get_json(f"{base}/api/ops/client-portal-link/{client_id}", headers=bot._billing_headers())
 
 
-def _load_client_cdr_duration(client_id, min_billsec):
-    base = bot._billing_base_url()
-    if not base:
-        raise RuntimeError("BILLING_API_BASE_URL не задан")
-    query = urllib.parse.urlencode({"min_billsec": int(min_billsec or 0), "limit": 50})
-    return bot._get_json(
-        f"{base}/api/ops/client-cdr-duration/{client_id}?{query}",
-        headers=bot._billing_headers(),
-    )
-
-
 def _amount_to_minor(value, scale):
     raw = str(value or "").strip().replace(",", ".")
     try:
@@ -50,74 +38,6 @@ def _amount_to_minor(value, scale):
     if amount <= 0:
         raise ValueError("Сумма должна быть больше нуля")
     return int((amount * int(scale)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-
-
-def _parse_duration_seconds(value):
-    raw = str(value or "").strip().lower().replace(",", ".")
-    if not raw:
-        raise ValueError("пустое значение")
-    as_seconds = raw.endswith("s") or raw.endswith("sec") or raw.endswith("сек")
-    if raw.endswith("sec") or raw.endswith("сек"):
-        raw = raw[:-3].strip()
-    elif raw.endswith("s"):
-        raw = raw[:-1].strip()
-    if ":" in raw:
-        parts = raw.split(":")
-        if len(parts) not in (2, 3):
-            raise ValueError("пример: 05:10 или 1:05:10")
-        nums = [int(part) for part in parts]
-        if len(nums) == 2:
-            minutes, seconds = nums
-            if seconds >= 60:
-                raise ValueError("секунды должны быть меньше 60")
-            return max(0, minutes * 60 + seconds)
-        hours, minutes, seconds = nums
-        if minutes >= 60 or seconds >= 60:
-            raise ValueError("минуты/секунды должны быть меньше 60")
-        return max(0, hours * 3600 + minutes * 60 + seconds)
-    try:
-        amount = Decimal(raw)
-    except InvalidOperation:
-        raise ValueError("пример: 5 или 05:10")
-    if amount < 0:
-        raise ValueError("длительность не может быть отрицательной")
-    if as_seconds:
-        return int(amount.to_integral_value(rounding=ROUND_HALF_UP))
-    return int((amount * Decimal(60)).to_integral_value(rounding=ROUND_HALF_UP))
-
-
-def _format_duration(seconds):
-    seconds = int(seconds or 0)
-    hours, rem = divmod(seconds, 3600)
-    minutes, seconds = divmod(rem, 60)
-    if hours:
-        return f"{hours}:{minutes:02d}:{seconds:02d}"
-    return f"{minutes}:{seconds:02d}"
-
-
-def _cdr_number(row):
-    return row.get("provider_number") or row.get("dial_destination") or row.get("destination") or "-"
-
-
-def _format_duration_report(client, report):
-    scale = int(report.get("money_scale") or 10000)
-    rows = report.get("cdr") or []
-    threshold = _format_duration(report.get("min_billsec") or 0)
-    lines = [f"CDR shop: {bot._client_name(client)}", f"Сегодня, звонки от {threshold}:"]
-    if not rows:
-        lines.append("Нет звонков под этот фильтр.")
-        return "\n".join(lines)
-    for row in rows[:50]:
-        currency = row.get("client_currency") or "USD"
-        status = row.get("result") or row.get("bridge_hangup_cause") or row.get("hangup_cause") or "-"
-        billsec = _format_duration(row.get("billsec") or 0)
-        charged = bot._money(row.get("charged_cents") or 0, scale, currency)
-        started = row.get("started_at") or "-"
-        lines.append(f"{started} | {_cdr_number(row)} | {billsec} | {charged} | {status}")
-    text = "\n".join(lines)
-    if len(text) > 3900:
-        return text[:3900] + "\n...обрезал, слишком длинно"
-    return text
 
 
 def _find_client(data, reference):
@@ -267,38 +187,11 @@ def _handle_topup_command(data, text):
     )
 
 
-def _handle_cdrshop_command(data, text):
-    parts = str(text or "").split()
-    if len(parts) < 3:
-        return (
-            "Формат: /cdrshop ID длительность\n"
-            "Примеры:\n"
-            "/cdrshop 10 5\n"
-            "/cdrshop 10 05:10\n\n"
-            "5 = 5 минут, 05:10 = 5 минут 10 секунд.",
-            bot.MAIN_MENU,
-        )
-    client_id = parts[1]
-    client = bot._client_by_id(data, client_id)
-    if not client:
-        return "Клиент не найден. Открой Клиенты и возьми ID клиента.", bot.MAIN_MENU
-    try:
-        min_billsec = _parse_duration_seconds(parts[2])
-    except ValueError as exc:
-        return f"Не понял длительность: {exc}\nПример: /cdrshop {client_id} 05:10", _client_keyboard(client_id)
-    report = _load_client_cdr_duration(client_id, min_billsec)
-    return _format_duration_report(client, report), _client_keyboard(client_id)
-
-
 def _client_keyboard(client_id):
     keyboard = _base_client_keyboard(client_id)
     rows = keyboard.get("inline_keyboard", [])
     return bot._keyboard(
-        [
-            [bot._button("Кабинет", f"client_portal:{client_id}"), bot._button("Пополнить", f"topup:{client_id}")],
-            [bot._button("CDR shop", f"client_cdr_shop:{client_id}")],
-            *rows,
-        ]
+        [[bot._button("Кабинет", f"client_portal:{client_id}"), bot._button("Пополнить", f"topup:{client_id}")], *rows]
     )
 
 
@@ -307,8 +200,6 @@ def _answer_for_text(data, text):
     first_word = cmd.split(maxsplit=1)[0] if cmd else ""
     if first_word in _LOW_BALANCE_THRESHOLD_COMMANDS:
         return _handle_low_balance_threshold_command(data, text)
-    if first_word in {"/cdrshop", "cdrshop", "/cdr_shop", "cdr_shop", "/cdrdur", "cdrdur"}:
-        return _handle_cdrshop_command(data, text)
     if cmd.startswith("/topup ") or cmd.startswith("/addbalance ") or cmd.startswith("/пополнить "):
         return _handle_topup_command(data, text)
     if cmd in {"/low", "низкие балансы", "низкий баланс"}:
@@ -325,19 +216,6 @@ def _answer_for_callback(data, callback_data):
         if not client:
             return "Клиент не найден.", bot.MAIN_MENU
         return _topup_help(client), _client_keyboard(client_id)
-    if callback_data.startswith("client_cdr_shop:"):
-        client_id = callback_data.split(":", 1)[1]
-        client = bot._client_by_id(data, client_id)
-        if not client:
-            return "Клиент не найден.", bot.MAIN_MENU
-        return (
-            f"CDR shop для {bot._client_name(client)}.\n"
-            "Напиши длительность фильтра командой:\n"
-            f"/cdrshop {client_id} 5\n"
-            f"/cdrshop {client_id} 05:10\n\n"
-            "5 = минуты, 05:10 = минуты:секунды.",
-            _client_keyboard(client_id),
-        )
     if callback_data.startswith("client_portal:"):
         client_id = callback_data.split(":", 1)[1]
         client = bot._client_by_id(data, client_id)

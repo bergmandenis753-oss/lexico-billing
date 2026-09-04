@@ -58,105 +58,6 @@ def _rows(rows):
     return [dict(row) for row in rows]
 
 
-def _clean_lookup_text(value):
-    return re.sub(r"\s+", " ", str(value or "").strip()).lower()
-
-
-def _clean_route_ip(value):
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    if text.startswith("direct:"):
-        text = text.split(":", 1)[1]
-    if "@" in text:
-        text = text.rsplit("@", 1)[1]
-    if text.count(":") == 1:
-        host, port = text.rsplit(":", 1)
-        if port.isdigit():
-            text = host
-    return text.strip()
-
-
-def _resolve_finalize_termination_group(conn, data):
-    hit = None
-    if getattr(data, "call_uuid", ""):
-        hit = conn.execute(
-            "SELECT route_ip, gateway_name, terminator_id, terminator_name "
-            "FROM sip_hits WHERE call_uuid = ? ORDER BY id DESC LIMIT 1",
-            (data.call_uuid,),
-        ).fetchone()
-
-    terminator_id = getattr(data, "terminator_id", None)
-    if terminator_id is None and hit is not None:
-        terminator_id = hit["terminator_id"]
-    if terminator_id is not None:
-        row = conn.execute(
-            "SELECT g.id, g.name FROM terminators t "
-            "JOIN termination_groups g ON g.id = t.gateway_group_id "
-            "WHERE t.id = ? LIMIT 1",
-            (terminator_id,),
-        ).fetchone()
-        if row is not None:
-            return row
-
-    names = []
-    for value in (
-        getattr(data, "terminator_name", ""),
-        hit["terminator_name"] if hit is not None else "",
-        getattr(data, "gateway_name", ""),
-        hit["gateway_name"] if hit is not None else "",
-    ):
-        name = _clean_lookup_text(value)
-        if name and name not in {"direct ip", "direct", "manual"} and name not in names:
-            names.append(name)
-    for name in names:
-        row = conn.execute(
-            "SELECT id, name FROM termination_groups "
-            "WHERE lower(trim(name)) = ? OR lower(trim(gateway_name)) = ? "
-            "ORDER BY active DESC, id LIMIT 1",
-            (name, name),
-        ).fetchone()
-        if row is not None:
-            return row
-
-    ip_candidates = []
-    for value in (
-        getattr(data, "route_ip", ""),
-        hit["route_ip"] if hit is not None else "",
-        getattr(data, "gateway_name", ""),
-        hit["gateway_name"] if hit is not None else "",
-    ):
-        ip = _clean_route_ip(value)
-        if ip and ip not in ip_candidates:
-            ip_candidates.append(ip)
-    if ip_candidates:
-        groups = conn.execute("SELECT id, name, ips FROM termination_groups WHERE active = 1 ORDER BY id").fetchall()
-        for candidate in ip_candidates:
-            for group in groups:
-                for token in db.split_ip_list(group["ips"]):
-                    if db.ip_token_matches(candidate, _clean_route_ip(token)):
-                        return group
-    return None
-
-
-def _deduct_termination_group_balance(conn, data, cost_units):
-    cost_units = int(cost_units or 0)
-    if cost_units <= 0:
-        return None, "", 0
-    group = _resolve_finalize_termination_group(conn, data)
-    if group is None:
-        print(
-            f"[SUPPLIER BALANCE WARN] group not found for call={getattr(data, 'call_uuid', '')} "
-            f"terminator_id={getattr(data, 'terminator_id', None)} "
-            f"terminator={getattr(data, 'terminator_name', '')} "
-            f"gateway={getattr(data, 'gateway_name', '')} route_ip={getattr(data, 'route_ip', '')} "
-            f"cost={cost_units}"
-        )
-        return None, "", 0
-    conn.execute("UPDATE termination_groups SET balance_cents = balance_cents - ? WHERE id = ?", (cost_units, group["id"]))
-    return group["id"], group["name"], cost_units
-
-
 def _remove_routes(paths):
     app.router.routes = [
         route for route in app.router.routes
@@ -333,26 +234,22 @@ def finalize(data: main.FinalizeIn):
             raise HTTPException(404, "Клиент не найден")
 
         new_balance = client["balance_cents"] - charged
-        min_balance = db.minimum_client_balance_units(client)
-        if new_balance < min_balance:
-            max_charge = db.max_charge_units_for_client(client)
+        if new_balance < 0:
             print(
                 f"[FINALIZE WARN] client={data.client_id} call={data.call_uuid} "
-                f"charged={charged} exceeds available credit={max_charge}: clamp to limit {min_balance}"
+                f"charged={charged} > balance={client['balance_cents']}: clamp to 0"
             )
-            charged = min(charged, max_charge)
-            new_balance = client["balance_cents"] - charged
+            charged = client["balance_cents"]
+            new_balance = 0
 
         margin = charged - cost
         conn.execute("UPDATE clients SET balance_cents = ? WHERE id = ?", (new_balance, data.client_id))
-        termination_group_id, termination_group_name, supplier_debit = _deduct_termination_group_balance(conn, data, cost)
         conn.execute(
             "INSERT INTO cdr (client_id, call_uuid, sip_ip, clid, destination, client_tech_prefix, "
             "dial_destination, provider_number, gateway_name, route_ip, terminator_id, terminator_name, "
             "terminator_destination_name, terminator_prefix, terminator_tech_prefix, hangup_cause, "
             "bridge_hangup_cause, result, billsec, sell_rate_cents, cost_rate_cents, sell_billing_cycle, "
-            "cost_billing_cycle, charged_cents, margin_cents, termination_group_id, termination_group_name, "
-            "supplier_balance_debit_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "cost_billing_cycle, charged_cents, margin_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 data.client_id,
                 data.call_uuid,
@@ -379,9 +276,6 @@ def finalize(data: main.FinalizeIn):
                 cost_billing_cycle,
                 charged,
                 margin,
-                termination_group_id,
-                termination_group_name,
-                supplier_debit,
             ),
         )
 
@@ -424,19 +318,7 @@ def finalize(data: main.FinalizeIn):
 
         conn.execute("DELETE FROM reservations WHERE call_uuid = ?", (data.call_uuid,))
         conn.commit()
-        return {
-            "ok": True,
-            "charged_cents": charged,
-            "margin_cents": margin,
-            "balance_cents": new_balance,
-            "billsec": data.billsec,
-            "billed_seconds": bsec,
-            "sell_billing_cycle": sell_billing_cycle,
-            "cost_billing_cycle": cost_billing_cycle,
-            "termination_group_id": termination_group_id,
-            "termination_group_name": termination_group_name,
-            "supplier_balance_debit_cents": supplier_debit,
-        }
+        return {"ok": True, "charged_cents": charged, "margin_cents": margin, "balance_cents": new_balance, "billsec": data.billsec, "billed_seconds": bsec, "sell_billing_cycle": sell_billing_cycle, "cost_billing_cycle": cost_billing_cycle}
     except HTTPException:
         conn.rollback()
         raise
@@ -463,7 +345,7 @@ def _latest_diag_context(call_id="", limit=50):
             "ORDER BY cd.id DESC LIMIT 30"
         ).fetchall()
         clients = conn.execute(
-            "SELECT id, name, sip_ip, balance_cents, credit_limit_cents, currency, active FROM clients ORDER BY id"
+            "SELECT id, name, sip_ip, balance_cents, currency, active FROM clients ORDER BY id"
         ).fetchall()
         terminators = conn.execute(
             "SELECT t.id, t.name, t.destination_name, t.prefix, t.tech_prefix, t.cost_rate_cents, "
@@ -518,7 +400,7 @@ def _latest_diag_context(call_id="", limit=50):
             "method", "status_code", "status_text", "call_id", "cseq", "from_user",
             "to_user", "request_uri", "user_agent", "reason", "raw_summary",
         )) for row in pcap],
-        "clients": [_public_row(row, ("id", "name", "sip_ip", "balance_cents", "credit_limit_cents", "currency", "active")) for row in clients],
+        "clients": [_public_row(row, ("id", "name", "sip_ip", "balance_cents", "currency", "active")) for row in clients],
         "terminators": [_public_row(row, (
             "id", "name", "destination_name", "prefix", "tech_prefix", "cost_rate_cents",
             "active", "group_name", "group_ips", "group_gateway_name",
@@ -740,8 +622,7 @@ def dashboard_data(request: Request):
         groups = conn.execute("SELECT * FROM termination_groups ORDER BY name").fetchall()
         terminators = conn.execute(
             "SELECT t.*, g.name AS gateway_group_name, g.ips AS gateway_group_ips, "
-            "g.gateway_name AS gateway_group_gateway_name, "
-            "g.balance_cents AS gateway_group_balance_cents FROM terminators t "
+            "g.gateway_name AS gateway_group_gateway_name FROM terminators t "
             "LEFT JOIN termination_groups g ON g.id = t.gateway_group_id "
             "ORDER BY t.prefix, t.active DESC, t.id"
         ).fetchall()
@@ -771,9 +652,9 @@ def dashboard_data(request: Request):
     if not _uses_current_money_scale(request):
         return {
             "money_scale": 100,
-            "clients": _legacy_rows(clients, ("balance_cents", "credit_limit_cents")),
+            "clients": _legacy_rows(clients, ("balance_cents",)),
             "termination_groups": _rows(groups),
-            "terminators": _legacy_rows(terminators, ("cost_rate_cents", "balance_cents")),
+            "terminators": _legacy_rows(terminators, ("cost_rate_cents",)),
             "client_rates": _legacy_rows(client_rates, ("sell_rate_cents",)),
             "cdr": _legacy_rows(cdr, ("sell_rate_cents", "cost_rate_cents", "charged_cents", "margin_cents")),
             "sip_hits": _legacy_rows(sip_hits, ("sell_rate_cents", "cost_rate_cents")),
@@ -824,10 +705,9 @@ def ops_client_balance_adjust(data: OpsBalanceAdjustIn):
             conn.rollback()
             raise HTTPException(404, "Клиент не найден")
         new_balance = int(client["balance_cents"]) + int(data.amount_cents)
-        min_balance = db.minimum_client_balance_units(client)
-        if new_balance < min_balance:
+        if new_balance < 0:
             conn.rollback()
-            raise HTTPException(409, "Корректировка уведет баланс ниже кредитного лимита")
+            raise HTTPException(409, "Корректировка уведет баланс ниже нуля")
         conn.execute("UPDATE clients SET balance_cents = ? WHERE id = ?", (new_balance, data.client_id))
         conn.commit()
         return {
@@ -836,7 +716,6 @@ def ops_client_balance_adjust(data: OpsBalanceAdjustIn):
             "old_balance_cents": int(client["balance_cents"]),
             "adjustment_cents": int(data.amount_cents),
             "balance_cents": new_balance,
-            "credit_limit_cents": db.client_credit_limit_units(client),
         }
     finally:
         conn.close()
@@ -851,8 +730,7 @@ def ops_diagnostics():
         terminators = _limited_rows(
             conn,
             "SELECT t.*, g.name AS gateway_group_name, g.ips AS gateway_group_ips, "
-            "g.gateway_name AS gateway_group_gateway_name, "
-            "g.balance_cents AS gateway_group_balance_cents FROM terminators t "
+            "g.gateway_name AS gateway_group_gateway_name FROM terminators t "
             "LEFT JOIN termination_groups g ON g.id = t.gateway_group_id "
             "ORDER BY t.active DESC, t.prefix, t.id",
         )

@@ -122,35 +122,28 @@ class ClientIn(BaseModel):
     name: str
     sip_ip: str
     currency: str = 'USD'
-    balance_cents: int = Field(default=0, ge=0)
-    credit_limit_cents: int = Field(default=0, ge=0)
+    balance_cents: int = 0
     active: bool = True
 
 class ClientUpdateIn(BaseModel):
     name: Optional[str] = None
     sip_ip: Optional[str] = None
     currency: Optional[str] = None
-    credit_limit_cents: Optional[int] = Field(default=None, ge=0)
     active: Optional[bool] = None
 
 class TopupIn(BaseModel):
     amount_cents: int = Field(gt=0)
 
-class BalanceAdjustIn(BaseModel):
-    amount_cents: int
-
 class TerminationGroupIn(BaseModel):
     name: str
     ips: str = ''
     gateway_name: str = ''
-    balance_cents: int = Field(default=0, ge=0)
     active: bool = True
 
 class TerminationGroupUpdateIn(BaseModel):
     name: Optional[str] = None
     ips: Optional[str] = None
     gateway_name: Optional[str] = None
-    balance_cents: Optional[int] = None
     active: Optional[bool] = None
 
 class TerminatorIn(BaseModel):
@@ -162,7 +155,6 @@ class TerminatorIn(BaseModel):
     gateway_name: str = ''
     tech_prefix: str = ''
     cost_rate_cents: int = Field(ge=0)
-    balance_cents: int = 0
     billing_cycle: str = db.DEFAULT_BILLING_CYCLE
     active: bool = True
 
@@ -175,7 +167,6 @@ class TerminatorUpdateIn(BaseModel):
     gateway_name: Optional[str] = None
     tech_prefix: Optional[str] = None
     cost_rate_cents: Optional[int] = None
-    balance_cents: Optional[int] = None
     billing_cycle: Optional[str] = None
     active: Optional[bool] = None
 
@@ -277,63 +268,6 @@ def _row_value(row, key, default=None):
         return default
     return row[key] if key in row.keys() else default
 
-def _clean_lookup_text(value) -> str:
-    return str(value or '').strip().lower()
-
-def _resolve_finalize_termination_group(conn, data: FinalizeIn):
-    if data.terminator_id is not None:
-        row = conn.execute(
-            "SELECT g.id, g.name FROM terminators t "
-            "LEFT JOIN termination_groups g ON g.id = t.gateway_group_id "
-            "WHERE t.id = ? AND g.id IS NOT NULL",
-            (data.terminator_id,),
-        ).fetchone()
-        if row is not None:
-            return row
-
-    names = []
-    terminator_name = _clean_lookup_text(data.terminator_name)
-    if terminator_name:
-        names.append(terminator_name)
-    gateway_name = _clean_lookup_text(data.gateway_name)
-    if gateway_name and gateway_name not in {'direct ip', 'manual'}:
-        names.append(gateway_name)
-    for name in names:
-        row = conn.execute(
-            "SELECT id, name FROM termination_groups "
-            "WHERE lower(name) = ? OR lower(gateway_name) = ? "
-            "ORDER BY active DESC, id LIMIT 1",
-            (name, name),
-        ).fetchone()
-        if row is not None:
-            return row
-
-    route_ip = str(data.route_ip or '').strip()
-    if route_ip:
-        rows = conn.execute("SELECT id, name, ips FROM termination_groups WHERE active = 1 ORDER BY id").fetchall()
-        for row in rows:
-            for token in db.split_ip_list(row['ips']):
-                if db.ip_token_matches(route_ip, token):
-                    return row
-    return None
-
-def _deduct_termination_group_balance(conn, data: FinalizeIn, cost_units: int):
-    cost_units = int(cost_units or 0)
-    if cost_units <= 0:
-        return None, '', 0
-
-    group = _resolve_finalize_termination_group(conn, data)
-    if group is None:
-        print(
-            f"[SUPPLIER BALANCE WARN] call={data.call_uuid} cost={cost_units} "
-            f"terminator_id={data.terminator_id} terminator={data.terminator_name} "
-            f"gateway={data.gateway_name} route_ip={data.route_ip}: group not found"
-        )
-        return None, '', 0
-
-    # Supplier balances are manual/info-only; finalize must not mutate them live.
-    return group['id'], group['name'], 0
-
 def _safe_record_sip_hit(data: ReserveIn, *, status_text: str, stage: str, reason: str='', client=None, rate=None, route=None, gateway_name: str='', route_ip: str='', dial_destination: str='', provider_number: str='', client_tech_prefix: str='', max_seconds: Optional[int]=None, sell_billing_cycle: str=db.DEFAULT_BILLING_CYCLE, cost_billing_cycle: str=db.DEFAULT_BILLING_CYCLE):
     try:
         db.record_sip_hit({'call_uuid': data.call_uuid or '', 'sip_ip': data.sip_ip, 'sip_port': data.sip_port, 'clid': data.clid, 'destination': data.destination, 'client_id': _row_value(client, 'id'), 'client_name': _row_value(client, 'name', ''), 'client_tech_prefix': client_tech_prefix, 'dial_destination': dial_destination, 'provider_number': provider_number, 'gateway_name': gateway_name, 'route_ip': route_ip, 'terminator_id': _row_value(route, 'id'), 'terminator_name': _row_value(route, 'name', ''), 'terminator_destination_name': _row_value(route, 'destination_name', ''), 'terminator_prefix': _row_value(route, 'prefix', ''), 'status': status_text, 'stage': stage, 'reason': reason, 'max_seconds': max_seconds, 'sell_rate_cents': _row_value(rate, 'sell_rate_cents', 0) or 0, 'cost_rate_cents': _row_value(route, 'cost_rate_cents', 0) or 0, 'sell_billing_cycle': db.normalize_billing_cycle(sell_billing_cycle), 'cost_billing_cycle': db.normalize_billing_cycle(cost_billing_cycle), 'user_agent': data.user_agent, 'sip_call_id': data.sip_call_id, 'profile': data.profile, 'context': data.context})
@@ -414,9 +348,9 @@ def reserve(data: ReserveIn):
         provider_number = f"{route['tech_prefix'] or ''}{dial_destination}"
         stage = 'balance'
         held = db.active_hold_sum(conn, client['id'], now_ts)
-        available = db.available_client_units(client, held)
+        available = client['balance_cents'] - held
         if available <= 0:
-            raise HTTPException(403, 'Недостаточно средств (баланс/кредитный лимит занят активными звонками)')
+            raise HTTPException(403, 'Недостаточно средств (баланс занят активными звонками)')
         max_seconds = db.max_seconds_for_balance(available, rate['sell_rate_cents'], sell_billing_cycle)
         if max_seconds <= 0:
             raise HTTPException(403, 'Недостаточно средств на минуту разговора')
@@ -448,19 +382,16 @@ def finalize(data: FinalizeIn):
         if client is None:
             raise HTTPException(404, 'Клиент не найден')
         new_balance = client['balance_cents'] - charged
-        min_balance = db.minimum_client_balance_units(client)
-        if new_balance < min_balance:
-            max_charge = db.max_charge_units_for_client(client)
-            print(f"[FINALIZE WARN] client={data.client_id} call={data.call_uuid} charged={charged} exceeds available credit={max_charge}: clamp to limit {min_balance}")
-            charged = min(charged, max_charge)
-            new_balance = client['balance_cents'] - charged
+        if new_balance < 0:
+            print(f"[FINALIZE WARN] client={data.client_id} call={data.call_uuid} charged={charged} > balance={client['balance_cents']}: clamp to 0")
+            charged = client['balance_cents']
+            new_balance = 0
         margin = charged - cost
         conn.execute('UPDATE clients SET balance_cents = ? WHERE id = ?', (new_balance, data.client_id))
-        termination_group_id, termination_group_name, supplier_debit = _deduct_termination_group_balance(conn, data, cost)
-        conn.execute('INSERT INTO cdr (client_id, call_uuid, sip_ip, clid, destination, client_tech_prefix, dial_destination, provider_number, gateway_name, route_ip, terminator_id, terminator_name, terminator_destination_name, terminator_prefix, terminator_tech_prefix, hangup_cause, bridge_hangup_cause, result, billsec, sell_rate_cents, cost_rate_cents, sell_billing_cycle, cost_billing_cycle, charged_cents, margin_cents, termination_group_id, termination_group_name, supplier_balance_debit_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (data.client_id, data.call_uuid, data.sip_ip, data.clid, data.destination, data.client_tech_prefix, data.dial_destination, data.provider_number, data.gateway_name, data.route_ip, data.terminator_id, data.terminator_name, data.terminator_destination_name, data.terminator_prefix, data.terminator_tech_prefix, data.hangup_cause, data.bridge_hangup_cause, data.result, data.billsec, data.sell_rate_cents, data.cost_rate_cents, sell_billing_cycle, cost_billing_cycle, charged, margin, termination_group_id, termination_group_name, supplier_debit))
+        conn.execute('INSERT INTO cdr (client_id, call_uuid, sip_ip, clid, destination, client_tech_prefix, dial_destination, provider_number, gateway_name, route_ip, terminator_id, terminator_name, terminator_destination_name, terminator_prefix, terminator_tech_prefix, hangup_cause, bridge_hangup_cause, result, billsec, sell_rate_cents, cost_rate_cents, sell_billing_cycle, cost_billing_cycle, charged_cents, margin_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (data.client_id, data.call_uuid, data.sip_ip, data.clid, data.destination, data.client_tech_prefix, data.dial_destination, data.provider_number, data.gateway_name, data.route_ip, data.terminator_id, data.terminator_name, data.terminator_destination_name, data.terminator_prefix, data.terminator_tech_prefix, data.hangup_cause, data.bridge_hangup_cause, data.result, data.billsec, data.sell_rate_cents, data.cost_rate_cents, sell_billing_cycle, cost_billing_cycle, charged, margin))
         conn.execute('DELETE FROM reservations WHERE call_uuid = ?', (data.call_uuid,))
         conn.commit()
-        return {'ok': True, 'charged_cents': charged, 'margin_cents': margin, 'balance_cents': new_balance, 'billsec': data.billsec, 'billed_seconds': bsec, 'sell_billing_cycle': sell_billing_cycle, 'cost_billing_cycle': cost_billing_cycle, 'termination_group_id': termination_group_id, 'termination_group_name': termination_group_name, 'supplier_balance_debit_cents': supplier_debit}
+        return {'ok': True, 'charged_cents': charged, 'margin_cents': margin, 'balance_cents': new_balance, 'billsec': data.billsec, 'billed_seconds': bsec, 'sell_billing_cycle': sell_billing_cycle, 'cost_billing_cycle': cost_billing_cycle}
     except HTTPException:
         conn.rollback()
         raise
@@ -471,7 +402,7 @@ def finalize(data: FinalizeIn):
 def create_client(data: ClientIn):
     conn = db.get_conn()
     try:
-        cur = conn.execute('INSERT INTO clients (name, sip_ip, balance_cents, credit_limit_cents, currency, active) VALUES (?, ?, ?, ?, ?, ?)', (data.name, data.sip_ip, data.balance_cents, data.credit_limit_cents, data.currency, int(data.active)))
+        cur = conn.execute('INSERT INTO clients (name, sip_ip, balance_cents, currency, active) VALUES (?, ?, ?, ?, ?)', (data.name, data.sip_ip, data.balance_cents, data.currency, int(data.active)))
         conn.commit()
         return {'id': cur.lastrowid}
     except db.sqlite3.IntegrityError:
@@ -527,7 +458,7 @@ def create_termination_group(data: TerminationGroupIn):
         raise HTTPException(400, 'Укажите IP группы или FreeSWITCH gateway')
     conn = db.get_conn()
     try:
-        cur = conn.execute('INSERT INTO termination_groups (name, ips, gateway_name, balance_cents, active) VALUES (?, ?, ?, ?, ?)', (data.name, data.ips, data.gateway_name.strip(), data.balance_cents, int(data.active)))
+        cur = conn.execute('INSERT INTO termination_groups (name, ips, gateway_name, active) VALUES (?, ?, ?, ?)', (data.name, data.ips, data.gateway_name.strip(), int(data.active)))
         conn.commit()
         return {'id': cur.lastrowid}
     except db.sqlite3.IntegrityError:
@@ -541,19 +472,6 @@ def list_termination_groups():
     rows = conn.execute('SELECT * FROM termination_groups ORDER BY name').fetchall()
     conn.close()
     return [dict(r) for r in rows]
-
-@app.post('/api/termination-groups/{gid}/topup', dependencies=ADMIN_WRITE_AUTH)
-def topup_termination_group(gid: int, data: BalanceAdjustIn):
-    conn = db.get_conn()
-    try:
-        cur = conn.execute('UPDATE termination_groups SET balance_cents = balance_cents + ? WHERE id = ?', (data.amount_cents, gid))
-        if cur.rowcount == 0:
-            raise HTTPException(404, 'Группа не найдена')
-        conn.commit()
-        row = conn.execute('SELECT balance_cents FROM termination_groups WHERE id = ?', (gid,)).fetchone()
-        return {'ok': True, 'balance_cents': row['balance_cents']}
-    finally:
-        conn.close()
 
 @app.delete('/api/termination-groups/{gid}', dependencies=ADMIN_WRITE_AUTH)
 def delete_termination_group(gid: int):
@@ -583,7 +501,7 @@ def create_terminator(data: TerminatorIn):
         conn.execute('BEGIN IMMEDIATE')
         if data.active:
             conn.execute('UPDATE terminators SET active = 0 WHERE prefix = ?', (data.prefix,))
-        cur = conn.execute('INSERT INTO terminators (name, gateway_group_id, ips, destination_name, prefix, gateway_name, tech_prefix, cost_rate_cents, balance_cents, billing_cycle, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (data.name, data.gateway_group_id, data.ips, data.destination_name, data.prefix, data.gateway_name, data.tech_prefix, data.cost_rate_cents, 0, billing_cycle, int(data.active)))
+        cur = conn.execute('INSERT INTO terminators (name, gateway_group_id, ips, destination_name, prefix, gateway_name, tech_prefix, cost_rate_cents, billing_cycle, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (data.name, data.gateway_group_id, data.ips, data.destination_name, data.prefix, data.gateway_name, data.tech_prefix, data.cost_rate_cents, billing_cycle, int(data.active)))
         conn.commit()
         return {'id': cur.lastrowid}
     finally:
@@ -599,7 +517,6 @@ def list_terminators():
 @app.patch('/api/terminators/{tid}', dependencies=ADMIN_WRITE_AUTH)
 def update_terminator(tid: int, data: TerminatorUpdateIn):
     fields = {k: v for k, v in data.dict().items() if v is not None}
-    fields.pop('balance_cents', None)
     if not fields:
         raise HTTPException(400, 'Нет полей для обновления')
     if 'billing_cycle' in fields:
@@ -630,31 +547,6 @@ def update_terminator(tid: int, data: TerminatorUpdateIn):
         conn.execute(f'UPDATE terminators SET {sets} WHERE id = ?', (*fields.values(), tid))
         conn.commit()
         return {'ok': True}
-    finally:
-        conn.close()
-
-@app.post('/api/terminators/{tid}/topup', dependencies=ADMIN_WRITE_AUTH)
-def topup_terminator(tid: int, data: BalanceAdjustIn):
-    if data.amount_cents == 0:
-        raise HTTPException(400, 'Сумма не должна быть 0')
-    conn = db.get_conn()
-    try:
-        conn.execute('BEGIN IMMEDIATE')
-        row = conn.execute('SELECT gateway_group_id FROM terminators WHERE id = ?', (tid,)).fetchone()
-        if row is None:
-            conn.rollback()
-            raise HTTPException(404, 'Терминатор не найден')
-        gid = row['gateway_group_id']
-        if gid is None:
-            conn.rollback()
-            raise HTTPException(400, 'У терминатора нет терминационной группы')
-        cur = conn.execute('UPDATE termination_groups SET balance_cents = balance_cents + ? WHERE id = ?', (data.amount_cents, gid))
-        if cur.rowcount == 0:
-            conn.rollback()
-            raise HTTPException(404, 'Терминационная группа не найдена')
-        row = conn.execute('SELECT balance_cents FROM termination_groups WHERE id = ?', (gid,)).fetchone()
-        conn.commit()
-        return {'ok': True, 'balance_cents': row['balance_cents']}
     finally:
         conn.close()
 
@@ -937,7 +829,7 @@ def dashboard_data(request: Request):
     conn = db.get_conn()
     clients = conn.execute('SELECT * FROM clients ORDER BY id').fetchall()
     groups = conn.execute('SELECT * FROM termination_groups ORDER BY name').fetchall()
-    terminators = conn.execute('SELECT t.*, g.name AS gateway_group_name, g.ips AS gateway_group_ips, g.gateway_name AS gateway_group_gateway_name, g.balance_cents AS gateway_group_balance_cents FROM terminators t LEFT JOIN termination_groups g ON g.id = t.gateway_group_id ORDER BY t.prefix, t.active DESC, t.id').fetchall()
+    terminators = conn.execute('SELECT t.*, g.name AS gateway_group_name, g.ips AS gateway_group_ips, g.gateway_name AS gateway_group_gateway_name FROM terminators t LEFT JOIN termination_groups g ON g.id = t.gateway_group_id ORDER BY t.prefix, t.active DESC, t.id').fetchall()
     client_rates = conn.execute('SELECT cr.*, c.name AS client_name, t.name AS terminator_name, t.cost_rate_cents AS terminator_cost_rate_cents, t.tech_prefix AS terminator_tech_prefix, t.billing_cycle AS terminator_billing_cycle FROM client_rates cr JOIN clients c ON c.id = cr.client_id LEFT JOIN terminators t ON t.id = cr.terminator_id ORDER BY cr.client_id').fetchall()
     cdr = conn.execute('SELECT cd.*, c.name AS client_name, c.sip_ip AS client_sip_ip, c.currency AS client_currency FROM cdr cd LEFT JOIN clients c ON c.id = cd.client_id ORDER BY cd.id DESC LIMIT 10').fetchall()
     sip_hits = conn.execute('SELECT sh.*, c.currency AS client_currency FROM sip_hits sh LEFT JOIN clients c ON c.id = sh.client_id ORDER BY sh.id DESC LIMIT 50').fetchall()
@@ -949,9 +841,9 @@ def dashboard_data(request: Request):
     if not _uses_current_money_scale(request):
         return {
             'money_scale': 100,
-            'clients': _legacy_dashboard_rows(clients, ('balance_cents', 'credit_limit_cents')),
+            'clients': _legacy_dashboard_rows(clients, ('balance_cents',)),
             'termination_groups': _dashboard_rows(groups),
-            'terminators': _legacy_dashboard_rows(terminators, ('cost_rate_cents', 'balance_cents')),
+            'terminators': _legacy_dashboard_rows(terminators, ('cost_rate_cents',)),
             'client_rates': _legacy_dashboard_rows(client_rates, ('sell_rate_cents',)),
             'cdr': _legacy_dashboard_rows(cdr, ('sell_rate_cents', 'cost_rate_cents', 'charged_cents', 'margin_cents')),
             'sip_hits': _legacy_dashboard_rows(sip_hits, ('sell_rate_cents', 'cost_rate_cents')),
