@@ -231,9 +231,19 @@ def install(app, bot, portal_globals):
                 data = bot._load_diagnostics()
                 if callback:
                     bot._answer_callback(callback.get("id"))
-                    text, keyboard = base_answer_for_callback(data, callback.get("data") or "menu")
+                    callback_data = callback.get("data") or "menu"
+                    set_pending = getattr(bot, "_cdr_shop_set_pending", None)
+                    if callable(set_pending):
+                        set_pending(chat_id, callback_data)
+                    text, keyboard = bot._answer_for_callback(data, callback_data)
                 else:
-                    text, keyboard = answer_for_text(data, message.get("text") or "/start")
+                    message_text = message.get("text") or "/start"
+                    answer_pending = getattr(bot, "_cdr_shop_answer_pending", None)
+                    pending_answer = answer_pending(data, chat_id, message_text) if callable(answer_pending) else None
+                    if pending_answer is not None:
+                        text, keyboard = pending_answer
+                    else:
+                        text, keyboard = bot._answer_for_text(data, message_text)
             except Exception as exc:
                 text, keyboard = f"Ошибка бота: {bot._trim(exc, 900)}", bot.MAIN_MENU
             bot._send_message(chat_id, text, keyboard)
