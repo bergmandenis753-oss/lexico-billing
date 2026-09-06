@@ -1,4 +1,9 @@
+import logging
+
 from pydantic import BaseModel
+
+
+logger = logging.getLogger(__name__)
 
 
 class TerminationGroupBalanceAdjustIn(BaseModel):
@@ -39,9 +44,65 @@ def ensure_schema(db):
             "CREATE INDEX IF NOT EXISTS idx_tg_balance_adjustments_group "
             "ON termination_group_balance_adjustments(group_id, created_at)"
         )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS termination_group_call_charges ("
+            "cdr_id INTEGER PRIMARY KEY, "
+            "call_uuid TEXT NOT NULL UNIQUE, "
+            "group_id INTEGER NOT NULL, "
+            "cost_cents INTEGER NOT NULL CHECK (cost_cents > 0), "
+            "balance_after_cents INTEGER NOT NULL, "
+            "created_at TEXT NOT NULL DEFAULT (datetime('now'))"
+            ")"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tg_call_charges_group "
+            "ON termination_group_call_charges(group_id, created_at)"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cdr_call_uuid ON cdr(call_uuid)")
         conn.commit()
     finally:
         conn.close()
+
+
+def post_call_cost(conn, cdr_id):
+    """Post the saved supplier cost inside the caller's finalization transaction."""
+    if not conn.in_transaction:
+        raise RuntimeError("Supplier charge requires an active transaction")
+    cdr = conn.execute("SELECT * FROM cdr WHERE id = ?", (cdr_id,)).fetchone()
+    if cdr is None:
+        raise ValueError("CDR not found")
+    # Use the cost saved at finalization, never today's possibly edited tariff.
+    cost = int(cdr["charged_cents"]) - int(cdr["margin_cents"])
+    if cost == 0:
+        return {"status": "no_cost", "cost_cents": 0}
+    if cost < 0 or int(cdr["billsec"]) <= 0 or not cdr["call_uuid"]:
+        raise ValueError("Invalid CDR for supplier accounting")
+    previous = conn.execute(
+        "SELECT * FROM termination_group_call_charges WHERE cdr_id = ? OR call_uuid = ?",
+        (cdr_id, cdr["call_uuid"]),
+    ).fetchone()
+    if previous is not None:
+        return {"status": "already_posted", "group_id": previous["group_id"],
+                "cost_cents": previous["cost_cents"]}
+    group = conn.execute(
+        "SELECT g.id, g.balance_cents FROM terminators t "
+        "JOIN termination_groups g ON g.id = t.gateway_group_id WHERE t.id = ?",
+        (cdr["terminator_id"],),
+    ).fetchone()
+    if group is None:
+        logger.warning("Supplier charge not posted: cdr_id=%s has no account mapping", cdr_id)
+        return {"status": "unmapped", "cost_cents": cost}
+    balance = int(group["balance_cents"] or 0) - cost
+    conn.execute(
+        "INSERT INTO termination_group_call_charges "
+        "(cdr_id, call_uuid, group_id, cost_cents, balance_after_cents) VALUES (?, ?, ?, ?, ?)",
+        (cdr_id, cdr["call_uuid"], group["id"], cost, balance),
+    )
+    conn.execute(
+        "UPDATE termination_groups SET balance_cents = ? WHERE id = ?", (balance, group["id"])
+    )
+    return {"status": "posted", "group_id": group["id"], "cost_cents": cost,
+            "balance_cents": balance}
 
 
 TERMINATOR_BALANCE_DASHBOARD_INJECTION = r"""

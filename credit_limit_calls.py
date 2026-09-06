@@ -3,6 +3,8 @@ import math
 from fastapi import HTTPException
 from pydantic import BaseModel
 
+from terminator_balance_patch import post_call_cost
+
 from credit_limit_common import (
     active_call_count,
     available_client_units,
@@ -147,6 +149,8 @@ def install_call_routes(app, main, db):
     @app.post("/api/finalize", dependencies=main.API_AUTH)
     def finalize(data: main.FinalizeIn):
         ensure_schema(db)
+        if not data.call_uuid.strip():
+            raise HTTPException(422, "call_uuid must not be empty")
         conn = db.get_conn()
         try:
             sell_billing_cycle = db.normalize_billing_cycle(data.sell_billing_cycle)
@@ -158,6 +162,27 @@ def install_call_routes(app, main, db):
             client = conn.execute("SELECT * FROM clients WHERE id = ?", (data.client_id,)).fetchone()
             if client is None:
                 raise HTTPException(404, "Клиент не найден")
+
+            previous = conn.execute(
+                "SELECT * FROM cdr WHERE call_uuid = ? ORDER BY id LIMIT 1", (data.call_uuid,)
+            ).fetchone()
+            if previous is not None:
+                identity_fields = ("client_id", "destination", "terminator_id", "billsec",
+                                   "sell_rate_cents", "cost_rate_cents")
+                if any(previous[key] != getattr(data, key) for key in identity_fields) or (
+                    db.normalize_billing_cycle(previous["sell_billing_cycle"]) != sell_billing_cycle
+                    or db.normalize_billing_cycle(previous["cost_billing_cycle"]) != cost_billing_cycle
+                ):
+                    raise HTTPException(409, "call_uuid already finalized with different billing data")
+                conn.rollback()
+                return {
+                    "ok": True, "already_finalized": True,
+                    "charged_cents": previous["charged_cents"],
+                    "margin_cents": previous["margin_cents"],
+                    "balance_cents": client["balance_cents"],
+                    "billsec": previous["billsec"], "billed_seconds": bsec,
+                    "sell_billing_cycle": sell_billing_cycle, "cost_billing_cycle": cost_billing_cycle,
+                }
 
             new_balance = client["balance_cents"] - charged
             min_balance = minimum_client_balance_units(client)
@@ -172,7 +197,7 @@ def install_call_routes(app, main, db):
 
             margin = charged - cost
             conn.execute("UPDATE clients SET balance_cents = ? WHERE id = ?", (new_balance, data.client_id))
-            conn.execute(
+            cdr_cursor = conn.execute(
                 "INSERT INTO cdr (client_id, call_uuid, sip_ip, clid, destination, client_tech_prefix, "
                 "dial_destination, provider_number, gateway_name, route_ip, terminator_id, terminator_name, "
                 "terminator_destination_name, terminator_prefix, terminator_tech_prefix, hangup_cause, "
@@ -206,6 +231,7 @@ def install_call_routes(app, main, db):
                     margin,
                 ),
             )
+            supplier_charge = post_call_cost(conn, cdr_cursor.lastrowid)
 
             final_status = "answered" if data.billsec > 0 else "failed"
             hangup = data.bridge_hangup_cause or data.hangup_cause or data.result or ""
@@ -255,6 +281,7 @@ def install_call_routes(app, main, db):
                 "billed_seconds": bsec,
                 "sell_billing_cycle": sell_billing_cycle,
                 "cost_billing_cycle": cost_billing_cycle,
+                "supplier_charge": supplier_charge,
             }
         except HTTPException:
             conn.rollback()
