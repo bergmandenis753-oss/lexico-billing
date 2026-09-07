@@ -1,4 +1,5 @@
 import math
+import caller_id
 
 from fastapi import HTTPException
 from pydantic import BaseModel
@@ -82,12 +83,18 @@ def install_call_routes(app, main, db):
                 raise HTTPException(403, "Недостаточно средств даже на 1 секунду разговора")
 
             call_uuid = data.call_uuid or f"nouuid-{now_ts}-{client['id']}"
+            outbound_caller_id = caller_id.select_number(conn, rate, call_uuid, client['id'])
             reserved = math.ceil(max_seconds * rate["sell_rate_cents"] / 60)
             expires_at = now_ts + max_seconds + db.RESERVATION_BUFFER_SEC
             conn.execute(
                 "INSERT OR REPLACE INTO reservations (client_id, call_uuid, reserved_cents, expires_at) VALUES (?, ?, ?, ?)",
                 (client["id"], call_uuid, reserved, expires_at),
             )
+            if outbound_caller_id:
+                conn.execute(
+                    "UPDATE reservations SET outbound_caller_id = ?, caller_id_rate_id = ? WHERE call_uuid = ?",
+                    (outbound_caller_id, rate['id'], call_uuid),
+                )
             conn.commit()
             stage = "reserved"
             reason = f"Пропущен; активных звонков={active_calls}; лимит={max_seconds} сек"
@@ -108,6 +115,7 @@ def install_call_routes(app, main, db):
             )
             return {
                 "allowed": True,
+                "outbound_caller_id": outbound_caller_id,
                 "max_seconds": max_seconds,
                 "sell_rate_cents": rate["sell_rate_cents"],
                 "cost_rate_cents": route["cost_rate_cents"],

@@ -42,6 +42,14 @@
   dialog label { display:block; font-size:13px; color:var(--mut); margin:0 0 5px; }
   dialog input, dialog select { width:100%; padding:8px; border-radius:7px; border:1px solid var(--line); background:var(--bg); color:var(--txt); margin-bottom:13px; }
   dialog .row { display:flex; gap:8px; justify-content:flex-end; }
+  #caller-id-dlg { width:min(420px, calc(100vw - 32px)); max-height:90vh; overflow:auto; }
+  #caller-id-dlg textarea { width:100%; min-height:180px; resize:vertical; padding:8px; border:1px solid var(--line); border-radius:7px; background:var(--bg); color:var(--txt); margin-bottom:12px; font:14px/1.5 monospace; }
+  #caller-id-route { overflow-wrap:anywhere; margin:0 0 14px; }
+  #caller-id-error { color:var(--bad); white-space:pre-wrap; overflow-wrap:anywhere; }
+  .caller-id-control { display:flex; align-items:center; gap:6px; white-space:nowrap; }
+  .caller-id-control button { width:30px; height:30px; padding:0; }
+  .rates-wrap { overflow-x:auto; }
+  .rates-wrap table { min-width:960px; }
   .empty { padding:16px; color:var(--mut); }
   .toolbar { display:flex; gap:10px; align-items:center; margin:0 0 22px; }
   .check { border:1px solid var(--line); border-radius:10px; padding:12px; margin:2px 0 14px; background:#111827; }
@@ -119,10 +127,10 @@
 
   <section>
     <div class="sec-head"><h2>Роуты оригинаторов (направление · терминатор · цена)</h2><button class="small" onclick="openRateDlg()">+ Роут</button></div>
-    <table>
-      <thead><tr><th>Оригинатор</th><th>Терминатор</th><th>Направление</th><th>Клиентский тех</th><th>Префикс</th><th class="right">Продажа</th><th></th></tr></thead>
+    <div class="rates-wrap"><table>
+      <thead><tr><th>Оригинатор</th><th>Терминатор</th><th>Направление</th><th>Клиентский тех</th><th>Префикс</th><th class="right">Продажа</th><th>Caller ID</th><th></th></tr></thead>
       <tbody id="t-rates"></tbody>
-    </table>
+    </table></div>
   </section>
 
   <section>
@@ -260,6 +268,21 @@
   </form>
 </dialog>
 
+<dialog id="caller-id-dlg" aria-labelledby="caller-id-title">
+  <h3 id="caller-id-title">Caller ID</h3>
+  <p id="caller-id-route" class="mut"></p>
+  <form id="caller-id-form">
+    <label for="caller-id-numbers">Номера (международный формат, по одному в строке)</label>
+    <textarea id="caller-id-numbers" maxlength="4000" rows="8" spellcheck="false" autofocus></textarea>
+    <p id="caller-id-error" role="alert" hidden></p>
+    <div class="row">
+      <button type="button" class="ghost" id="caller-id-clear">Очистить</button>
+      <button type="button" class="ghost" onclick="callerIdDlg.close()">Отмена</button>
+      <button type="submit" id="caller-id-save">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
 <script>
 const clientDlg = document.getElementById('client-dlg');
 const groupDlg  = document.getElementById('group-dlg');
@@ -267,6 +290,9 @@ const routeDlg  = document.getElementById('route-dlg');
 const rateDlg   = document.getElementById('rate-dlg');
 const directionDlg = document.getElementById('direction-dlg');
 const topupDlg  = document.getElementById('topup-dlg');
+const callerIdDlg = document.getElementById('caller-id-dlg');
+let clientRateMap = {};
+let callerIdRateId = null;
 let clientMap = {};
 let groupList = [];
 let groupMap = {};
@@ -431,8 +457,10 @@ async function load(manual = false) {
       </td>
     </tr>`; }).join('') || emptyRow(9);
 
+  clientRateMap = Object.fromEntries(d.client_rates.map(r => [r.id, r]));
   document.getElementById('t-rates').innerHTML = d.client_rates.map(r => {
     const cur = (clientMap[r.client_id]||{}).currency || '';
+    const callerIdCount = (r.caller_id_pool || '').split('\n').filter(Boolean).length;
     const label = r.terminator_name
       ? [r.terminator_name, r.terminator_tech_prefix ? `TP ${r.terminator_tech_prefix}` : '', `buy ${rate(r.terminator_cost_rate_cents, cur)} ${cycle(r.terminator_billing_cycle)}`].filter(Boolean).join(' · ')
       : '— (активный)';
@@ -443,8 +471,9 @@ async function load(manual = false) {
       <td class="mut">${r.client_tech_prefix ? esc(r.client_tech_prefix) : '—'}</td>
       <td class="mut">${esc(r.prefix)}</td>
       <td class="right">${rate(r.sell_rate_cents, cur)}<div class="mut">${esc(cycle(r.billing_cycle))}</div></td>
+      <td><div class="caller-id-control"><span>${callerIdCount || '—'}</span><button class="small ghost" title="Настроить Caller ID" aria-label="Настроить Caller ID" onclick="openCallerId(${r.id})">+</button></div></td>
       <td class="right"><button class="small danger" onclick="delRate(${r.id})">✕</button></td>
-    </tr>`; }).join('') || emptyRow(7);
+    </tr>`; }).join('') || emptyRow(8);
 
   const stageName = s => ({
     received: 'получили',
@@ -526,6 +555,42 @@ async function load(manual = false) {
     loadInFlight = false;
   }
 }
+
+function openCallerId(id) {
+  const route = clientRateMap[id];
+  if (!route) return;
+  callerIdRateId = id;
+  document.getElementById('caller-id-route').textContent =
+    [route.client_name, route.terminator_name, route.destination_name, route.client_tech_prefix].filter(Boolean).join(' · ');
+  document.getElementById('caller-id-numbers').value = route.caller_id_pool || '';
+  document.getElementById('caller-id-error').hidden = true;
+  callerIdDlg.showModal();
+}
+document.getElementById('caller-id-clear').addEventListener('click', () => {
+  document.getElementById('caller-id-numbers').value = '';
+  document.getElementById('caller-id-numbers').focus();
+});
+document.getElementById('caller-id-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const save = document.getElementById('caller-id-save');
+  if (save.disabled) return;
+  const id = callerIdRateId;
+  const error = document.getElementById('caller-id-error');
+  save.disabled = true;
+  error.hidden = true;
+  try {
+    await api(`/api/client-rates/${id}/caller-id`, 'PUT', {
+      numbers: document.getElementById('caller-id-numbers').value
+    });
+    callerIdDlg.close();
+    await load();
+  } catch (err) {
+    error.textContent = err.message;
+    error.hidden = false;
+  } finally {
+    save.disabled = false;
+  }
+});
 
 // ---- создание клиента ----
 document.getElementById('client-form').addEventListener('submit', async e => {

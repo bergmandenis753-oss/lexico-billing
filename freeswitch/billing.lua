@@ -192,6 +192,27 @@ else
   used_route = "direct:" .. route_ip
 end
 
+-- Scope the override to the outbound leg; keep the original CLID for CDR.
+local outbound_caller_id = jstr(body, "outbound_caller_id") or ""
+if outbound_caller_id ~= "" then
+  if outbound_caller_id:match("^[1-9]%d+$") and #outbound_caller_id >= 7 and #outbound_caller_id <= 15 then
+    local caller_id_domain = session:getVariable("sip_local_network_addr") or
+      freeswitch.getGlobalVariable("local_ip_v4") or ""
+    -- A full From URI also overrides gateways with a fixed from-user.
+    if not caller_id_domain:match("^[%w%.%-]+$") then
+      reject_call("[billing] invalid local SIP domain for Caller ID")
+      return
+    end
+    bridge_target = "{origination_caller_id_number=" .. outbound_caller_id ..
+      ",origination_caller_id_name=" .. outbound_caller_id ..
+      ",sip_invite_from_uri=sip:" .. outbound_caller_id .. "@" .. caller_id_domain ..
+      ",sip_cid_type=pid}" .. bridge_target
+  else
+    reject_call("[billing] invalid outbound Caller ID")
+    return
+  end
+end
+
 freeswitch.consoleLog("info", "[billing] bridge " .. bridge_target .. "\n")
 session:execute("bridge", bridge_target)
 

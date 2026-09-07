@@ -28,6 +28,7 @@ import re
 import sqlite3
 import time
 from pathlib import Path
+import caller_id
 
 DEFAULT_DB_PATH = Path(__file__).with_name("billing.db")
 E164_DATA_PATH = Path(__file__).with_name("data") / "e164_prefixes.json"
@@ -296,6 +297,7 @@ def init_db() -> None:
         CREATE UNIQUE INDEX IF NOT EXISTS idx_resv_uuid ON reservations(call_uuid);
         """
     )
+    caller_id.init_schema(conn)
     # Мягкая миграция: добавляем terminator_id в старую таблицу client_rates.
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(client_rates)").fetchall()]
     if "terminator_id" not in cols:

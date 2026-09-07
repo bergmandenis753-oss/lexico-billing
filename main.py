@@ -15,6 +15,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 import db
+import caller_id
 app = FastAPI(title='Lexico VoIP billing', docs_url=None, redoc_url=None, openapi_url=None)
 templates = Jinja2Templates(directory='.')
 basic_security = HTTPBasic(auto_error=False)
@@ -614,6 +615,24 @@ def update_client_rate(rid: int, data: ClientRateUpdateIn):
         conn.commit()
         if cur.rowcount == 0:
             raise HTTPException(404, 'Тариф не найден')
+        return {'ok': True}
+    finally:
+        conn.close()
+
+class CallerIdPoolIn(BaseModel):
+    numbers: str = Field(max_length=4000)
+
+@app.put('/api/client-rates/{rid}/caller-id', dependencies=ADMIN_WRITE_AUTH)
+def update_caller_id_pool(rid: int, data: CallerIdPoolIn):
+    conn = db.get_conn()
+    try:
+        try:
+            updated = caller_id.save_pool(conn, rid, data.numbers)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        if not updated:
+            raise HTTPException(404, 'Тариф не найден')
+        conn.commit()
         return {'ok': True}
     finally:
         conn.close()
