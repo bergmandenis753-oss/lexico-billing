@@ -1,12 +1,16 @@
 import urllib.parse
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+
+import telegram_report_files
+from telegram_report_files import TextDocument
 
 
 def _load_client_cdr_duration(bot, client_id, min_billsec):
     base = bot._billing_base_url()
     if not base:
         raise RuntimeError("BILLING_API_BASE_URL не задан")
-    query = urllib.parse.urlencode({"min_billsec": int(min_billsec or 0), "limit": 50})
+    query = urllib.parse.urlencode({"min_billsec": int(min_billsec or 0), "limit": 200})
     return bot._get_json(
         f"{base}/api/ops/client-cdr-duration/{client_id}?{query}",
         headers=bot._billing_headers(),
@@ -74,13 +78,16 @@ def _format_duration_report(bot, client, report):
     threshold = _format_duration(report.get("min_billsec") or 0)
     lines = [
         f"CDR shop: {bot._client_name(client)}",
-        f"Сегодня, звонки дольше {threshold}:",
+        f"Дата: {datetime.now(timezone.utc).date()} (UTC). Звонки дольше {threshold}:",
+        f"Выгружено звонков: {len(rows)}",
     ]
+    if len(rows) >= int(report.get("limit") or 200):
+        lines.append("ВНИМАНИЕ: достигнут лимит API. В файле последние доступные звонки; за день их может быть больше.")
     if not rows:
         lines.append("Нет звонков под этот фильтр.")
         return "\n".join(lines)
 
-    for row in rows[:50]:
+    for row in rows:
         currency = row.get("client_currency") or report.get("client_currency") or "USD"
         status = row.get("result") or row.get("bridge_hangup_cause") or row.get("hangup_cause") or "-"
         lines.extend(
@@ -92,16 +99,29 @@ def _format_duration_report(bot, client, report):
             ]
         )
 
-    text = "\n".join(lines)
-    if len(text) > 3900:
-        return text[:3900] + "\n...обрезал, слишком длинно"
-    return text
+    return "\n".join(lines)
+
+
+def _report_document(bot, client, report):
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    client_id = int(client["id"])
+    seconds = int(report.get("min_billsec") or 0)
+    rows = report.get("cdr") or []
+    caption = f"CDR shop: {bot._client_name(client)}. {day} UTC. Звонков: {len(rows)}."
+    if len(rows) >= int(report.get("limit") or 200):
+        caption += " Достигнут лимит API: отчёт за день может быть неполным."
+    return TextDocument(
+        f"cdrshop_{client_id}_{day}_over_{seconds}s.txt",
+        _format_duration_report(bot, client, report),
+        caption,
+    )
 
 
 def install(app, bot):
     if getattr(bot, "_cdr_shop_patch_installed", False):
         return
     bot._cdr_shop_patch_installed = True
+    telegram_report_files.install(bot)
 
     pending_by_chat = {}
     base_client_keyboard = bot._client_keyboard
@@ -158,7 +178,7 @@ def install(app, bot):
         except ValueError as exc:
             return f"Не понял длительность: {exc}", client_keyboard(client_id)
         report = _load_client_cdr_duration(bot, client_id, min_billsec)
-        return _format_duration_report(bot, client, report), client_keyboard(client_id)
+        return _report_document(bot, client, report), client_keyboard(client_id)
 
     def set_pending(chat_id, callback_data):
         chat_key = str(chat_id)
@@ -194,7 +214,7 @@ def install(app, bot):
         except ValueError as exc:
             return f"Не понял длительность: {exc}\n\nНапиши, например: 5 или 05:10", client_keyboard(client_id)
         report = _load_client_cdr_duration(bot, client_id, min_billsec)
-        return _format_duration_report(bot, client, report), client_keyboard(client_id)
+        return _report_document(bot, client, report), client_keyboard(client_id)
 
     def answer_for_text(data, text):
         raw = str(text or "").strip()
