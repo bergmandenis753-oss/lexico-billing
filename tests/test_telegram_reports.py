@@ -178,7 +178,7 @@ class CheckTests(unittest.TestCase):
 
     def test_check_prompt_next_message_and_cancel(self):
         answer = self.bot._cdr_shop_answer_pending(self.data, 10, "/check")
-        self.assertIn("Пришли B-номер", answer[0])
+        self.assertIn("Пришли A- или B-номер", answer[0])
         self.assertIsNone(self.bot._cdr_shop_answer_pending(self.data, 11, "48506147819"))
         answer = self.bot._cdr_shop_answer_pending(self.data, 10, "48506147819")
         self.assertIn("48732221920", answer[0])
@@ -238,7 +238,9 @@ class WebhookTests(unittest.TestCase):
             self.post("/check")
             response = self.post("48506147819")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("Проверка B: 48506147819", send.call_args.args[1])
+        import telegram_sip_archive
+        self.assertIsInstance(send.call_args.args[1], telegram_sip_archive.ArchiveRequest)
+        self.assertEqual(send.call_args.args[1].number, "48506147819")
 
     def test_unauthorized_chat_cannot_get_cdr_or_check(self):
         with patch.object(self.bot, "_load_diagnostics") as load, \

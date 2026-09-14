@@ -12,7 +12,7 @@ def _number(value):
 def _parse_number(value):
     number = _number(value)
     if not number:
-        raise ValueError("Укажи один B-номер в международном формате, например /check 48506147819")
+        raise ValueError("Укажи один A- или B-номер в международном формате, например /check 48506147819")
     return number
 
 
@@ -123,7 +123,13 @@ def install(bot):
     original_pending = bot._cdr_shop_answer_pending
     original_set_pending = bot._cdr_shop_set_pending
     waiting = set()
-    prompt = "Пришли B-номер следующим сообщением или командой /check 48506147819"
+    prompt = "Пришли A- или B-номер следующим сообщением или командой /check 48506147819. Другая дата: /check 48506147819 2026-09-14 (UTC)."
+
+    def report_request(data, raw):
+        archive = getattr(bot, "_archive_request_report", None)
+        if archive:
+            return archive(raw, data)
+        return _report(bot, data, _parse_number(raw))
 
     def answer_for_text(data, text):
         parts = str(text or "").strip().split(maxsplit=1)
@@ -132,7 +138,7 @@ def install(bot):
         if len(parts) == 1:
             return prompt, bot.MAIN_MENU
         try:
-            return _report(bot, data, _parse_number(parts[1])), bot.MAIN_MENU
+            return report_request(data, parts[1]), bot.MAIN_MENU
         except ValueError as exc:
             return str(exc), bot.MAIN_MENU
 
@@ -149,11 +155,11 @@ def install(bot):
             return result
         if key in waiting:
             try:
-                number = _parse_number(raw)
+                report = report_request(data, raw)
             except ValueError as exc:
                 return str(exc), bot.MAIN_MENU
             waiting.discard(key)
-            return _report(bot, data, number), bot.MAIN_MENU
+            return report, bot.MAIN_MENU
         return original_pending(data, chat_id, text)
 
     def set_pending(chat_id, callback_data):

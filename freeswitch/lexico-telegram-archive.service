@@ -1,0 +1,29 @@
+[Unit]
+Description=Independent passive SIP archive for Telegram checks
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/lexico-telegram-archive/telegram_sip_archive.py
+WorkingDirectory=/opt/lexico-telegram-archive
+Environment=PYTHONUNBUFFERED=1
+StateDirectory=lexico-telegram-archive
+UMask=0077
+Restart=on-failure
+RestartSec=10
+KillMode=control-group
+TimeoutStopSec=5
+Nice=15
+CPUQuota=20%
+MemoryMax=192M
+TasksMax=20
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/lexico-telegram-archive
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID
+
+[Install]
+WantedBy=multi-user.target
