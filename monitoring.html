@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
+<title>Lexico VoIP — мониторинг</title>
+<style>
+  :root { --bg:#0f1420; --card:#1a2130; --line:#2a3446; --txt:#e6ebf2; --mut:#8a96a8; --accent:#3f8cff; --good:#37c26a; --bad:#ff5a5a; --warn:#ffbf47; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif; }
+  header { min-height:68px; padding:14px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+  header h1 { margin:0; font-size:18px; font-weight:600; }
+  header .sub { color:var(--mut); font-size:13px; }
+  .mode-nav { display:flex; gap:4px; margin-left:16px; padding:3px; border:1px solid var(--line); border-radius:8px; }
+  .mode-nav a { color:var(--mut); text-decoration:none; padding:5px 10px; border-radius:5px; font-size:13px; }
+  .mode-nav a.active { background:var(--line); color:var(--txt); }
+  .header-actions { margin-left:auto; display:flex; align-items:center; gap:10px; }
+  main { max-width:1500px; margin:0 auto; padding:20px 24px 40px; }
+  .summary { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin-bottom:22px; }
+  .metric { min-height:94px; padding:14px 16px; background:var(--card); border:1px solid var(--line); border-radius:8px; }
+  .metric .label { color:var(--mut); font-size:11px; text-transform:uppercase; }
+  .metric .value { margin-top:10px; font-size:22px; font-weight:600; }
+  .metric .value.good { color:var(--good); }
+  .metric .value.bad { color:var(--bad); }
+  .toolbar { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+  input,select { height:36px; padding:0 10px; color:var(--txt); background:var(--card); border:1px solid var(--line); border-radius:7px; font:inherit; }
+  input { width:min(360px,45vw); }
+  button { height:36px; padding:0 12px; color:#fff; background:var(--accent); border:0; border-radius:7px; cursor:pointer; font:inherit; }
+  button.ghost { color:var(--txt); background:transparent; border:1px solid var(--line); }
+  .table-wrap { overflow:auto; background:var(--card); border:1px solid var(--line); border-radius:8px; }
+  table { width:100%; min-width:1280px; border-collapse:collapse; }
+  th,td { padding:10px 12px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; }
+  th { position:sticky; top:0; z-index:1; color:var(--mut); background:var(--card); font-size:11px; font-weight:600; text-transform:uppercase; }
+  tr:last-child td { border-bottom:0; }
+  tbody tr:hover td { background:rgba(63,140,255,.035); }
+  .right { text-align:right; }
+  .mut { color:var(--mut); }
+  .good { color:var(--good); }
+  .bad { color:var(--bad); }
+  .empty { padding:28px; color:var(--mut); text-align:center; }
+  .margin-cell { min-width:190px; }
+  .margin-line { display:flex; justify-content:space-between; gap:12px; font-weight:600; }
+  .bar { height:4px; margin-top:6px; overflow:hidden; background:#111827; border-radius:2px; }
+  .bar span { display:block; height:100%; min-width:2px; background:var(--good); border-radius:2px; }
+  .bar span.negative { background:var(--bad); }
+  .status { min-height:20px; margin-top:9px; color:var(--mut); font-size:12px; }
+  @media (max-width:900px) {
+    header { flex-wrap:wrap; padding:12px 16px; }
+    header .sub { display:none; }
+    .mode-nav { order:3; width:100%; margin:0; }
+    .mode-nav a { flex:1; text-align:center; }
+    .header-actions { margin-left:auto; }
+    main { padding:16px; }
+    .summary { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .metric:last-child { grid-column:span 2; }
+    .toolbar { align-items:stretch; flex-direction:column; }
+    input,select { width:100%; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Lexico VoIP</h1>
+  <span class="sub">прибыльность · сегодня</span>
+  <nav class="mode-nav" aria-label="Режим биллинга"><a href="/">Исходящие</a><a href="/dids">DIDs</a><a class="active" href="/monitoring">Мониторинг</a></nav>
+  <div class="header-actions"><span class="mut" id="header-state">обновляю...</span><button class="ghost" onclick="load(true)">Обновить</button></div>
+</header>
+
+<main>
+  <div class="summary">
+    <div class="metric"><div class="label">Маржа сегодня</div><div class="value" id="sum-margin">—</div></div>
+    <div class="metric"><div class="label">Оборот</div><div class="value" id="sum-revenue">—</div></div>
+    <div class="metric"><div class="label">Расход поставщикам</div><div class="value" id="sum-cost">—</div></div>
+    <div class="metric"><div class="label">Разговор</div><div class="value" id="sum-minutes">—</div></div>
+    <div class="metric"><div class="label">Успешные звонки</div><div class="value" id="sum-calls">—</div></div>
+  </div>
+
+  <div class="toolbar">
+    <input id="search" type="search" placeholder="Клиент, направление или терминатор" oninput="render()">
+    <select id="sort" onchange="render()">
+      <option value="margin">По марже</option>
+      <option value="revenue">По обороту</option>
+      <option value="minutes">По минутам</option>
+      <option value="client">По клиенту</option>
+    </select>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Клиент</th><th>Направление</th><th>Терминатор</th>
+        <th class="right">Звонки</th><th class="right">Минуты</th>
+        <th class="right">Закупка / мин</th><th class="right">Продажа / мин</th>
+        <th class="right">Оборот</th><th class="right">Расход</th><th>Маржа</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <div class="status" id="status"></div>
+</main>
+
+<script>
+let state = {money_scale:10000,summary:{},rows:[]};
+let loading = false;
+const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const units = value => Number(value || 0) / Number(state.money_scale || 10000);
+const money = (value,currency='USD') => `${units(value).toFixed(4)} ${esc(currency)}`;
+const minutes = seconds => (Number(seconds || 0) / 60).toFixed(1);
+
+function render() {
+  const summary = state.summary || {};
+  const defaultCurrency = state.rows[0]?.currency || 'USD';
+  const marginEl = document.getElementById('sum-margin');
+  marginEl.textContent = money(summary.margin_units,defaultCurrency);
+  marginEl.className = `value ${Number(summary.margin_units || 0) < 0 ? 'bad' : 'good'}`;
+  document.getElementById('sum-revenue').textContent = money(summary.revenue_units,defaultCurrency);
+  document.getElementById('sum-cost').textContent = money(summary.cost_units,defaultCurrency);
+  document.getElementById('sum-minutes').textContent = `${minutes(summary.billsec)} мин`;
+  document.getElementById('sum-calls').textContent = Number(summary.connected_calls || 0).toLocaleString('ru-RU');
+
+  const query = document.getElementById('search').value.trim().toLowerCase();
+  const sort = document.getElementById('sort').value;
+  const rows = (state.rows || []).filter(row =>
+    !query || `${row.client_name} ${row.direction_name} ${row.terminator_name}`.toLowerCase().includes(query)
+  );
+  rows.sort((a,b) => {
+    if (sort === 'client') return String(a.client_name).localeCompare(String(b.client_name),'ru');
+    const field = sort === 'revenue' ? 'revenue_units' : sort === 'minutes' ? 'billsec' : 'margin_units';
+    return Number(b[field] || 0) - Number(a[field] || 0);
+  });
+  const maxMargin = Math.max(1,...rows.map(row => Math.abs(Number(row.margin_units || 0))));
+  document.getElementById('rows').innerHTML = rows.map(row => {
+    const margin = Number(row.margin_units || 0);
+    const marginPercent = Number(row.revenue_units || 0) ? margin / Number(row.revenue_units) * 100 : 0;
+    const width = Math.max(2,Math.round(Math.abs(margin) / maxMargin * 100));
+    return `<tr>
+      <td>${esc(row.client_name)}</td><td>${esc(row.direction_name)}</td><td>${esc(row.terminator_name)}</td>
+      <td class="right">${Number(row.connected_calls || 0)}<div class="mut">из ${Number(row.calls || 0)}</div></td>
+      <td class="right">${minutes(row.billsec)}</td>
+      <td class="right">${money(row.average_cost_rate_units,row.currency)}</td>
+      <td class="right">${money(row.average_sell_rate_units,row.currency)}</td>
+      <td class="right">${money(row.revenue_units,row.currency)}</td>
+      <td class="right">${money(row.cost_units,row.currency)}</td>
+      <td class="margin-cell"><div class="margin-line ${margin < 0 ? 'bad' : 'good'}"><span>${money(margin,row.currency)}</span><span>${marginPercent.toFixed(1)}%</span></div><div class="bar"><span class="${margin < 0 ? 'negative' : ''}" style="width:${width}%"></span></div></td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="10" class="empty">За сегодня прибыльных CDR пока нет</td></tr>`;
+}
+
+async function load(force=false) {
+  if (loading) return;
+  loading = true;
+  document.getElementById('header-state').textContent = 'обновляю...';
+  try {
+    const response = await fetch(`/api/monitoring/daily${force?'?refresh=true':''}`,{cache:'no-store'});
+    if (!response.ok) throw new Error(await response.text());
+    state = await response.json();
+    render();
+    document.getElementById('header-state').textContent = 'сегодня UTC';
+    document.getElementById('status').textContent = `Данные: ${state.generated_at} · обновление раз в ${state.cache_ttl_seconds} сек.`;
+  } catch (error) {
+    document.getElementById('header-state').textContent = 'ошибка';
+    document.getElementById('status').textContent = error.message;
+  } finally { loading = false; }
+}
+
+load();
+setInterval(() => load(false),60000);
+</script>
+</body>
+</html>
