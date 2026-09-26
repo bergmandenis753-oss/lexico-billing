@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
+<title>Lexico VoIP — DIDs</title>
+<style>
+  :root { --bg:#0f1420; --card:#1a2130; --line:#2a3446; --txt:#e6ebf2; --mut:#8a96a8; --accent:#3f8cff; --good:#37c26a; --bad:#ff5a5a; --warn:#ffbf47; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif; }
+  header { min-height:68px; padding:14px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:18px; margin:0; font-weight:600; }
+  header .sub { color:var(--mut); font-size:13px; }
+  .mode-nav { display:flex; gap:4px; margin-left:16px; padding:3px; border:1px solid var(--line); border-radius:8px; }
+  .mode-nav a { color:var(--mut); text-decoration:none; padding:5px 10px; border-radius:5px; font-size:13px; }
+  .mode-nav a.active { background:var(--line); color:var(--txt); }
+  .header-actions { margin-left:auto; display:flex; align-items:center; gap:10px; }
+  main { padding:20px 24px 40px; max-width:1440px; margin:0 auto; }
+  .summary { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin-bottom:24px; }
+  .metric { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px 16px; min-height:94px; }
+  .metric .label { color:var(--mut); font-size:11px; text-transform:uppercase; }
+  .metric .value { margin-top:10px; font-size:22px; font-weight:600; }
+  section { margin:0 0 28px; }
+  .section-head { display:flex; align-items:center; gap:10px; margin-bottom:9px; }
+  h2 { margin:0; font-size:15px; font-weight:600; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:7px; padding:7px 12px; cursor:pointer; font:inherit; }
+  button:hover { opacity:.9; }
+  button.small { padding:4px 9px; font-size:12px; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--txt); }
+  button.danger { background:transparent; border:1px solid rgba(255,90,90,.35); color:var(--bad); }
+  .table-wrap { overflow:auto; border:1px solid var(--line); border-radius:8px; background:var(--card); }
+  table { width:100%; min-width:900px; border-collapse:collapse; }
+  th,td { padding:10px 12px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }
+  tr:last-child td { border-bottom:0; }
+  th { color:var(--mut); font-size:11px; font-weight:600; text-transform:uppercase; }
+  .right { text-align:right; }
+  .mut { color:var(--mut); }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .badge { display:inline-flex; align-items:center; min-height:22px; padding:2px 8px; border-radius:20px; font-size:12px; }
+  .on { color:var(--good); background:rgba(55,194,106,.15); }
+  .off { color:var(--mut); background:rgba(138,150,168,.15); }
+  .busy { color:var(--warn); background:rgba(255,191,71,.14); }
+  .money-neg { color:var(--bad); }
+  .actions { display:flex; justify-content:flex-end; gap:6px; white-space:nowrap; }
+  .empty { padding:20px; color:var(--mut); text-align:center; }
+  dialog { width:min(460px,calc(100vw - 28px)); max-height:90vh; overflow:auto; background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:10px; padding:20px; }
+  dialog::backdrop { background:rgba(3,7,18,.7); }
+  dialog h3 { margin:0 0 16px; font-size:16px; }
+  label { display:block; color:var(--mut); font-size:12px; margin-bottom:5px; }
+  input,select,textarea { width:100%; margin:0 0 13px; padding:8px 10px; color:var(--txt); background:var(--bg); border:1px solid var(--line); border-radius:7px; font:inherit; }
+  textarea { min-height:74px; resize:vertical; }
+  .check { display:flex; align-items:center; gap:8px; margin-bottom:14px; color:var(--txt); }
+  .check input { width:auto; margin:0; }
+  .dialog-actions { display:flex; justify-content:flex-end; gap:8px; }
+  #notice { min-height:20px; margin:-12px 0 14px; color:var(--mut); }
+  #notice.error { color:var(--bad); }
+  @media (max-width:900px) {
+    header { flex-wrap:wrap; padding:12px 16px; }
+    header .sub { display:none; }
+    .mode-nav { order:3; width:100%; margin:0; }
+    .mode-nav a { flex:1; text-align:center; }
+    main { padding:16px; }
+    .summary { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .metric:last-child { grid-column:span 2; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Lexico VoIP</h1>
+  <span class="sub">prepaid-биллинг · входящие номера</span>
+  <nav class="mode-nav" aria-label="Режим биллинга"><a href="/">Исходящие</a><a class="active" href="/dids">DIDs</a></nav>
+  <div class="header-actions"><span class="mut" id="refresh-state">обновляю...</span><button class="ghost" onclick="load(true)">Обновить</button></div>
+</header>
+
+<main>
+  <div class="summary">
+    <div class="metric"><div class="label">Баланс DID-клиентов</div><div class="value" id="sum-balance">—</div></div>
+    <div class="metric"><div class="label">Выручка сегодня</div><div class="value" id="sum-revenue">—</div></div>
+    <div class="metric"><div class="label">Маржа сегодня</div><div class="value" id="sum-margin">—</div></div>
+    <div class="metric"><div class="label">Активные DIDs</div><div class="value" id="sum-dids">—</div></div>
+    <div class="metric"><div class="label">Звонки сейчас</div><div class="value" id="sum-calls">—</div></div>
+  </div>
+  <div id="notice"></div>
+
+  <section>
+    <div class="section-head"><h2>DID-клиенты и отдельные балансы</h2><button class="small" onclick="clientDlg.showModal()">+ Клиент</button></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Клиент</th><th>DIDs</th><th>Линии сейчас</th><th>Исходящий доступ клиента</th><th class="right">Баланс</th><th class="right">Кредит</th><th class="right">Доступно</th><th>Статус</th><th></th></tr></thead>
+      <tbody id="clients-body"></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <div class="section-head"><h2>Исходящие маршруты DID-клиентов</h2><button class="small" onclick="openOutboundRouteDialog()">+ Роут из терминаторов</button></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Клиент → мы</th><th>Направление</th><th>Мы → поставщик</th><th>Номер поставщику</th><th class="right">Продажа</th><th class="right">Закупка</th><th>Линии</th><th>Статус</th><th></th></tr></thead>
+      <tbody id="outbound-routes-body"></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <div class="section-head"><h2>Входящие номера и маршруты</h2><button class="small" onclick="openNumberDialog()">+ DID</button></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>DID</th><th>Клиент</th><th>Поставщик / whitelist</th><th>Куда направляем</th><th class="right">Продажа</th><th class="right">Закупка</th><th>Линии</th><th>Статус</th><th></th></tr></thead>
+      <tbody id="numbers-body"></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <div class="section-head"><h2>Входящие CDR · последние 100</h2></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Время</th><th>Клиент</th><th>DID (B)</th><th>Caller ID (A)</th><th>Поставщик / IP</th><th>Назначение</th><th class="right">Длит.</th><th class="right">Списано</th><th class="right">Маржа</th><th>Результат</th></tr></thead>
+      <tbody id="cdr-body"></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <div class="section-head"><h2>Исходящие DID CDR · последние 100</h2></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Время</th><th>Клиент</th><th>Caller ID (A)</th><th>B-номер</th><th>Поставщику</th><th>Маршрут</th><th class="right">Длит.</th><th class="right">Списано</th><th class="right">Маржа</th><th>Результат</th></tr></thead>
+      <tbody id="outbound-cdr-body"></tbody>
+    </table></div>
+  </section>
+</main>
+
+<dialog id="client-dlg">
+  <h3>Новый DID-клиент</h3>
+  <form id="client-form">
+    <label>Название</label><input id="client-name" required autofocus>
+    <label>Валюта</label><input id="client-currency" value="USD" required>
+    <label>Стартовый баланс</label><input id="client-balance" type="number" min="0" step="0.0001" value="0">
+    <label>Кредитный лимит</label><input id="client-credit" type="number" min="0" step="0.0001" value="0">
+    <label>IP клиента для исходящих, через запятую</label><textarea id="client-outbound-ips" placeholder="198.51.100.10, 198.51.100.0/24"></textarea>
+    <label>Исходящий техпрефикс клиента</label><input id="client-outbound-tech" placeholder="500">
+    <label class="check"><input id="client-active" type="checkbox" checked> Активен</label>
+    <div class="dialog-actions"><button type="button" class="ghost" onclick="clientDlg.close()">Отмена</button><button type="submit">Создать</button></div>
+  </form>
+</dialog>
+
+<dialog id="access-dlg">
+  <h3>Исходящий доступ DID-клиента</h3>
+  <form id="access-form">
+    <input id="access-client-id" type="hidden">
+    <div class="mut" id="access-client-name" style="margin-bottom:14px"></div>
+    <label>IP клиента / CIDR, через запятую</label><textarea id="access-ips" placeholder="198.51.100.10, 198.51.100.0/24"></textarea>
+    <label>Техпрефикс клиента</label><input id="access-tech" placeholder="500">
+    <label>Дополнительный Caller ID whitelist, по одному в строке</label><textarea id="access-caller-ids" style="min-height:150px" placeholder="48221234567&#10;48221234568"></textarea>
+    <div class="mut" style="margin:-6px 0 14px">Активные DID-номера этого клиента разрешены автоматически. Чужие номера добавить нельзя.</div>
+    <div class="dialog-actions"><button type="button" class="ghost" onclick="accessDlg.close()">Отмена</button><button type="submit">Сохранить</button></div>
+  </form>
+</dialog>
+
+<dialog id="outbound-route-dlg">
+  <h3>Исходящий маршрут DID-клиента</h3>
+  <form id="outbound-route-form">
+    <label>DID-клиент</label><select id="out-client" required></select>
+    <label>Существующий терминатор / направление</label><select id="out-terminator" required></select>
+    <div class="mut" style="margin:-6px 0 14px">Gateway, IP, техпрефикс и закупка берутся из основного биллинга.</div>
+    <label>Цена клиенту за минуту</label><input id="out-sell" type="number" min="0" step="0.0001" required>
+    <label>Тарификация клиента</label><select id="out-cycle"><option value="1/1">1/1</option><option value="60/1">60/1</option><option value="60/60">60/60</option></select>
+    <label>Максимум одновременных линий</label><input id="out-channels" type="number" min="1" max="1000" value="10" required>
+    <label class="check"><input id="out-active" type="checkbox" checked> Маршрут активен</label>
+    <div class="dialog-actions"><button type="button" class="ghost" onclick="outboundRouteDlg.close()">Отмена</button><button type="submit">Создать</button></div>
+  </form>
+</dialog>
+
+<dialog id="number-dlg">
+  <h3>Новый входящий DID</h3>
+  <form id="number-form">
+    <label>DID номер</label><input id="did-number" inputmode="tel" placeholder="48221234567" required autofocus>
+    <label>DID-клиент</label><select id="did-client" required></select>
+    <label>Поставщик</label><input id="did-provider" placeholder="DID Global">
+    <label>IP поставщика / CIDR, через запятую</label><textarea id="did-provider-ips" placeholder="203.0.113.10, 203.0.113.0/24"></textarea>
+    <label>SIP URI или IP:порт клиента</label><input id="did-destination" placeholder="sip:48221234567@198.51.100.20:5060" required>
+    <label>Резервный SIP URI или IP:порт</label><input id="did-backup" placeholder="198.51.100.21:5060">
+    <label>Цена входящей минуты</label><input id="did-sell" type="number" min="0" step="0.0001" required>
+    <label>Закупочная цена минуты</label><input id="did-cost" type="number" min="0" step="0.0001" value="0">
+    <label>Тарификация</label><select id="did-cycle"><option value="1/1">1/1</option><option value="60/1">60/1</option><option value="60/60">60/60</option></select>
+    <label>Максимум одновременных линий</label><input id="did-channels" type="number" min="1" max="1000" value="1" required>
+    <label>Комментарий</label><textarea id="did-notes"></textarea>
+    <label class="check"><input id="did-active" type="checkbox" checked> DID активен</label>
+    <div class="dialog-actions"><button type="button" class="ghost" onclick="numberDlg.close()">Отмена</button><button type="submit">Создать</button></div>
+  </form>
+</dialog>
+
+<script>
+const MONEY_SCALE = 10000;
+const clientDlg = document.getElementById('client-dlg');
+const numberDlg = document.getElementById('number-dlg');
+const accessDlg = document.getElementById('access-dlg');
+const outboundRouteDlg = document.getElementById('outbound-route-dlg');
+let state = {clients:[], numbers:[], cdr:[], outbound_routes:[], outbound_cdr:[], caller_ids:{}, existing_terminators:[], summary:{}};
+let loading = false;
+const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const empty = cols => `<tr><td colspan="${cols}" class="empty">Нет данных</td></tr>`;
+const money = (units, currency='USD') => `${(Number(units || 0) / MONEY_SCALE).toFixed(4)} ${esc(currency)}`;
+const moneyClass = units => Number(units || 0) < 0 ? 'right money-neg' : 'right';
+
+function parseMoney(value, signed=false) {
+  const raw = String(value ?? '').trim().replace(',', '.');
+  if (!raw) return 0;
+  const pattern = signed ? /^([+-]?)(\d+)(?:\.(\d{0,4}))?$/ : /^(\d+)(?:\.(\d{0,4}))?$/;
+  const match = raw.match(pattern);
+  if (!match) throw new Error('Сумма должна содержать не более 4 знаков после точки');
+  const sign = signed && match[1] === '-' ? -1 : 1;
+  const whole = Number(match[signed ? 2 : 1]);
+  const fraction = Number((match[signed ? 3 : 2] || '').padEnd(4, '0'));
+  return sign * (whole * MONEY_SCALE + fraction);
+}
+
+async function api(path, method='GET', body) {
+  const response = await fetch(path, {
+    method,
+    cache:'no-store',
+    headers:{'Content-Type':'application/json','X-Money-Scale':String(MONEY_SCALE)},
+    body:body === undefined ? undefined : JSON.stringify(body)
+  });
+  if (!response.ok) {
+    let message = await response.text();
+    try { message = JSON.parse(message).detail || message; } catch (_) {}
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+function notice(message='', error=false) {
+  const el = document.getElementById('notice');
+  el.textContent = message;
+  el.className = error ? 'error' : '';
+}
+
+function render() {
+  const s = state.summary || {};
+  const currency = state.clients[0]?.currency || 'USD';
+  document.getElementById('sum-balance').textContent = money(s.total_balance_cents, currency);
+  document.getElementById('sum-revenue').textContent = money(s.revenue_today_cents, currency);
+  document.getElementById('sum-margin').textContent = money(s.margin_today_cents, currency);
+  document.getElementById('sum-dids').textContent = Number(s.active_dids || 0);
+  document.getElementById('sum-calls').textContent = Number(s.active_calls || 0);
+
+  document.getElementById('clients-body').innerHTML = state.clients.map(c => {
+    const available = Number(c.balance_cents || 0) + Number(c.credit_limit_cents || 0);
+    return `<tr>
+      <td>${esc(c.name)}</td><td>${c.did_count}</td><td>${c.active_calls}</td>
+      <td>${c.outbound_ips ? `<span class="mono">${esc(c.outbound_ips)}</span><div class="mut">TP ${esc(c.outbound_tech_prefix || '—')} · Caller ID +${c.extra_caller_id_count}</div>` : '<span class="mut">не настроен</span>'}</td>
+      <td class="${moneyClass(c.balance_cents)}">${money(c.balance_cents,c.currency)}</td>
+      <td class="right">${money(c.credit_limit_cents,c.currency)}</td>
+      <td class="${moneyClass(available)}">${money(available,c.currency)}</td>
+      <td>${c.active ? '<span class="badge on">активен</span>' : '<span class="badge off">выкл</span>'}</td>
+      <td><div class="actions"><button class="small ghost" onclick="openAccess(${c.id})">Исходящие</button><button class="small ghost" onclick="topup(${c.id})">± Баланс</button><button class="small ${c.active?'danger':'ghost'}" onclick="toggleClient(${c.id},${c.active?0:1})">${c.active?'Выкл':'Вкл'}</button></div></td>
+    </tr>`;
+  }).join('') || empty(9);
+
+  document.getElementById('numbers-body').innerHTML = state.numbers.map(n => `<tr>
+    <td class="mono">${esc(n.did_number)}</td><td>${esc(n.client_name)}</td>
+    <td>${esc(n.provider_name || '—')}<div class="mut mono">${esc(n.provider_ips || 'любой IP')}</div></td>
+    <td class="mono">${esc(n.destination)}${n.backup_destination?`<div class="mut">резерв: ${esc(n.backup_destination)}</div>`:''}</td>
+    <td class="right">${money(n.sell_rate_cents,n.currency)}<div class="mut">${esc(n.billing_cycle)}</div></td>
+    <td class="right">${money(n.cost_rate_cents,n.currency)}</td>
+    <td>${n.active_calls} / ${n.max_channels} ${n.active_calls ? '<span class="badge busy">занято</span>' : ''}</td>
+    <td>${n.active ? '<span class="badge on">активен</span>' : '<span class="badge off">выкл</span>'}</td>
+    <td><div class="actions"><button class="small ${n.active?'danger':'ghost'}" onclick="toggleNumber(${n.id},${n.active?0:1})">${n.active?'Выкл':'Вкл'}</button></div></td>
+  </tr>`).join('') || empty(9);
+
+  document.getElementById('outbound-routes-body').innerHTML = (state.outbound_routes || []).map(r => `<tr>
+    <td>${esc(r.client_name)}<div class="mut mono">${esc((state.clients.find(c=>c.id===r.client_id)||{}).outbound_ips || 'нет IP')}</div></td>
+    <td>${esc(r.resolved_destination_name || r.destination_name)}<div class="mut mono">${esc(r.prefix)}</div></td>
+    <td>${esc(r.resolved_provider_name || r.provider_name || '—')}<div class="mut mono">${esc(r.resolved_gateway_name || r.resolved_route_ips || 'не настроено')}</div></td>
+    <td class="mono">${esc(r.resolved_tech_prefix || r.tech_prefix || '')}${esc(r.prefix)}…</td>
+    <td class="right">${money(r.sell_rate_cents,r.currency)}<div class="mut">${esc(r.billing_cycle)}</div></td>
+    <td class="right">${money(r.resolved_cost_rate_cents ?? r.cost_rate_cents,r.currency)}<div class="mut">${esc(r.resolved_cost_billing_cycle || r.billing_cycle)}</div></td>
+    <td>${r.active_calls} / ${r.max_channels}</td>
+    <td>${r.active ? '<span class="badge on">активен</span>' : '<span class="badge off">выкл</span>'}</td>
+    <td><div class="actions"><button class="small ${r.active?'danger':'ghost'}" onclick="toggleOutboundRoute(${r.id},${r.active?0:1})">${r.active?'Выкл':'Вкл'}</button></div></td>
+  </tr>`).join('') || empty(9);
+
+  document.getElementById('cdr-body').innerHTML = state.cdr.map(c => `<tr>
+    <td>${esc(c.started_at)}</td><td>${esc(c.client_name)}</td><td class="mono">${esc(c.did_number)}</td><td class="mono">${esc(c.caller_id || '—')}</td>
+    <td>${esc(c.provider_name || '—')}<div class="mut mono">${esc(c.source_ip || '')}</div></td><td class="mono">${esc(c.destination)}</td>
+    <td class="right">${c.billsec} с${c.billed_seconds !== c.billsec?`<div class="mut">тариф: ${c.billed_seconds}</div>`:''}</td>
+    <td class="right">${money(c.charged_cents,c.currency)}</td><td class="${moneyClass(c.margin_cents)}">${money(c.margin_cents,c.currency)}</td>
+    <td>${esc(c.result || c.hangup_cause || '—')}</td>
+  </tr>`).join('') || empty(10);
+
+  document.getElementById('outbound-cdr-body').innerHTML = (state.outbound_cdr || []).map(c => `<tr>
+    <td>${esc(c.started_at)}</td><td>${esc(c.client_name)}</td><td class="mono">${esc(c.caller_id)}</td><td class="mono">${esc(c.dial_destination)}</td>
+    <td class="mono">${esc(c.provider_number)}</td><td>${esc(c.provider_name || '—')}<div class="mut">${esc(c.destination_name)}</div></td>
+    <td class="right">${c.billsec} с</td><td class="right">${money(c.charged_cents,c.currency)}</td>
+    <td class="${moneyClass(c.margin_cents)}">${money(c.margin_cents,c.currency)}</td><td>${esc(c.result || c.hangup_cause || '—')}</td>
+  </tr>`).join('') || empty(10);
+
+  const select = document.getElementById('did-client');
+  const selected = select.value;
+  select.innerHTML = state.clients.filter(c => c.active).map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  if ([...select.options].some(o => o.value === selected)) select.value = selected;
+  const outSelect = document.getElementById('out-client');
+  const outSelected = outSelect.value;
+  outSelect.innerHTML = state.clients.filter(c => c.active).map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  if ([...outSelect.options].some(o => o.value === outSelected)) outSelect.value = outSelected;
+  const termSelect = document.getElementById('out-terminator');
+  const termSelected = termSelect.value;
+  termSelect.innerHTML = (state.existing_terminators || []).map(t => {
+    const provider = t.group_name || t.name;
+    const target = t.gateway_name || t.group_gateway_name || t.ips || t.group_ips || 'нет gateway/IP';
+    return `<option value="${t.id}">${esc(provider)} · ${esc(t.destination_name)} ${esc(t.prefix)} · TP ${esc(t.tech_prefix || '—')} · buy ${money(t.cost_rate_cents,'USD')} ${esc(t.billing_cycle)} · ${esc(target)}</option>`;
+  }).join('');
+  if ([...termSelect.options].some(o => o.value === termSelected)) termSelect.value = termSelected;
+}
+
+async function load(manual=false) {
+  if (loading) return;
+  loading = true;
+  const status = document.getElementById('refresh-state');
+  status.textContent = manual ? 'обновляю...' : 'автообновление...';
+  try {
+    state = await api('/api/dids/dashboard');
+    render();
+    status.textContent = `обновлено ${new Date().toLocaleTimeString()}`;
+    notice();
+  } catch (error) {
+    status.textContent = 'ошибка обновления';
+    notice(error.message,true);
+  } finally { loading = false; }
+}
+
+function openNumberDialog() {
+  if (!state.clients.some(c => c.active)) return notice('Сначала создайте активного DID-клиента.',true);
+  numberDlg.showModal();
+}
+
+function openOutboundRouteDialog() {
+  if (!state.clients.some(c => c.active)) return notice('Сначала создайте активного DID-клиента.',true);
+  if (!(state.existing_terminators || []).length) return notice('В основном биллинге нет активных терминаторов.',true);
+  outboundRouteDlg.showModal();
+}
+
+function openAccess(id) {
+  const client = state.clients.find(c => c.id === id);
+  if (!client) return;
+  document.getElementById('access-client-id').value = id;
+  document.getElementById('access-client-name').textContent = client.name;
+  document.getElementById('access-ips').value = client.outbound_ips || '';
+  document.getElementById('access-tech').value = client.outbound_tech_prefix || '';
+  document.getElementById('access-caller-ids').value = (state.caller_ids[String(id)] || []).join('\n');
+  accessDlg.showModal();
+}
+
+async function topup(id) {
+  const raw = prompt('Изменение баланса: положительное число пополнит, отрицательное спишет');
+  if (raw === null) return;
+  try { await api(`/api/dids/clients/${id}/topup`,'POST',{amount_cents:parseMoney(raw,true)}); await load(true); }
+  catch (error) { notice(error.message,true); }
+}
+
+async function toggleClient(id, active) {
+  try { await api(`/api/dids/clients/${id}`,'PATCH',{active:Boolean(active)}); await load(true); }
+  catch (error) { notice(error.message,true); }
+}
+
+async function toggleNumber(id, active) {
+  try { await api(`/api/dids/numbers/${id}`,'PATCH',{active:Boolean(active)}); await load(true); }
+  catch (error) { notice(error.message,true); }
+}
+
+async function toggleOutboundRoute(id, active) {
+  try { await api(`/api/dids/outbound-routes/${id}`,'PATCH',{active:Boolean(active)}); await load(true); }
+  catch (error) { notice(error.message,true); }
+}
+
+document.getElementById('client-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  try {
+    await api('/api/dids/clients','POST',{
+      name:document.getElementById('client-name').value.trim(), currency:document.getElementById('client-currency').value.trim(),
+      balance_cents:parseMoney(document.getElementById('client-balance').value), credit_limit_cents:parseMoney(document.getElementById('client-credit').value),
+      outbound_ips:document.getElementById('client-outbound-ips').value.trim(), outbound_tech_prefix:document.getElementById('client-outbound-tech').value.trim(),
+      active:document.getElementById('client-active').checked
+    });
+    event.target.reset(); document.getElementById('client-currency').value='USD'; document.getElementById('client-active').checked=true;
+    clientDlg.close(); await load(true);
+  } catch (error) { notice(error.message,true); }
+});
+
+document.getElementById('access-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const id = Number(document.getElementById('access-client-id').value);
+  try {
+    await api(`/api/dids/clients/${id}`,'PATCH',{
+      outbound_ips:document.getElementById('access-ips').value.trim(),
+      outbound_tech_prefix:document.getElementById('access-tech').value.trim()
+    });
+    await api(`/api/dids/clients/${id}/caller-ids`,'PUT',{numbers:document.getElementById('access-caller-ids').value});
+    accessDlg.close(); await load(true);
+  } catch (error) { notice(error.message,true); }
+});
+
+document.getElementById('number-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  try {
+    await api('/api/dids/numbers','POST',{
+      client_id:Number(document.getElementById('did-client').value), did_number:document.getElementById('did-number').value,
+      provider_name:document.getElementById('did-provider').value.trim(), provider_ips:document.getElementById('did-provider-ips').value.trim(),
+      destination:document.getElementById('did-destination').value.trim(), backup_destination:document.getElementById('did-backup').value.trim(),
+      sell_rate_cents:parseMoney(document.getElementById('did-sell').value), cost_rate_cents:parseMoney(document.getElementById('did-cost').value),
+      billing_cycle:document.getElementById('did-cycle').value, max_channels:Number(document.getElementById('did-channels').value),
+      active:document.getElementById('did-active').checked, notes:document.getElementById('did-notes').value.trim()
+    });
+    event.target.reset(); document.getElementById('did-cycle').value='1/1'; document.getElementById('did-channels').value='1'; document.getElementById('did-active').checked=true;
+    numberDlg.close(); await load(true);
+  } catch (error) { notice(error.message,true); }
+});
+
+document.getElementById('outbound-route-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  try {
+    await api('/api/dids/outbound-routes','POST',{
+      client_id:Number(document.getElementById('out-client').value), terminator_id:Number(document.getElementById('out-terminator').value),
+      sell_rate_cents:parseMoney(document.getElementById('out-sell').value), billing_cycle:document.getElementById('out-cycle').value,
+      max_channels:Number(document.getElementById('out-channels').value), active:document.getElementById('out-active').checked
+    });
+    event.target.reset(); document.getElementById('out-cycle').value='1/1'; document.getElementById('out-channels').value='10'; document.getElementById('out-active').checked=true;
+    outboundRouteDlg.close(); await load(true);
+  } catch (error) { notice(error.message,true); }
+});
+
+load();
+setInterval(() => load(false),15000);
+</script>
+</body>
+</html>

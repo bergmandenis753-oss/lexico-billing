@@ -1,0 +1,9 @@
+<!-- Install as /etc/freeswitch/dialplan/public/00_lexico_dids.xml and reloadxml. -->
+<include>
+  <extension name="lexico-inbound-dids" continue="false">
+    <condition field="destination_number" expression="^\+?([0-9]{3,15})$">
+      <action application="set" data="destination_number=$1"/>
+      <action application="lua" data="did_billing.lua"/>
+    </condition>
+  </extension>
+</include>

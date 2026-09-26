@@ -1,0 +1,11 @@
+<!-- Assign DID customers to context did-outbound. -->
+<include>
+  <context name="did-outbound">
+    <extension name="lexico-did-outbound">
+      <condition field="destination_number" expression="^\+?([0-9]{3,32})$">
+        <action application="set" data="destination_number=$1"/>
+        <action application="lua" data="did_outbound.lua"/>
+      </condition>
+    </extension>
+  </context>
+</include>

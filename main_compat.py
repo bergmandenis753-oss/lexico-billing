@@ -77,6 +77,10 @@ async def dashboard_scale_guard(request: Request, call_next):
             "/api/pcap-events",
             "/api/firewall-whitelist",
             "/api/ops/",
+            "/api/dids/reserve",
+            "/api/dids/finalize",
+            "/api/dids/outbound/reserve",
+            "/api/dids/outbound/finalize",
         ))
     )
     if admin_write and request.headers.get("authorization") and not _uses_current_money_scale(request):
