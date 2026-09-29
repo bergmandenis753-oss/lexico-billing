@@ -4,11 +4,14 @@ import textwrap
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel
+
+import rate_notification
 
 
 app = FastAPI(title="Lexico Telegram diagnostics bot", docs_url=None, redoc_url=None, openapi_url=None)
@@ -87,6 +90,40 @@ def _telegram_api(method, payload):
     return _post_json(f"https://api.telegram.org/bot{token}/{method}", payload)
 
 
+def _telegram_api_multipart(method, fields, files):
+    token = _token()
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN не задан")
+    boundary = f"----LexicoBot{uuid.uuid4().hex}"
+    body = bytearray()
+
+    def add_line(value=b""):
+        body.extend(value if isinstance(value, bytes) else str(value).encode("utf-8"))
+        body.extend(b"\r\n")
+
+    for name, value in fields.items():
+        add_line(f"--{boundary}")
+        add_line(f'Content-Disposition: form-data; name="{name}"')
+        add_line()
+        add_line(value)
+    for name, file_name, content, content_type in files:
+        safe_name = str(file_name).replace('"', "'").replace("\r", "").replace("\n", "")
+        add_line(f"--{boundary}")
+        add_line(f'Content-Disposition: form-data; name="{name}"; filename="{safe_name}"')
+        add_line(f"Content-Type: {content_type}")
+        add_line()
+        add_line(content)
+    add_line(f"--{boundary}--")
+    req = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/{method}",
+        data=bytes(body),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=35) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def _send_message(chat_id, text, reply_markup=None):
     text = str(text or "").strip() or "Нет данных."
     chunks = textwrap.wrap(text, width=3500, replace_whitespace=False, drop_whitespace=False)
@@ -99,6 +136,33 @@ def _send_message(chat_id, text, reply_markup=None):
         if reply_markup and chunk == chunks[-1]:
             payload["reply_markup"] = reply_markup
         _telegram_api("sendMessage", payload)
+
+
+def _send_document(chat_id, file_name, content, caption=""):
+    fields = {"chat_id": str(chat_id)}
+    if caption:
+        fields["caption"] = caption
+    return _telegram_api_multipart(
+        "sendDocument",
+        fields,
+        [("document", file_name, content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")],
+    )
+
+
+def _send_rate_notification(chat_id, text):
+    try:
+        notice = rate_notification.parse_rate_command(text)
+    except ValueError as exc:
+        _send_message(chat_id, str(exc), MAIN_MENU)
+        return False
+    content = rate_notification.build_rate_notification_xlsx(notice)
+    _send_document(
+        chat_id,
+        rate_notification.rate_notification_filename(notice),
+        content,
+        f"Rate Notification: {notice.destination} — {notice.rate_text} USD",
+    )
+    return True
 
 
 def _answer_callback(callback_id):
@@ -224,6 +288,7 @@ def _menu_text(data):
             f"SIP хитов: {len(data.get('sip_hits', []))}",
             f"CDR: {len(data.get('cdr', []))}",
             f"Баланс общий: {_money(summary.get('total_balance_cents'), scale, 'USD')}",
+            "Rate notification: /rate Poland 48 0.09 1/1 103",
         ]
     )
 
@@ -526,12 +591,16 @@ async def telegram_webhook(
         return {"ok": True, "blocked": True}
 
     try:
+        message_text = message.get("text") or "/start"
+        if not callback and rate_notification.is_rate_command(message_text):
+            _send_rate_notification(chat_id, message_text)
+            return {"ok": True, "rate_notification": True}
         data = _load_diagnostics()
         if callback:
             _answer_callback(callback.get("id"))
             text, keyboard = _answer_for_callback(data, callback.get("data") or "menu")
         else:
-            text, keyboard = _answer_for_text(data, message.get("text") or "/start")
+            text, keyboard = _answer_for_text(data, message_text)
     except Exception as exc:
         text, keyboard = f"Ошибка бота: {_trim(exc, 900)}", MAIN_MENU
     _send_message(chat_id, text, keyboard)
