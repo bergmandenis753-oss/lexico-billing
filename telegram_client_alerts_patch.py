@@ -228,6 +228,10 @@ def install(app, bot, portal_globals):
 
         if bot._chat_allowed(chat_id):
             try:
+                message_text = message.get("text") or "/start"
+                if not callback and bot.rate_notification.is_rate_command(message_text):
+                    bot._send_rate_notification(chat_id, message_text)
+                    return {"ok": True, "rate_notification": True}
                 data = bot._load_diagnostics()
                 if callback:
                     bot._answer_callback(callback.get("id"))
@@ -237,7 +241,6 @@ def install(app, bot, portal_globals):
                         set_pending(chat_id, callback_data)
                     text, keyboard = bot._answer_for_callback(data, callback_data)
                 else:
-                    message_text = message.get("text") or "/start"
                     answer_pending = getattr(bot, "_cdr_shop_answer_pending", None)
                     pending_answer = answer_pending(data, chat_id, message_text) if callable(answer_pending) else None
                     if pending_answer is not None:
