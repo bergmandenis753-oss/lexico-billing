@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CHAIN="${CHAIN:-LEXICO_SIP_GUARD}"
+TMP_CHAIN="${CHAIN}_NEW"
+BILLING_URL="${BILLING_URL:-https://web-production-d5e1c.up.railway.app/api/firewall-whitelist}"
+API_KEY_FILE="${API_KEY_FILE:-/etc/freeswitch/billing_api_key}"
+STATIC_FILE="${STATIC_FILE:-/etc/lexico-sip-firewall-static.txt}"
+IP_PORTS="${IP_PORTS:-5060,5080}"
+AUTH_PORT="${AUTH_PORT:-5070}"
+LOCK_FILE="${LOCK_FILE:-/run/lexico-sip-firewall.lock}"
+
+exec 9>"$LOCK_FILE"
+flock -n 9 || exit 0
+
+api_key="$(tr -d '\r\n ' < "$API_KEY_FILE")"
+json_file="$(mktemp)"
+ips_file="$(mktemp)"
+trap 'rm -f "$json_file" "$ips_file"' EXIT
+
+http_code="$(curl -sS --connect-timeout 8 --max-time 25 -o "$json_file" -w '%{http_code}' \
+  -H "Authorization: Bearer $api_key" "$BILLING_URL" || true)"
+if [[ "$http_code" != "200" ]]; then
+  echo "Billing whitelist endpoint returned HTTP $http_code; firewall left unchanged" >&2
+  exit 1
+fi
+
+python3 - "$json_file" "$STATIC_FILE" > "$ips_file" <<'PY'
+import ipaddress, json, re, sys
+from pathlib import Path
+payload = json.loads(Path(sys.argv[1]).read_text())
+tokens = [str(x.get("ip") or "").strip() for x in payload.get("entries") or [] if isinstance(x, dict)]
+static = Path(sys.argv[2])
+if static.exists():
+    tokens += [line.split("#", 1)[0].strip() for line in static.read_text().splitlines()]
+seen = set()
+for token in tokens:
+    if re.match(r"^\d{1,3}(?:\.\d{1,3}){3}:\d+$", token): token = token.rsplit(":", 1)[0]
+    try: network = ipaddress.ip_network(token, strict=False)
+    except ValueError: continue
+    normalized = str(network)
+    if network.version == 4 and normalized not in seen:
+        seen.add(normalized); print(normalized)
+PY
+
+mapfile -t whitelist < "$ips_file"
+[[ "${#whitelist[@]}" -gt 0 ]] || { echo "No whitelist IPs; firewall left unchanged" >&2; exit 1; }
+
+iptables -N "$TMP_CHAIN" 2>/dev/null || true
+iptables -F "$TMP_CHAIN"
+for cidr in "${whitelist[@]}"; do
+  iptables -A "$TMP_CHAIN" -s "$cidr" -p udp -m multiport --dports "$IP_PORTS" -j ACCEPT
+  iptables -A "$TMP_CHAIN" -s "$cidr" -p tcp -m multiport --dports "$IP_PORTS" -j ACCEPT
+done
+
+# Password-authenticated agents use a separate public port with a per-source rate limit.
+iptables -A "$TMP_CHAIN" -p udp --dport "$AUTH_PORT" -m hashlimit \
+  --hashlimit-upto 20/second --hashlimit-burst 40 --hashlimit-mode srcip \
+  --hashlimit-name lexico_sip_auth_udp -j ACCEPT
+iptables -A "$TMP_CHAIN" -p tcp --dport "$AUTH_PORT" -m hashlimit \
+  --hashlimit-upto 10/second --hashlimit-burst 20 --hashlimit-mode srcip \
+  --hashlimit-name lexico_sip_auth_tcp -j ACCEPT
+iptables -A "$TMP_CHAIN" -p udp --dport "$AUTH_PORT" -j DROP
+iptables -A "$TMP_CHAIN" -p tcp --dport "$AUTH_PORT" -j DROP
+
+iptables -A "$TMP_CHAIN" -p udp -m multiport --dports "$IP_PORTS" -m limit --limit 12/min --limit-burst 20 -j LOG --log-prefix "LEXICO SIP DROP UDP " --log-level 4
+iptables -A "$TMP_CHAIN" -p tcp -m multiport --dports "$IP_PORTS" -m limit --limit 12/min --limit-burst 20 -j LOG --log-prefix "LEXICO SIP DROP TCP " --log-level 4
+iptables -A "$TMP_CHAIN" -p udp -m multiport --dports "$IP_PORTS" -j DROP
+iptables -A "$TMP_CHAIN" -p tcp -m multiport --dports "$IP_PORTS" -j DROP
+iptables -A "$TMP_CHAIN" -j RETURN
+
+while iptables -C INPUT -j "$TMP_CHAIN" >/dev/null 2>&1; do iptables -D INPUT -j "$TMP_CHAIN"; done
+iptables -I INPUT 1 -j "$TMP_CHAIN"
+while iptables -C INPUT -j "$CHAIN" >/dev/null 2>&1; do iptables -D INPUT -j "$CHAIN"; done
+if iptables -L "$CHAIN" -n >/dev/null 2>&1; then iptables -F "$CHAIN"; iptables -X "$CHAIN"; fi
+iptables -E "$TMP_CHAIN" "$CHAIN"
+
+logger -t lexico-sip-firewall "applied ${#whitelist[@]} whitelist networks; auth port $AUTH_PORT enabled"
+echo "Applied ${#whitelist[@]} whitelist networks; SIP auth port $AUTH_PORT enabled"

@@ -74,6 +74,7 @@ CREDIT_DASHBOARD_INJECTION = r"""
         await api('/api/clients', 'POST', {
           name: document.getElementById('cl-name').value,
           sip_ip: document.getElementById('cl-ip').value,
+          connection_mode: window.__sipCreateMode || (document.getElementById('cl-ip').value.trim() ? 'ip' : 'sip'),
           currency: document.getElementById('cl-cur').value || 'USD',
           balance_cents: inputMoneyUnits('cl-bal', 'Баланс'),
           credit_limit_cents: credit

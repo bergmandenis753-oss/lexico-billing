@@ -36,8 +36,11 @@ def install_call_routes(app, main, db):
             conn.execute("BEGIN IMMEDIATE")
             db.cleanup_expired(conn, now_ts)
             stage = "client_lookup"
-            client = db.get_client_by_ip(conn, data.sip_ip)
+            resolver = getattr(db, "get_client_for_sip_request", None)
+            client = resolver(conn, data) if resolver else db.get_client_by_ip(conn, data.sip_ip)
             if client is None:
+                if getattr(data, "sip_login", ""):
+                    raise HTTPException(403, f"SIP логин {data.sip_login} не найден или выключен")
                 raise HTTPException(403, f"Клиент с IP {data.sip_ip} не найден")
             stage = "client_status"
             if not client["active"]:

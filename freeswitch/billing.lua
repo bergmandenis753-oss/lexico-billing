@@ -11,6 +11,12 @@ local user_agent = session:getVariable("sip_user_agent") or ""
 local sip_call_id = session:getVariable("sip_call_id") or ""
 local profile = session:getVariable("sofia_profile_name") or session:getVariable("sip_profile_name") or ""
 local context = session:getVariable("context") or ""
+local sip_login = ""
+if profile == "lexico-users" then
+  sip_login = session:getVariable("sip_auth_username") or
+    session:getVariable("user_name") or
+    session:getVariable("lexico_sip_login") or ""
+end
 
 local function trim(s)
   local cleaned = (s or ""):gsub("^%s+", "")
@@ -120,7 +126,7 @@ local function reject_call(message)
 end
 
 local rjson = string.format(
-  '{"sip_ip":"%s","sip_port":"%s","destination":"%s","call_uuid":"%s","clid":"%s","user_agent":"%s","sip_call_id":"%s","profile":"%s","context":"%s"}',
+  '{"sip_ip":"%s","sip_port":"%s","destination":"%s","call_uuid":"%s","clid":"%s","user_agent":"%s","sip_call_id":"%s","profile":"%s","context":"%s","sip_login":"%s"}',
   json_escape(client_ip),
   json_escape(client_port),
   json_escape(dest),
@@ -129,7 +135,8 @@ local rjson = string.format(
   json_escape(user_agent),
   json_escape(sip_call_id),
   json_escape(profile),
-  json_escape(context)
+  json_escape(context),
+  json_escape(sip_login)
 )
 
 local guard_code, guard_body = http_post("/api/sip-guard", rjson)

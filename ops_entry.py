@@ -10,6 +10,7 @@ import credit_limit_patch
 import low_balance_settings_patch
 import main_compat
 import multi_active_terminators_patch
+import multi_sip_credentials_patch
 import reserve_balance_patch
 import route_pool_patch
 import telegram_balance_patch
@@ -199,3 +200,4 @@ credit_limit_patch.install(app, main, db)
 terminator_balance_patch.install(app, main, db)
 client_telegram_alerts_patch.install(app, main, db)
 low_balance_settings_patch.install(app, main, db)
+multi_sip_credentials_patch.install(app, main, db)

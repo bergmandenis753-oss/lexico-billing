@@ -93,6 +93,7 @@ class ReserveIn(BaseModel):
     sip_call_id: str = ''
     profile: str = ''
     context: str = ''
+    sip_login: str = ''
 
 class FinalizeIn(BaseModel):
     client_id: int
@@ -279,9 +280,10 @@ def _safe_record_sip_hit(data: ReserveIn, *, status_text: str, stage: str, reaso
 def sip_guard(data: ReserveIn):
     conn = db.get_conn()
     try:
-        client = db.get_client_by_ip(conn, data.sip_ip)
+        resolver = getattr(db, 'get_client_for_sip_request', None)
+        client = resolver(conn, data) if resolver else db.get_client_by_ip(conn, data.sip_ip)
         if client is None:
-            reason = f'IP {data.sip_ip} не в whitelist'
+            reason = f'SIP логин {data.sip_login} не найден' if data.sip_login else f'IP {data.sip_ip} не в whitelist'
             _safe_record_sip_hit(data, status_text='blocked', stage='client_lookup', reason=reason)
             raise HTTPException(403, reason)
         if not client['active']:
