@@ -86,3 +86,17 @@ after `<context name="default">`, before the stock demo/global extensions.
 
 That keeps carrier calls inside the billing flow first, so calls are reserved,
 bridged, finalized, and written to CDR before any demo dialplan actions can run.
+
+## FreeSWITCH native billing HTTP
+
+`freeswitch/billing.lua` uses the in-process `mod_curl` API. Do not replace it
+with shell `curl` calls: every external process can block a call during traffic
+bursts and create a queue before the outbound bridge.
+
+Install the `freeswitch-mod-curl` package that matches the installed FreeSWITCH
+version, enable the following line in `autoload_configs/modules.conf.xml`, and
+load it once on a running server with `fs_cli -x "load mod_curl"`:
+
+```xml
+<load module="mod_curl"/>
+```

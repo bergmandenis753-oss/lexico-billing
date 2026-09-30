@@ -45,9 +45,10 @@ end
 
 local API_KEY = read_api_key()
 
-local function shell_quote(s)
-  s = tostring(s or "")
-  return "'" .. s:gsub("'", "'\\''") .. "'"
+local function url_encode(s)
+  return (tostring(s or ""):gsub("([^%w%-_%.~])", function(char)
+    return string.format("%%%02X", string.byte(char))
+  end))
 end
 
 local function safe_filename(s)
@@ -99,24 +100,27 @@ local function http_post(path, json)
   if API_KEY == "" then
     return 0, "missing API key file"
   end
-  local out = "/tmp/bill_" .. uuid .. ".out"
-  local cmd = table.concat({
-    "curl -s -m 8",
-    "-o " .. shell_quote(out),
-    "-w '%{http_code}'",
-    "-H " .. shell_quote("Content-Type: application/json"),
-    "-H " .. shell_quote("Authorization: Bearer " .. API_KEY),
-    "-X POST",
-    "--data-binary " .. shell_quote(json),
-    shell_quote(API .. path)
+  local started_at = os.time()
+  local command = table.concat({
+    API .. path,
+    "json",
+    "connect-timeout", "2",
+    "timeout", "4",
+    "append_headers", "'Authorization: Bearer " .. API_KEY .. "'",
+    "content-type", "application/json",
+    "post", url_encode(json)
   }, " ")
-  local h = io.popen(cmd)
-  local code = h:read("*a"); h:close()
-  local f = io.open(out, "r")
-  local body = f and f:read("*a") or ""
-  if f then f:close() end
-  os.remove(out)
-  return tonumber(code) or 0, body
+  local response = freeswitch.API():execute("curl", command) or ""
+  local code = tonumber(response:match('"status_code":"(%d+)"')) or 0
+  local body = json_unescape(response:match('"body":"(.-)","version"')) or ""
+  local elapsed = os.time() - started_at
+  if elapsed >= 2 then
+    freeswitch.consoleLog("warning", string.format(
+      "[billing] slow HTTP path=%s call_uuid=%s elapsed=%ds status=%d\n",
+      path, uuid, elapsed, code
+    ))
+  end
+  return code, body
 end
 
 local function reject_call(message)
@@ -144,6 +148,11 @@ if guard_code == 404 or guard_code == 405 then
   freeswitch.consoleLog("warning", "[billing] sip guard unavailable (" .. guard_code .. "), falling back to reserve\n")
 elseif guard_code ~= 200 then
   reject_call("[billing] sip guard blocked (" .. guard_code .. "): " .. guard_body)
+  return
+end
+
+if not session:ready() then
+  freeswitch.consoleLog("notice", "[billing] caller disconnected after sip guard call_uuid=" .. uuid .. "\n")
   return
 end
 
@@ -183,8 +192,6 @@ end
 
 local answer_stamp_path = "/tmp/billing_answer_" .. safe_filename(uuid) .. ".ts"
 os.remove(answer_stamp_path)
-session:execute("set", "api_on_answer=luarun /etc/freeswitch/scripts/billing_mark_answer.lua " .. uuid)
-session:execute("set", "execute_on_answer=sched_hangup +" .. max_seconds .. " normal_clearing")
 local dial_number = provider_number
 local bridge_target = ""
 local used_route = gateway
@@ -220,8 +227,14 @@ if outbound_caller_id ~= "" then
   end
 end
 
-freeswitch.consoleLog("info", "[billing] bridge " .. bridge_target .. "\n")
-session:execute("bridge", bridge_target)
+if session:ready() then
+  session:execute("set", "api_on_answer=luarun /etc/freeswitch/scripts/billing_mark_answer.lua " .. uuid)
+  session:execute("set", "execute_on_answer=sched_hangup +" .. max_seconds .. " normal_clearing")
+  freeswitch.consoleLog("info", "[billing] bridge " .. bridge_target .. "\n")
+  session:execute("bridge", bridge_target)
+else
+  freeswitch.consoleLog("notice", "[billing] caller disconnected before bridge call_uuid=" .. uuid .. "\n")
+end
 
 local raw_billsec, billsec_source = positive_number_var("billsec", "flow_billsec", "bridge_billsec")
 local billsec = raw_billsec

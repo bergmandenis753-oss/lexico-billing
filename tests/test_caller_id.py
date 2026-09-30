@@ -143,7 +143,16 @@ class CallerIdTests(unittest.TestCase):
                 response = json.dumps({'max_seconds': 60, 'sell_rate_cents': 2000, 'cost_rate_cents': 1000,
                                        'client_id': 1, 'gateway_name': gateway, 'route_ip': ip,
                                        'provider_number': '48123456789', 'outbound_caller_id': number})
-                lua.globals().response = response
+                lua.globals().guard_response = json.dumps({
+                    'exit_code': '0', 'status_code': '200',
+                    'body': json.dumps({'allowed': True}), 'version': 'HTTP/2',
+                    'phrase': '', 'headers': [],
+                }, separators=(',', ':'))
+                lua.globals().reserve_response = json.dumps({
+                    'exit_code': '0', 'status_code': '200',
+                    'body': response, 'version': 'HTTP/2',
+                    'phrase': '', 'headers': [],
+                }, separators=(',', ':'))
                 lua.execute('''
                     actions = {}
                     session = {
@@ -152,14 +161,22 @@ class CallerIdTests(unittest.TestCase):
                         if k == 'sip_local_network_addr' then return '192.0.2.10' end
                         return ''
                       end,
+                      ready=function() return true end,
                       execute=function(_, k, v) actions[k]=v; if k == 'bridge' then error('TEST_BRIDGE') end end,
                       hangup=function() error('UNEXPECTED_HANGUP') end
                     }
-                    freeswitch = {consoleLog=function() end}
+                    freeswitch = {
+                      consoleLog=function() end,
+                      API=function()
+                        return {execute=function(_, _, command)
+                          if command:find('/api/sip%-guard') then return guard_response end
+                          return reserve_response
+                        end}
+                      end
+                    }
                     io.open = function(path)
-                      return {read=function() if path:find('key') then return 'test-key' end return response end, close=function() end}
+                      return {read=function() return 'test-key' end, close=function() end}
                     end
-                    io.popen = function() return {read=function() return '200' end, close=function() end} end
                     os.remove = function() end
                 ''')
                 with self.assertRaisesRegex(Exception, 'TEST_BRIDGE'):
