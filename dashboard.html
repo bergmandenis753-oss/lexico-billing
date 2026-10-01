@@ -53,6 +53,12 @@
   .caller-id-control button { width:30px; height:30px; padding:0; }
   .rates-wrap { overflow-x:auto; }
   .rates-wrap table { min-width:960px; }
+  .route-filter { display:flex; align-items:end; gap:10px; margin:0 0 10px; }
+  .route-filter-field { min-width:240px; }
+  .route-filter label { display:block; color:var(--mut); font-size:12px; margin:0 0 5px; }
+  .route-filter select { width:100%; min-height:34px; padding:6px 9px; border:1px solid var(--line); border-radius:7px; background:var(--card); color:var(--txt); }
+  .route-filter .mut { padding-bottom:7px; }
+  .route-actions { display:flex; justify-content:flex-end; gap:6px; white-space:nowrap; }
   .empty { padding:16px; color:var(--mut); }
   .toolbar { display:flex; gap:10px; align-items:center; margin:0 0 22px; }
   .check { border:1px solid var(--line); border-radius:10px; padding:12px; margin:2px 0 14px; background:#111827; }
@@ -81,6 +87,16 @@
   .ai-form { display:flex; gap:10px; padding:12px; border-top:1px solid var(--line); }
   .ai-form input { flex:1; min-width:0; border:1px solid var(--line); background:var(--bg); color:var(--txt); border-radius:7px; padding:8px; }
   .ai-actions { display:flex; flex-wrap:wrap; gap:8px; padding:0 12px 12px; }
+  @media (max-width:700px) {
+    header { padding:14px 16px; flex-wrap:wrap; }
+    header .sub { display:none; }
+    .mode-nav { order:3; width:100%; margin-left:0; overflow-x:auto; }
+    main { padding:16px; }
+    .cards { grid-template-columns:1fr; }
+    .toolbar, .route-filter { align-items:stretch; flex-direction:column; }
+    .route-filter-field { min-width:0; width:100%; }
+    .route-filter .mut { padding-bottom:0; }
+  }
 </style>
 </head>
 <body>
@@ -129,10 +145,17 @@
     </table>
   </section>
 
-  <section>
-    <div class="sec-head"><h2>Роуты оригинаторов (направление · терминатор · цена)</h2><button class="small" onclick="openRateDlg()">+ Роут</button></div>
+  <section id="client-routing">
+    <div class="sec-head"><h2>Роутинг клиентов</h2><button class="small" onclick="openClientRouteCreate()">+ Роут</button></div>
+    <div class="route-filter">
+      <div class="route-filter-field">
+        <label for="route-client-filter">Оригинатор</label>
+        <select id="route-client-filter" aria-label="Выбрать оригинатора"></select>
+      </div>
+      <span class="mut" id="route-client-summary">Выберите оригинатора</span>
+    </div>
     <div class="rates-wrap"><table>
-      <thead><tr><th>Оригинатор</th><th>Терминатор</th><th>Направление</th><th>Клиентский тех</th><th>Префикс</th><th class="right">Продажа</th><th>Caller ID</th><th></th></tr></thead>
+      <thead><tr><th>Терминатор</th><th>Направление</th><th>Клиентский тех</th><th>Префикс</th><th class="right">Продажа</th><th>Биллинг</th><th>Caller ID</th><th></th></tr></thead>
       <tbody id="t-rates"></tbody>
     </table></div>
   </section>
@@ -262,6 +285,21 @@
   </form>
 </dialog>
 
+<!-- Настройка существующего роута -->
+<dialog id="route-settings-dlg" class="wide">
+  <h3>Настройка роута</h3>
+  <form id="route-settings-form">
+    <label>Оригинатор</label><input id="crs-client" disabled>
+    <label>Терминатор / поставщик</label><select id="crs-term" required></select>
+    <label>Направление</label><input id="crs-dest" readonly>
+    <label>Префикс страны/направления</label><input id="crs-prefix" readonly>
+    <label>Клиентский техпрефикс (если клиент шлёт его нам)</label><input id="crs-client-tech" placeholder="101">
+    <label>Цена продажи за минуту (в валюте)</label><input id="crs-sell" type="number" step="0.0001" min="0" required>
+    <label>Billing cycle</label><select id="crs-cycle"><option value="1/1">1/1</option><option value="60/1">60/1</option></select>
+    <div class="row"><button type="button" class="ghost" onclick="routeSettingsDlg.close()">Отмена</button><button type="submit">Сохранить</button></div>
+  </form>
+</dialog>
+
 <!-- Пополнить -->
 <dialog id="topup-dlg">
   <h3>Пополнить баланс</h3>
@@ -295,8 +333,12 @@ const rateDlg   = document.getElementById('rate-dlg');
 const directionDlg = document.getElementById('direction-dlg');
 const topupDlg  = document.getElementById('topup-dlg');
 const callerIdDlg = document.getElementById('caller-id-dlg');
+const routeSettingsDlg = document.getElementById('route-settings-dlg');
 let clientRateMap = {};
+let clientRateList = [];
 let callerIdRateId = null;
+let routeSettingsId = null;
+let selectedRouteClientId = null;
 let clientMap = {};
 let groupList = [];
 let groupMap = {};
@@ -461,23 +503,9 @@ async function load(manual = false) {
       </td>
     </tr>`; }).join('') || emptyRow(9);
 
-  clientRateMap = Object.fromEntries(d.client_rates.map(r => [r.id, r]));
-  document.getElementById('t-rates').innerHTML = d.client_rates.map(r => {
-    const cur = (clientMap[r.client_id]||{}).currency || '';
-    const callerIdCount = (r.caller_id_pool || '').split('\n').filter(Boolean).length;
-    const label = r.terminator_name
-      ? [r.terminator_name, r.terminator_tech_prefix ? `TP ${r.terminator_tech_prefix}` : '', `buy ${rate(r.terminator_cost_rate_cents, cur)} ${cycle(r.terminator_billing_cycle)}`].filter(Boolean).join(' · ')
-      : '— (активный)';
-    return `<tr>
-      <td>${esc(r.client_name)}</td>
-      <td>${r.terminator_name ? esc(label) : '<span class="mut">— (активный)</span>'}</td>
-      <td>${esc(r.destination_name)}</td>
-      <td class="mut">${r.client_tech_prefix ? esc(r.client_tech_prefix) : '—'}</td>
-      <td class="mut">${esc(r.prefix)}</td>
-      <td class="right">${rate(r.sell_rate_cents, cur)}<div class="mut">${esc(cycle(r.billing_cycle))}</div></td>
-      <td><div class="caller-id-control"><span>${callerIdCount || '—'}</span><button class="small ghost" title="Настроить Caller ID" aria-label="Настроить Caller ID" onclick="openCallerId(${r.id})">+</button></div></td>
-      <td class="right"><button class="small danger" onclick="delRate(${r.id})">✕</button></td>
-    </tr>`; }).join('') || emptyRow(8);
+  clientRateList = d.client_rates || [];
+  clientRateMap = Object.fromEntries(clientRateList.map(r => [r.id, r]));
+  renderClientRoutes();
 
   const stageName = s => ({
     received: 'получили',
@@ -560,6 +588,95 @@ async function load(manual = false) {
   }
 }
 
+function renderClientRoutes() {
+  const select = document.getElementById('route-client-filter');
+  const clients = Object.values(clientMap).filter(c =>
+    c.active || clientRateList.some(r => Number(r.client_id) === Number(c.id))
+  );
+  if (!clients.length) {
+    select.innerHTML = '';
+    document.getElementById('route-client-summary').textContent = 'Нет оригинаторов';
+    document.getElementById('t-rates').innerHTML = emptyRow(8);
+    selectedRouteClientId = null;
+    return;
+  }
+  if (!clients.some(c => Number(c.id) === Number(selectedRouteClientId))) {
+    selectedRouteClientId = clients[0].id;
+  }
+  select.innerHTML = clients.map(c =>
+    `<option value="${c.id}"${Number(c.id) === Number(selectedRouteClientId) ? ' selected' : ''}>${esc(c.name)}</option>`
+  ).join('');
+  const routes = clientRateList.filter(r => Number(r.client_id) === Number(selectedRouteClientId));
+  document.getElementById('route-client-summary').textContent = routes.length
+    ? `Открыто направлений: ${routes.length}`
+    : 'У этого оригинатора пока нет роутов';
+  document.getElementById('t-rates').innerHTML = routes.map(r => {
+    const cur = (clientMap[r.client_id] || {}).currency || '';
+    const callerIdCount = (r.caller_id_pool || '').split('\n').filter(Boolean).length;
+    const label = r.terminator_name
+      ? [r.terminator_name, r.terminator_tech_prefix ? `TP ${r.terminator_tech_prefix}` : '', `buy ${rate(r.terminator_cost_rate_cents, cur)} ${cycle(r.terminator_billing_cycle)}`].filter(Boolean).join(' · ')
+      : '— (активный)';
+    return `<tr>
+      <td>${r.terminator_name ? esc(label) : '<span class="mut">— (активный)</span>'}</td>
+      <td>${esc(r.destination_name)}</td>
+      <td class="mut">${r.client_tech_prefix ? esc(r.client_tech_prefix) : '—'}</td>
+      <td class="mut">${esc(r.prefix)}</td>
+      <td class="right">${rate(r.sell_rate_cents, cur)}</td>
+      <td class="mut">${esc(cycle(r.billing_cycle))}</td>
+      <td><div class="caller-id-control"><span>${callerIdCount || '—'}</span><button class="small ghost" title="Настроить Caller ID" aria-label="Настроить Caller ID" onclick="openCallerId(${r.id})">+</button></div></td>
+      <td class="right"><div class="route-actions"><button class="small ghost" onclick="openRouteSettings(${r.id})">Настроить</button><button class="small danger" title="Удалить роут" aria-label="Удалить роут" onclick="delRate(${r.id})">✕</button></div></td>
+    </tr>`;
+  }).join('') || emptyRow(8);
+}
+
+document.getElementById('route-client-filter').addEventListener('change', e => {
+  selectedRouteClientId = parseInt(e.target.value);
+  renderClientRoutes();
+});
+
+function openClientRouteCreate() {
+  if (!selectedRouteClientId) { alert('Сначала выберите оригинатора'); return; }
+  openDirectionDlg(selectedRouteClientId);
+}
+
+function openRouteSettings(id) {
+  const route = clientRateMap[id];
+  if (!route) return;
+  routeSettingsId = id;
+  const client = clientMap[route.client_id] || {};
+  const terms = termList.filter(t => t.active || Number(t.id) === Number(route.terminator_id));
+  const termSelect = document.getElementById('crs-term');
+  termSelect.innerHTML = terms.map(t =>
+    `<option value="${t.id}"${Number(t.id) === Number(route.terminator_id) ? ' selected' : ''}>${esc(termLabel(t, client.currency || ''))}</option>`
+  ).join('');
+  if (!termSelect.innerHTML) { alert('Нет доступных терминаторов'); return; }
+  document.getElementById('crs-client').value = client.name || route.client_name || ('#' + route.client_id);
+  document.getElementById('crs-dest').value = route.destination_name || '';
+  document.getElementById('crs-prefix').value = route.prefix || '';
+  document.getElementById('crs-client-tech').value = route.client_tech_prefix || '';
+  document.getElementById('crs-sell').value = (Number(route.sell_rate_cents || 0) / MONEY_SCALE).toFixed(4).replace(/0+$/, '').replace(/\.$/, '') || '0';
+  document.getElementById('crs-cycle').value = cycle(route.billing_cycle);
+  routeSettingsDlg.showModal();
+}
+
+document.getElementById('route-settings-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  if (!routeSettingsId) return;
+  try {
+    await api(`/api/client-rates/${routeSettingsId}`, 'PATCH', {
+      terminator_id: parseInt(document.getElementById('crs-term').value),
+      destination_name: document.getElementById('crs-dest').value.trim(),
+      prefix: document.getElementById('crs-prefix').value.trim(),
+      client_tech_prefix: document.getElementById('crs-client-tech').value.trim(),
+      sell_rate_cents: inputMoneyUnits('crs-sell', 'Цена продажи'),
+      billing_cycle: document.getElementById('crs-cycle').value
+    });
+    routeSettingsDlg.close();
+    routeSettingsId = null;
+    await load(true);
+  } catch (err) { alert('Ошибка: ' + err.message); }
+});
+
 function openCallerId(id) {
   const route = clientRateMap[id];
   if (!route) return;
@@ -640,6 +757,14 @@ function fillDirectionPrefix(directionInputId, prefixInputId, force = false) {
     prefixInput.value = match.primary_prefix;
   }
 }
+function syncDirectionFromTerm(termSelectId, directionInputId, prefixInputId, cycleId) {
+  const terminatorId = parseInt(document.getElementById(termSelectId).value);
+  const term = termList.find(t => Number(t.id) === Number(terminatorId));
+  if (!term) return;
+  document.getElementById(directionInputId).value = term.destination_name || '';
+  document.getElementById(prefixInputId).value = term.prefix || '';
+  syncBillingCycle(directionInputId, prefixInputId, cycleId);
+}
 document.getElementById('route-form').addEventListener('submit', async e => {
   e.preventDefault();
   try {
@@ -668,15 +793,18 @@ function openRateDlg() {
   const cur = (Object.values(clientMap)[0]||{}).currency || '';
   ts.innerHTML = termList.map(t => `<option value="${t.id}">${esc(termLabel(t, cur))}</option>`).join('');
   if (!ts.innerHTML) { alert('Сначала создайте терминатор'); return; }
-  syncBillingCycle('ra-dest', 'ra-prefix', 'ra-billing-cycle');
+  syncDirectionFromTerm('ra-term', 'ra-dest', 'ra-prefix', 'ra-billing-cycle');
   rateDlg.showModal();
 }
 document.getElementById('rt-dest').addEventListener('change', () => { fillDirectionPrefix('rt-dest', 'rt-prefix', true); syncBillingCycle('rt-dest', 'rt-prefix', 'rt-billing-cycle'); });
 document.getElementById('rt-prefix').addEventListener('input', () => syncBillingCycle('rt-dest', 'rt-prefix', 'rt-billing-cycle'));
 document.getElementById('ra-dest').addEventListener('change', () => { fillDirectionPrefix('ra-dest', 'ra-prefix', true); syncBillingCycle('ra-dest', 'ra-prefix', 'ra-billing-cycle'); });
 document.getElementById('ra-prefix').addEventListener('input', () => syncBillingCycle('ra-dest', 'ra-prefix', 'ra-billing-cycle'));
+document.getElementById('ra-term').addEventListener('change', () => syncDirectionFromTerm('ra-term', 'ra-dest', 'ra-prefix', 'ra-billing-cycle'));
 document.getElementById('di-dest').addEventListener('change', () => { fillDirectionPrefix('di-dest', 'di-prefix', true); syncBillingCycle('di-dest', 'di-prefix', 'di-billing-cycle'); });
 document.getElementById('di-prefix').addEventListener('input', () => syncBillingCycle('di-dest', 'di-prefix', 'di-billing-cycle'));
+document.getElementById('di-term').addEventListener('change', () => syncDirectionFromTerm('di-term', 'di-dest', 'di-prefix', 'di-billing-cycle'));
+document.getElementById('crs-term').addEventListener('change', () => syncDirectionFromTerm('crs-term', 'crs-dest', 'crs-prefix', 'crs-cycle'));
 document.getElementById('rate-form').addEventListener('submit', async e => {
   e.preventDefault();
   try {
@@ -706,17 +834,18 @@ function fillDirectionTerms() {
   return Boolean(ts.innerHTML);
 }
 
-function openDirectionDlg() {
+function openDirectionDlg(clientId = null) {
   const cs = document.getElementById('di-client');
   cs.innerHTML = Object.values(clientMap).filter(c => c.active).map(c =>
     `<option value="${c.id}">${esc(c.name)} · ${esc(c.sip_ip)}</option>`).join('');
   if (!cs.innerHTML) { alert('Сначала создайте активного оригинатора'); return; }
   if (!fillDirectionTerms()) { alert('Сначала создайте активного терминатора'); return; }
-  document.getElementById('di-dest').value = '';
-  document.getElementById('di-prefix').value = '';
+  if (clientId && Array.from(cs.options).some(option => Number(option.value) === Number(clientId))) {
+    cs.value = String(clientId);
+  }
+  syncDirectionFromTerm('di-term', 'di-dest', 'di-prefix', 'di-billing-cycle');
   document.getElementById('di-client-tech').value = '';
   document.getElementById('di-sell').value = '';
-  syncBillingCycle('di-dest', 'di-prefix', 'di-billing-cycle');
   document.getElementById('di-test-number').value = '';
   showDirectionPreview(null);
   directionDlg.showModal();

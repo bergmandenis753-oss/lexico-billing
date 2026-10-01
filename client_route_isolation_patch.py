@@ -21,6 +21,14 @@ def _clean(value):
     return str(value or "").strip()
 
 
+def _billing_cycle(value):
+    cycle = _clean(value) or "1/1"
+    parts = cycle.split("/", 1)
+    if len(parts) != 2 or not all(part.strip().isdigit() and int(part) > 0 for part in parts):
+        raise HTTPException(400, "Billing cycle должен быть в формате 1/1")
+    return f"{int(parts[0])}/{int(parts[1])}"
+
+
 def _validate_client_route(conn, main, db, data):
     client_id = int(data["client_id"])
     terminator_id = data.get("terminator_id")
@@ -73,6 +81,7 @@ def _upsert_client_route(conn, data, *, update_existing=True):
     tech = _clean(data.get("client_tech_prefix"))
     prefix = _clean(data.get("prefix"))
     dest = _clean(data.get("destination_name"))
+    billing_cycle = _billing_cycle(data.get("billing_cycle"))
     if not prefix or not dest:
         raise HTTPException(400, "Укажите направление и префикс")
     existing = conn.execute(
@@ -85,16 +94,16 @@ def _upsert_client_route(conn, data, *, update_existing=True):
     if existing is None:
         cur = conn.execute(
             "INSERT INTO client_rates "
-            "(client_id, terminator_id, client_tech_prefix, prefix, destination_name, sell_rate_cents) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (client_id, terminator_id, tech, prefix, dest, int(data["sell_rate_cents"])),
+            "(client_id, terminator_id, client_tech_prefix, prefix, destination_name, sell_rate_cents, billing_cycle) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (client_id, terminator_id, tech, prefix, dest, int(data["sell_rate_cents"]), billing_cycle),
         )
         return cur.lastrowid, True
     if not update_existing:
         raise HTTPException(409, "Такое направление у этого оригинатора и терминатора уже есть")
     conn.execute(
-        "UPDATE client_rates SET destination_name = ?, sell_rate_cents = ? WHERE id = ?",
-        (dest, int(data["sell_rate_cents"]), existing["id"]),
+        "UPDATE client_rates SET destination_name = ?, sell_rate_cents = ?, billing_cycle = ? WHERE id = ?",
+        (dest, int(data["sell_rate_cents"]), billing_cycle, existing["id"]),
     )
     return existing["id"], False
 

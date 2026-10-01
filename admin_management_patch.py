@@ -12,6 +12,7 @@ class ClientRatePatchIn(BaseModel):
     prefix: Optional[str] = None
     destination_name: Optional[str] = None
     sell_rate_cents: Optional[int] = None
+    billing_cycle: Optional[str] = None
 
 
 class TerminationGroupPatchIn(BaseModel):
@@ -280,11 +281,18 @@ def install(app, main, db, compat):
         finally:
             conn.close()
 
-    @app.patch("/api/client-rates/{rid}", dependencies=main.ADMIN_AUTH)
+    @app.patch("/api/client-rates/{rid}", dependencies=getattr(main, "ADMIN_WRITE_AUTH", main.ADMIN_AUTH))
     def update_client_rate(rid: int, data: ClientRatePatchIn):
         fields = _model_fields(data)
         if not fields:
             raise HTTPException(400, "Нет полей для обновления")
+        for key in ("client_tech_prefix", "prefix", "destination_name"):
+            if key in fields:
+                fields[key] = str(fields[key] or "").strip()
+        if "sell_rate_cents" in fields and int(fields["sell_rate_cents"]) < 0:
+            raise HTTPException(400, "Цена продажи не может быть отрицательной")
+        if "billing_cycle" in fields:
+            fields["billing_cycle"] = db.normalize_billing_cycle(fields["billing_cycle"])
         conn = db.get_conn()
         try:
             row = conn.execute("SELECT * FROM client_rates WHERE id = ?", (rid,)).fetchone()

@@ -81,7 +81,9 @@ def install(app, main, db):
                 "ORDER BY t.prefix, t.active DESC, t.id"
             ).fetchall()
             client_rates = conn.execute(
-                "SELECT cr.*, c.name AS client_name, t.name AS terminator_name "
+                "SELECT cr.*, c.name AS client_name, t.name AS terminator_name, "
+                "t.cost_rate_cents AS terminator_cost_rate_cents, "
+                "t.tech_prefix AS terminator_tech_prefix, t.billing_cycle AS terminator_billing_cycle "
                 "FROM client_rates cr JOIN clients c ON c.id = cr.client_id "
                 "LEFT JOIN terminators t ON t.id = cr.terminator_id "
                 "WHERE c.deleted_at IS NULL ORDER BY cr.client_id"
