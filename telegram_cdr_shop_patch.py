@@ -1,4 +1,6 @@
+import re
 import urllib.parse
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 
@@ -6,7 +8,7 @@ def _load_client_cdr_duration(bot, client_id, min_billsec):
     base = bot._billing_base_url()
     if not base:
         raise RuntimeError("BILLING_API_BASE_URL не задан")
-    query = urllib.parse.urlencode({"min_billsec": int(min_billsec or 0), "limit": 50})
+    query = urllib.parse.urlencode({"min_billsec": int(min_billsec or 0), "limit": 5000})
     return bot._get_json(
         f"{base}/api/ops/client-cdr-duration/{client_id}?{query}",
         headers=bot._billing_headers(),
@@ -65,37 +67,45 @@ def _format_duration(seconds):
 
 
 def _cdr_number(row):
-    return row.get("provider_number") or row.get("dial_destination") or row.get("destination") or "-"
+    dial_destination = re.sub(r"\D", "", str(row.get("dial_destination") or ""))
+    if dial_destination:
+        return dial_destination
+
+    destination = re.sub(r"\D", "", str(row.get("destination") or ""))
+    client_prefix = re.sub(r"\D", "", str(row.get("client_tech_prefix") or ""))
+    if client_prefix and destination.startswith(client_prefix):
+        destination = destination[len(client_prefix):]
+    return destination
+
+
+def _safe_file_part(value):
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip())
+    return cleaned.strip("._-") or "CDR"
+
+
+def _report_date(rows):
+    for row in rows:
+        raw = str(row.get("started_at") or "").strip()
+        match = re.match(r"(\d{4})-(\d{2})-(\d{2})", raw)
+        if match:
+            return f"{match.group(3)}-{match.group(2)}"
+    return datetime.now(timezone.utc).strftime("%d-%m")
 
 
 def _format_duration_report(bot, client, report):
-    scale = int(report.get("money_scale") or 10000)
     rows = report.get("cdr") or []
-    threshold = _format_duration(report.get("min_billsec") or 0)
-    lines = [
-        f"CDR shop: {bot._client_name(client)}",
-        f"Сегодня, звонки дольше {threshold}:",
-    ]
-    if not rows:
-        lines.append("Нет звонков под этот фильтр.")
-        return "\n".join(lines)
+    numbers = [number for row in rows if (number := _cdr_number(row))]
+    if not numbers:
+        return "Нет звонков под этот фильтр."
 
-    for row in rows[:50]:
-        currency = row.get("client_currency") or report.get("client_currency") or "USD"
-        status = row.get("result") or row.get("bridge_hangup_cause") or row.get("hangup_cause") or "-"
-        lines.extend(
-            [
-                "",
-                f"{row.get('started_at') or '-'} | {_cdr_number(row)}",
-                f"длит. {_format_duration(row.get('billsec'))} | списано {bot._money(row.get('charged_cents'), scale, currency)}",
-                f"статус: {status}",
-            ]
-        )
-
-    text = "\n".join(lines)
-    if len(text) > 3900:
-        return text[:3900] + "\n...обрезал, слишком длинно"
-    return text
+    client_name = _safe_file_part(bot._client_name(client))
+    file_name = f"{client_name}_{_report_date(rows)}.txt"
+    content = ("\n".join(numbers) + "\n").encode("utf-8")
+    return bot.DocumentResponse(
+        file_name=file_name,
+        content=content,
+        content_type="text/plain; charset=utf-8",
+    )
 
 
 def install(app, bot):
@@ -115,11 +125,15 @@ def install(app, bot):
         "cdr_shop",
         "/cdrdur",
         "cdrdur",
+        "/cdrcheck",
+        "cdrcheck",
+        "/cdr_check",
+        "cdr_check",
     }
 
     def cdr_shop_help(client_id, client_name):
         return (
-            f"CDR shop для {client_name}.\n"
+            f"CDR check для {client_name}.\n"
             "Напиши длительность фильтра следующим сообщением:\n"
             "5\n"
             "05:10\n\n"
@@ -133,20 +147,22 @@ def install(app, bot):
         keyboard = base_client_keyboard(client_id)
         rows = keyboard.get("inline_keyboard", [])
         if rows:
-            rows = [*rows[:1], [bot._button("CDR shop", f"client_cdr_shop:{client_id}")], *rows[1:]]
+            rows = [*rows[:1], [bot._button("CDR check", f"client_cdr_shop:{client_id}")], *rows[1:]]
         else:
-            rows = [[bot._button("CDR shop", f"client_cdr_shop:{client_id}")]]
+            rows = [[bot._button("CDR check", f"client_cdr_shop:{client_id}")]]
         return bot._keyboard(
             rows
         )
 
     def handle_cdr_shop_command(data, text):
         parts = str(text or "").split()
+        if len(parts) >= 2 and parts[0].lower().split("@", 1)[0] in {"/cdr", "cdr"} and parts[1].lower() == "check":
+            parts = ["/cdrcheck", *parts[2:]]
         if len(parts) < 3:
             return (
-                "Формат: /cdrshop <ID клиента> <минуты или мм:сс>\n"
-                "Пример: /cdrshop 10 5\n"
-                "Пример: /cdrshop 10 05:10",
+                "Формат: /cdrcheck <ID клиента> <минуты или мм:сс>\n"
+                "Пример: /cdrcheck 10 5\n"
+                "Пример: /cdrcheck 10 05:10",
                 bot.MAIN_MENU,
             )
         client_id = parts[1]
@@ -175,7 +191,8 @@ def install(app, bot):
             return None
         first_word = raw.lower().split(maxsplit=1)[0]
         first_word = first_word.split("@", 1)[0]
-        if first_word in cdr_shop_commands:
+        lowered = raw.lower()
+        if first_word in cdr_shop_commands or lowered.startswith("cdr check ") or lowered.startswith("/cdr check "):
             pending_by_chat.pop(str(chat_id), None)
             return None
         if first_word.startswith("/") or raw.lower() in {"меню", "клиенты", "баланс", "балансы"}:
@@ -201,7 +218,8 @@ def install(app, bot):
         cmd = raw.lower()
         first_word = cmd.split(maxsplit=1)[0] if cmd else ""
         first_word = first_word.split("@", 1)[0]
-        if first_word in cdr_shop_commands:
+        is_cdr_check_phrase = cmd.startswith("cdr check ") or cmd.startswith("/cdr check ")
+        if first_word in cdr_shop_commands or is_cdr_check_phrase:
             return handle_cdr_shop_command(data, raw)
         return base_answer_for_text(data, text)
 
