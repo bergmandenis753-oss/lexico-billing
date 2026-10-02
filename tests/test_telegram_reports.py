@@ -34,9 +34,11 @@ def make_bot():
 
 
 def report(count):
-    return {"limit": 200, "min_billsec": 310, "money_scale": 10000,
+    return {"limit": 5000, "min_billsec": 310, "money_scale": 10000,
             "cdr": [{"id": i, "started_at": "2026-09-08 12:00:00", "billsec": 311 + i,
-                     "provider_number": f"48{i:09d}", "charged_cents": 1234, "result": "Normal"}
+                     "destination": f"10548{i:09d}", "client_tech_prefix": "105",
+                     "dial_destination": f"48{i:09d}", "provider_number": f"99948{i:09d}",
+                     "charged_cents": 1234, "result": "Normal"}
                     for i in range(count)]}
 
 
@@ -51,13 +53,13 @@ class ReportTests(unittest.TestCase):
         self.bot._get_json.return_value = report(200)
         document, keyboard = self.bot._answer_for_text({}, "/cdrshop 17 05:10")
         self.assertIsInstance(document, files.TextDocument)
-        self.assertGreater(len(document.text), 3900)
         self.assertIn("48000000199", document.text)
-        self.assertEqual(document.text.count("статус: Normal"), 200)
-        self.assertIn("лимит API", document.caption)
-        self.assertNotIn("обрезал", document.text)
+        self.assertEqual(len(document.text.strip().splitlines()), 200)
+        self.assertTrue(all(line.isdigit() for line in document.text.strip().splitlines()))
+        self.assertNotIn("999", document.text)
+        self.assertEqual(document.caption, "")
         url = self.bot._get_json.call_args.args[0]
-        self.assertIn("limit=200", url)
+        self.assertIn("limit=5000", url)
         self.assertIn("min_billsec=310", url)
         self.assertTrue(keyboard["inline_keyboard"])
 
@@ -69,11 +71,10 @@ class ReportTests(unittest.TestCase):
         self.assertIsInstance(document, files.TextDocument)
         self.assertIn("min_billsec=300", self.bot._get_json.call_args.args[0])
 
-    def test_empty_report_is_file(self):
+    def test_empty_report_is_message(self):
         self.bot._get_json.return_value = report(0)
-        document, _ = self.bot._answer_for_text({}, "/cdrshop@lexico 17 05:10")
-        self.assertIn("Нет звонков", document.text)
-        self.assertNotIn("лимит", document.caption)
+        message, _ = self.bot._answer_for_text({}, "/cdrshop@lexico 17 05:10")
+        self.assertEqual(message, "Нет звонков под этот фильтр.")
 
     def test_unknown_client_and_bad_duration_do_not_query(self):
         for command in ("/cdrshop 0 5", "/cdrshop 17 nonsense"):
@@ -230,6 +231,7 @@ class WebhookTests(unittest.TestCase):
             response = self.post("/cdrshop 17 05:10")
         self.assertEqual(response.status_code, 200)
         self.assertIn("48000000199", send.call_args.args[2].text)
+        self.assertTrue(all(line.isdigit() for line in send.call_args.args[2].text.strip().splitlines()))
         self.assertEqual(send.call_args.args[1], 123)
 
     def test_real_webhook_check_prompt(self):
