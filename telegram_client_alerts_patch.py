@@ -249,7 +249,7 @@ def install(app, bot, portal_globals):
                         text, keyboard = bot._answer_for_text(data, message_text)
             except Exception as exc:
                 text, keyboard = f"Ошибка бота: {bot._trim(exc, 900)}", bot.MAIN_MENU
-            bot._send_message(chat_id, text, keyboard)
+            bot._send_response(chat_id, text, keyboard)
             return {"ok": True}
 
         if callback:

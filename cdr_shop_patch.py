@@ -18,10 +18,10 @@ def install(app, main, db):
         return
 
     @app.get("/api/ops/client-cdr-duration/{client_id}", dependencies=main.API_AUTH)
-    def ops_client_cdr_duration(client_id: int, min_billsec: int = 0, limit: int = 50):
+    def ops_client_cdr_duration(client_id: int, min_billsec: int = 0, limit: int = 5000):
         db.init_db()
         min_billsec = max(0, int(min_billsec or 0))
-        limit = min(200, max(1, int(limit or 50)))
+        limit = min(10000, max(1, int(limit or 5000)))
         conn = db.get_conn()
         try:
             client = conn.execute("SELECT id, name, currency FROM clients WHERE id = ?", (client_id,)).fetchone()
