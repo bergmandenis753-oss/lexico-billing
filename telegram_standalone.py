@@ -5,6 +5,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
@@ -138,15 +139,45 @@ def _send_message(chat_id, text, reply_markup=None):
         _telegram_api("sendMessage", payload)
 
 
-def _send_document(chat_id, file_name, content, caption=""):
+@dataclass(frozen=True)
+class DocumentResponse:
+    file_name: str
+    content: bytes
+    caption: str = ""
+    content_type: str = "application/octet-stream"
+
+
+def _send_document(
+    chat_id,
+    file_name,
+    content,
+    caption="",
+    content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    reply_markup=None,
+):
     fields = {"chat_id": str(chat_id)}
     if caption:
         fields["caption"] = caption
+    if reply_markup:
+        fields["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
     return _telegram_api_multipart(
         "sendDocument",
         fields,
-        [("document", file_name, content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")],
+        [("document", file_name, content, content_type)],
     )
+
+
+def _send_response(chat_id, response, reply_markup=None):
+    if isinstance(response, DocumentResponse):
+        return _send_document(
+            chat_id,
+            response.file_name,
+            response.content,
+            response.caption,
+            response.content_type,
+            reply_markup,
+        )
+    return _send_message(chat_id, response, reply_markup)
 
 
 def _send_rate_notification(chat_id, text):
@@ -603,7 +634,7 @@ async def telegram_webhook(
             text, keyboard = _answer_for_text(data, message_text)
     except Exception as exc:
         text, keyboard = f"Ошибка бота: {_trim(exc, 900)}", MAIN_MENU
-    _send_message(chat_id, text, keyboard)
+    _send_response(chat_id, text, keyboard)
     return {"ok": True}
 
 
