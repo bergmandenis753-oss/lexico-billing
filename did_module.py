@@ -89,6 +89,8 @@ class DidNumberIn(BaseModel):
 
 
 class DidNumberUpdate(BaseModel):
+    client_id: Optional[int] = None
+    did_number: Optional[str] = Field(default=None, min_length=3, max_length=32)
     provider_name: Optional[str] = Field(default=None, max_length=120)
     provider_ips: Optional[str] = Field(default=None, max_length=2000)
     destination: Optional[str] = Field(default=None, min_length=3, max_length=500)
@@ -136,6 +138,7 @@ class DidOutboundRouteIn(BaseModel):
 
 
 class DidOutboundRouteUpdate(BaseModel):
+    client_id: Optional[int] = None
     terminator_id: Optional[int] = None
     provider_name: Optional[str] = Field(default=None, max_length=120)
     destination_name: Optional[str] = Field(default=None, min_length=1, max_length=120)
@@ -1068,21 +1071,83 @@ def install(app, main, db, base_path: Path) -> None:
 
     @app.patch("/api/dids/numbers/{number_id}", dependencies=main.ADMIN_WRITE_AUTH)
     def update_did_number(number_id: int, data: DidNumberUpdate):
-        fields = {k: v for k, v in data.dict().items() if v is not None}
+        fields = data.dict(exclude_unset=True)
         if not fields:
             raise HTTPException(400, "Нет полей для изменения")
+        if "did_number" in fields:
+            fields["did_number"] = _digits(fields["did_number"])
+            if len(fields["did_number"]) < 3:
+                raise HTTPException(422, "Некорректный DID номер")
         if "active" in fields:
             fields["active"] = int(fields["active"])
         if "billing_cycle" in fields:
             fields["billing_cycle"] = db.normalize_billing_cycle(fields["billing_cycle"])
-        sql = ", ".join(f"{key} = ?" for key in fields)
+        if "provider_name" in fields:
+            fields["provider_name"] = _clean_text(fields["provider_name"], 120)
+        for key in ("provider_ips", "destination", "backup_destination", "notes"):
+            if key in fields:
+                fields[key] = fields[key].strip()
         conn = db.get_conn()
         try:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute(
+                "SELECT client_id, did_number FROM did_numbers WHERE id = ?", (number_id,)
+            ).fetchone()
+            if current is None:
+                raise HTTPException(404, "DID номер не найден")
+            client_id = fields.get("client_id", current["client_id"])
+            number = fields.get("did_number", current["did_number"])
+            if conn.execute("SELECT 1 FROM did_clients WHERE id = ?", (client_id,)).fetchone() is None:
+                raise HTTPException(404, "DID-клиент не найден")
+            other_owner = conn.execute(
+                "SELECT client_id FROM did_caller_ids WHERE caller_id = ? AND client_id <> ?",
+                (number, client_id),
+            ).fetchone()
+            if other_owner is not None:
+                raise HTTPException(409, "Этот номер уже закреплён как Caller ID другого DID-клиента")
+            sql = ", ".join(f"{key} = ?" for key in fields)
             cur = conn.execute(f"UPDATE did_numbers SET {sql} WHERE id = ?", (*fields.values(), number_id))
             if not cur.rowcount:
                 raise HTTPException(404, "DID номер не найден")
             conn.commit()
             return {"ok": True}
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            raise HTTPException(409, "Этот DID номер уже существует") from exc
+        except HTTPException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    @app.delete("/api/dids/numbers/{number_id}", dependencies=main.ADMIN_WRITE_AUTH)
+    def delete_did_number(number_id: int):
+        now = int(time.time())
+        conn = db.get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            number = conn.execute(
+                "SELECT client_id, did_number FROM did_numbers WHERE id = ?", (number_id,)
+            ).fetchone()
+            if number is None:
+                raise HTTPException(404, "DID номер не найден")
+            active_calls = conn.execute(
+                "SELECT COUNT(*) FROM did_reservations WHERE did_number_id = ? AND active = 1 AND expires_at > ?",
+                (number_id, now),
+            ).fetchone()[0]
+            if active_calls:
+                raise HTTPException(409, "Нельзя удалить DID: по нему сейчас идёт звонок")
+            conn.execute("DELETE FROM did_reservations WHERE did_number_id = ?", (number_id,))
+            conn.execute(
+                "DELETE FROM did_caller_ids WHERE client_id = ? AND caller_id = ?",
+                (number["client_id"], number["did_number"]),
+            )
+            conn.execute("DELETE FROM did_numbers WHERE id = ?", (number_id,))
+            conn.commit()
+            return {"ok": True}
+        except HTTPException:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -1183,7 +1248,7 @@ def install(app, main, db, base_path: Path) -> None:
 
     @app.patch("/api/dids/outbound-routes/{route_id}", dependencies=main.ADMIN_WRITE_AUTH)
     def update_did_outbound_route(route_id: int, data: DidOutboundRouteUpdate):
-        fields = {k: v for k, v in data.dict().items() if v is not None}
+        fields = data.dict(exclude_unset=True)
         if not fields:
             raise HTTPException(400, "Нет полей для изменения")
         if "active" in fields:
@@ -1193,14 +1258,71 @@ def install(app, main, db, base_path: Path) -> None:
                 fields[key] = _digits(fields[key])
         if "billing_cycle" in fields:
             fields["billing_cycle"] = db.normalize_billing_cycle(fields["billing_cycle"])
-        sql = ", ".join(f"{key} = ?" for key in fields)
         conn = db.get_conn()
         try:
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute("SELECT 1 FROM did_outbound_routes WHERE id = ?", (route_id,)).fetchone() is None:
+                raise HTTPException(404, "Исходящий маршрут не найден")
+            if "client_id" in fields and conn.execute(
+                "SELECT 1 FROM did_clients WHERE id = ?", (fields["client_id"],)
+            ).fetchone() is None:
+                raise HTTPException(404, "DID-клиент не найден")
+            if "terminator_id" in fields:
+                terminator_id = fields["terminator_id"]
+                terminator = db.get_terminator(conn, terminator_id) if terminator_id else None
+                if terminator is None:
+                    raise HTTPException(404, "Терминатор не найден")
+                if not terminator["active"]:
+                    raise HTTPException(409, "Выбранный терминатор выключен")
+                group = db.get_termination_group(conn, terminator["gateway_group_id"])
+                if group is not None and not group["active"]:
+                    raise HTTPException(409, "Группа выбранного терминатора выключена")
+                fields.update(
+                    provider_name=((group["name"] if group else "") or terminator["name"]),
+                    destination_name=terminator["destination_name"],
+                    prefix=_digits(terminator["prefix"]),
+                    gateway_name=((terminator["gateway_name"] or "") or ((group["gateway_name"] or "") if group else "")),
+                    route_ips=((terminator["ips"] or "") or ((group["ips"] or "") if group else "")),
+                    tech_prefix=terminator["tech_prefix"] or "",
+                    cost_rate_cents=terminator["cost_rate_cents"],
+                    cost_billing_cycle=db.normalize_billing_cycle(terminator["billing_cycle"]),
+                )
+            sql = ", ".join(f"{key} = ?" for key in fields)
             cur = conn.execute(f"UPDATE did_outbound_routes SET {sql} WHERE id = ?", (*fields.values(), route_id))
             if not cur.rowcount:
                 raise HTTPException(404, "Исходящий маршрут не найден")
             conn.commit()
             return {"ok": True}
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            raise HTTPException(409, "Такой исходящий маршрут уже существует у клиента") from exc
+        except HTTPException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    @app.delete("/api/dids/outbound-routes/{route_id}", dependencies=main.ADMIN_WRITE_AUTH)
+    def delete_did_outbound_route(route_id: int):
+        now = int(time.time())
+        conn = db.get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute("SELECT 1 FROM did_outbound_routes WHERE id = ?", (route_id,)).fetchone() is None:
+                raise HTTPException(404, "Исходящий маршрут не найден")
+            active_calls = conn.execute(
+                "SELECT COUNT(*) FROM did_outbound_reservations WHERE route_id = ? AND active = 1 AND expires_at > ?",
+                (route_id, now),
+            ).fetchone()[0]
+            if active_calls:
+                raise HTTPException(409, "Нельзя удалить маршрут: по нему сейчас идёт звонок")
+            conn.execute("DELETE FROM did_outbound_reservations WHERE route_id = ?", (route_id,))
+            conn.execute("DELETE FROM did_outbound_routes WHERE id = ?", (route_id,))
+            conn.commit()
+            return {"ok": True}
+        except HTTPException:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 

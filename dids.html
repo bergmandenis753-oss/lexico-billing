@@ -29,6 +29,7 @@
   button.small { padding:4px 9px; font-size:12px; }
   button.ghost { background:transparent; border:1px solid var(--line); color:var(--txt); }
   button.danger { background:transparent; border:1px solid rgba(255,90,90,.35); color:var(--bad); }
+  button.icon-button { width:31px; height:31px; padding:0; display:inline-grid; place-items:center; font-size:18px; line-height:1; }
   .table-wrap { overflow:auto; border:1px solid var(--line); border-radius:8px; background:var(--card); }
   table { width:100%; min-width:900px; border-collapse:collapse; }
   th,td { padding:10px 12px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }
@@ -53,6 +54,7 @@
   .check { display:flex; align-items:center; gap:8px; margin-bottom:14px; color:var(--txt); }
   .check input { width:auto; margin:0; }
   .dialog-actions { display:flex; justify-content:flex-end; gap:8px; }
+  .dialog-actions .push-left { margin-right:auto; }
   #notice { min-height:20px; margin:-12px 0 14px; color:var(--mut); }
   #notice.error { color:var(--bad); }
   @media (max-width:900px) {
@@ -85,7 +87,7 @@
   <div id="notice"></div>
 
   <section>
-    <div class="section-head"><h2>DID-клиенты и отдельные балансы</h2><button class="small" onclick="clientDlg.showModal()">+ Клиент</button></div>
+    <div class="section-head"><h2>DID-клиенты и отдельные балансы</h2><button class="small" onclick="openClientDialog()">+ Клиент</button></div>
     <div class="table-wrap"><table>
       <thead><tr><th>Клиент</th><th>DIDs</th><th>Линии сейчас</th><th>Исходящий доступ клиента</th><th class="right">Баланс</th><th class="right">Кредит</th><th class="right">Доступно</th><th>Статус</th><th></th></tr></thead>
       <tbody id="clients-body"></tbody>
@@ -126,16 +128,17 @@
 </main>
 
 <dialog id="client-dlg">
-  <h3>Новый DID-клиент</h3>
+  <h3 id="client-dlg-title">Новый DID-клиент</h3>
   <form id="client-form">
+    <input id="client-id" type="hidden">
     <label>Название</label><input id="client-name" required autofocus>
     <label>Валюта</label><input id="client-currency" value="USD" required>
-    <label>Стартовый баланс</label><input id="client-balance" type="number" min="0" step="0.0001" value="0">
+    <div id="client-opening-balance"><label>Стартовый баланс</label><input id="client-balance" type="number" min="0" step="0.0001" value="0"></div>
     <label>Кредитный лимит</label><input id="client-credit" type="number" min="0" step="0.0001" value="0">
     <label>IP клиента для исходящих, через запятую</label><textarea id="client-outbound-ips" placeholder="198.51.100.10, 198.51.100.0/24"></textarea>
     <label>Исходящий техпрефикс клиента</label><input id="client-outbound-tech" placeholder="500">
     <label class="check"><input id="client-active" type="checkbox" checked> Активен</label>
-    <div class="dialog-actions"><button type="button" class="ghost" onclick="clientDlg.close()">Отмена</button><button type="submit">Создать</button></div>
+    <div class="dialog-actions"><button type="button" class="ghost" onclick="clientDlg.close()">Отмена</button><button id="client-submit" type="submit">Создать</button></div>
   </form>
 </dialog>
 
@@ -153,8 +156,9 @@
 </dialog>
 
 <dialog id="outbound-route-dlg">
-  <h3>Исходящий маршрут DID-клиента</h3>
+  <h3 id="outbound-route-dlg-title">Новый исходящий маршрут</h3>
   <form id="outbound-route-form">
+    <input id="out-route-id" type="hidden">
     <label>DID-клиент</label><select id="out-client" required></select>
     <label>Существующий терминатор / направление</label><select id="out-terminator" required></select>
     <div class="mut" style="margin:-6px 0 14px">Gateway, IP, техпрефикс и закупка берутся из основного биллинга.</div>
@@ -162,13 +166,14 @@
     <label>Тарификация клиента</label><select id="out-cycle"><option value="1/1">1/1</option><option value="60/1">60/1</option><option value="60/60">60/60</option></select>
     <label>Максимум одновременных линий</label><input id="out-channels" type="number" min="1" max="1000" value="10" required>
     <label class="check"><input id="out-active" type="checkbox" checked> Маршрут активен</label>
-    <div class="dialog-actions"><button type="button" class="ghost" onclick="outboundRouteDlg.close()">Отмена</button><button type="submit">Создать</button></div>
+    <div class="dialog-actions"><button id="out-route-delete" type="button" class="danger push-left" hidden>Удалить</button><button type="button" class="ghost" onclick="outboundRouteDlg.close()">Отмена</button><button id="out-route-submit" type="submit">Создать</button></div>
   </form>
 </dialog>
 
 <dialog id="number-dlg">
-  <h3>Новый входящий DID</h3>
+  <h3 id="number-dlg-title">Новый входящий DID</h3>
   <form id="number-form">
+    <input id="did-id" type="hidden">
     <label>DID номер</label><input id="did-number" inputmode="tel" placeholder="48221234567" required autofocus>
     <label>DID-клиент</label><select id="did-client" required></select>
     <label>Поставщик</label><input id="did-provider" placeholder="DID Global">
@@ -181,7 +186,7 @@
     <label>Максимум одновременных линий</label><input id="did-channels" type="number" min="1" max="1000" value="1" required>
     <label>Комментарий</label><textarea id="did-notes"></textarea>
     <label class="check"><input id="did-active" type="checkbox" checked> DID активен</label>
-    <div class="dialog-actions"><button type="button" class="ghost" onclick="numberDlg.close()">Отмена</button><button type="submit">Создать</button></div>
+    <div class="dialog-actions"><button id="did-delete" type="button" class="danger push-left" hidden>Удалить DID</button><button type="button" class="ghost" onclick="numberDlg.close()">Отмена</button><button id="did-submit" type="submit">Создать</button></div>
   </form>
 </dialog>
 
@@ -249,7 +254,7 @@ function render() {
       <td class="right">${money(c.credit_limit_cents,c.currency)}</td>
       <td class="${moneyClass(available)}">${money(available,c.currency)}</td>
       <td>${c.active ? '<span class="badge on">активен</span>' : '<span class="badge off">выкл</span>'}</td>
-      <td><div class="actions"><button class="small ghost" onclick="openAccess(${c.id})">Исходящие</button><button class="small ghost" onclick="topup(${c.id})">± Баланс</button><button class="small ${c.active?'danger':'ghost'}" onclick="toggleClient(${c.id},${c.active?0:1})">${c.active?'Выкл':'Вкл'}</button></div></td>
+      <td><div class="actions"><button class="ghost icon-button" title="Редактировать клиента" aria-label="Редактировать клиента" onclick="openClientEdit(${c.id})">✎</button><button class="small ghost" onclick="openAccess(${c.id})">Исходящие</button><button class="small ghost" onclick="topup(${c.id})">± Баланс</button><button class="small ${c.active?'danger':'ghost'}" onclick="toggleClient(${c.id},${c.active?0:1})">${c.active?'Выкл':'Вкл'}</button></div></td>
     </tr>`;
   }).join('') || empty(9);
 
@@ -261,7 +266,7 @@ function render() {
     <td class="right">${money(n.cost_rate_cents,n.currency)}</td>
     <td>${n.active_calls} / ${n.max_channels} ${n.active_calls ? '<span class="badge busy">занято</span>' : ''}</td>
     <td>${n.active ? '<span class="badge on">активен</span>' : '<span class="badge off">выкл</span>'}</td>
-    <td><div class="actions"><button class="small ${n.active?'danger':'ghost'}" onclick="toggleNumber(${n.id},${n.active?0:1})">${n.active?'Выкл':'Вкл'}</button></div></td>
+    <td><div class="actions"><button class="ghost icon-button" title="Редактировать правило" aria-label="Редактировать правило" onclick="openNumberEdit(${n.id})">✎</button><button class="small ${n.active?'danger':'ghost'}" onclick="toggleNumber(${n.id},${n.active?0:1})">${n.active?'Выкл':'Вкл'}</button></div></td>
   </tr>`).join('') || empty(9);
 
   document.getElementById('outbound-routes-body').innerHTML = (state.outbound_routes || []).map(r => `<tr>
@@ -273,7 +278,7 @@ function render() {
     <td class="right">${money(r.resolved_cost_rate_cents ?? r.cost_rate_cents,r.currency)}<div class="mut">${esc(r.resolved_cost_billing_cycle || r.billing_cycle)}</div></td>
     <td>${r.active_calls} / ${r.max_channels}</td>
     <td>${r.active ? '<span class="badge on">активен</span>' : '<span class="badge off">выкл</span>'}</td>
-    <td><div class="actions"><button class="small ${r.active?'danger':'ghost'}" onclick="toggleOutboundRoute(${r.id},${r.active?0:1})">${r.active?'Выкл':'Вкл'}</button></div></td>
+    <td><div class="actions"><button class="ghost icon-button" title="Редактировать маршрут" aria-label="Редактировать маршрут" onclick="openOutboundRouteEdit(${r.id})">✎</button><button class="small ${r.active?'danger':'ghost'}" onclick="toggleOutboundRoute(${r.id},${r.active?0:1})">${r.active?'Выкл':'Вкл'}</button></div></td>
   </tr>`).join('') || empty(9);
 
   document.getElementById('cdr-body').innerHTML = state.cdr.map(c => `<tr>
@@ -293,11 +298,11 @@ function render() {
 
   const select = document.getElementById('did-client');
   const selected = select.value;
-  select.innerHTML = state.clients.filter(c => c.active).map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  select.innerHTML = state.clients.map(c => `<option value="${c.id}" ${c.active?'':'disabled'}>${esc(c.name)}${c.active?'':' (выкл)'}</option>`).join('');
   if ([...select.options].some(o => o.value === selected)) select.value = selected;
   const outSelect = document.getElementById('out-client');
   const outSelected = outSelect.value;
-  outSelect.innerHTML = state.clients.filter(c => c.active).map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  outSelect.innerHTML = state.clients.map(c => `<option value="${c.id}" ${c.active?'':'disabled'}>${esc(c.name)}${c.active?'':' (выкл)'}</option>`).join('');
   if ([...outSelect.options].some(o => o.value === outSelected)) outSelect.value = outSelected;
   const termSelect = document.getElementById('out-terminator');
   const termSelected = termSelect.value;
@@ -327,12 +332,101 @@ async function load(manual=false) {
 
 function openNumberDialog() {
   if (!state.clients.some(c => c.active)) return notice('Сначала создайте активного DID-клиента.',true);
+  const form = document.getElementById('number-form');
+  form.reset();
+  document.getElementById('did-id').value = '';
+  document.getElementById('number-dlg-title').textContent = 'Новый входящий DID';
+  document.getElementById('did-submit').textContent = 'Создать';
+  document.getElementById('did-delete').hidden = true;
+  document.getElementById('did-cycle').value = '1/1';
+  document.getElementById('did-channels').value = '1';
+  document.getElementById('did-active').checked = true;
+  document.getElementById('did-client').value = String(state.clients.find(c => c.active).id);
   numberDlg.showModal();
 }
 
 function openOutboundRouteDialog() {
   if (!state.clients.some(c => c.active)) return notice('Сначала создайте активного DID-клиента.',true);
   if (!(state.existing_terminators || []).length) return notice('В основном биллинге нет активных терминаторов.',true);
+  const form = document.getElementById('outbound-route-form');
+  form.reset();
+  document.getElementById('out-route-id').value = '';
+  document.getElementById('outbound-route-dlg-title').textContent = 'Новый исходящий маршрут';
+  document.getElementById('out-route-submit').textContent = 'Создать';
+  document.getElementById('out-route-delete').hidden = true;
+  document.getElementById('out-cycle').value = '1/1';
+  document.getElementById('out-channels').value = '10';
+  document.getElementById('out-active').checked = true;
+  document.getElementById('out-client').value = String(state.clients.find(c => c.active).id);
+  outboundRouteDlg.showModal();
+}
+
+function openClientDialog() {
+  const form = document.getElementById('client-form');
+  form.reset();
+  document.getElementById('client-id').value = '';
+  document.getElementById('client-dlg-title').textContent = 'Новый DID-клиент';
+  document.getElementById('client-submit').textContent = 'Создать';
+  document.getElementById('client-opening-balance').hidden = false;
+  document.getElementById('client-currency').value = 'USD';
+  document.getElementById('client-active').checked = true;
+  clientDlg.showModal();
+}
+
+function openClientEdit(id) {
+  const client = state.clients.find(item => item.id === id);
+  if (!client) return;
+  document.getElementById('client-id').value = id;
+  document.getElementById('client-name').value = client.name || '';
+  document.getElementById('client-currency').value = client.currency || 'USD';
+  document.getElementById('client-credit').value = (Number(client.credit_limit_cents || 0) / MONEY_SCALE).toFixed(4);
+  document.getElementById('client-outbound-ips').value = client.outbound_ips || '';
+  document.getElementById('client-outbound-tech').value = client.outbound_tech_prefix || '';
+  document.getElementById('client-active').checked = Boolean(client.active);
+  document.getElementById('client-dlg-title').textContent = 'Редактировать DID-клиента';
+  document.getElementById('client-submit').textContent = 'Сохранить';
+  document.getElementById('client-opening-balance').hidden = true;
+  clientDlg.showModal();
+}
+
+function openNumberEdit(id) {
+  const number = state.numbers.find(item => item.id === id);
+  if (!number) return;
+  document.getElementById('did-id').value = id;
+  document.getElementById('did-number').value = number.did_number || '';
+  document.getElementById('did-client').value = String(number.client_id);
+  document.getElementById('did-provider').value = number.provider_name || '';
+  document.getElementById('did-provider-ips').value = number.provider_ips || '';
+  document.getElementById('did-destination').value = number.destination || '';
+  document.getElementById('did-backup').value = number.backup_destination || '';
+  document.getElementById('did-sell').value = (Number(number.sell_rate_cents || 0) / MONEY_SCALE).toFixed(4);
+  document.getElementById('did-cost').value = (Number(number.cost_rate_cents || 0) / MONEY_SCALE).toFixed(4);
+  document.getElementById('did-cycle').value = number.billing_cycle || '1/1';
+  document.getElementById('did-channels').value = number.max_channels || 1;
+  document.getElementById('did-notes').value = number.notes || '';
+  document.getElementById('did-active').checked = Boolean(number.active);
+  document.getElementById('number-dlg-title').textContent = 'Редактировать входящий DID';
+  document.getElementById('did-submit').textContent = 'Сохранить';
+  document.getElementById('did-delete').hidden = false;
+  numberDlg.showModal();
+}
+
+function openOutboundRouteEdit(id) {
+  const route = (state.outbound_routes || []).find(item => item.id === id);
+  if (!route) return;
+  if (!route.terminator_id || !(state.existing_terminators || []).some(t => t.id === route.terminator_id)) {
+    return notice('Связанный терминатор выключен или удалён. Сначала включите его в основном биллинге.', true);
+  }
+  document.getElementById('out-route-id').value = id;
+  document.getElementById('out-client').value = String(route.client_id);
+  document.getElementById('out-terminator').value = String(route.terminator_id);
+  document.getElementById('out-sell').value = (Number(route.sell_rate_cents || 0) / MONEY_SCALE).toFixed(4);
+  document.getElementById('out-cycle').value = route.billing_cycle || '1/1';
+  document.getElementById('out-channels').value = route.max_channels || 1;
+  document.getElementById('out-active').checked = Boolean(route.active);
+  document.getElementById('outbound-route-dlg-title').textContent = 'Редактировать исходящий маршрут';
+  document.getElementById('out-route-submit').textContent = 'Сохранить';
+  document.getElementById('out-route-delete').hidden = false;
   outboundRouteDlg.showModal();
 }
 
@@ -372,12 +466,15 @@ async function toggleOutboundRoute(id, active) {
 document.getElementById('client-form').addEventListener('submit', async event => {
   event.preventDefault();
   try {
-    await api('/api/dids/clients','POST',{
+    const id = Number(document.getElementById('client-id').value || 0);
+    const payload = {
       name:document.getElementById('client-name').value.trim(), currency:document.getElementById('client-currency').value.trim(),
-      balance_cents:parseMoney(document.getElementById('client-balance').value), credit_limit_cents:parseMoney(document.getElementById('client-credit').value),
+      credit_limit_cents:parseMoney(document.getElementById('client-credit').value),
       outbound_ips:document.getElementById('client-outbound-ips').value.trim(), outbound_tech_prefix:document.getElementById('client-outbound-tech').value.trim(),
       active:document.getElementById('client-active').checked
-    });
+    };
+    if (!id) payload.balance_cents = parseMoney(document.getElementById('client-balance').value);
+    await api(id ? `/api/dids/clients/${id}` : '/api/dids/clients', id ? 'PATCH' : 'POST', payload);
     event.target.reset(); document.getElementById('client-currency').value='USD'; document.getElementById('client-active').checked=true;
     clientDlg.close(); await load(true);
   } catch (error) { notice(error.message,true); }
@@ -399,14 +496,16 @@ document.getElementById('access-form').addEventListener('submit', async event =>
 document.getElementById('number-form').addEventListener('submit', async event => {
   event.preventDefault();
   try {
-    await api('/api/dids/numbers','POST',{
+    const id = Number(document.getElementById('did-id').value || 0);
+    const payload = {
       client_id:Number(document.getElementById('did-client').value), did_number:document.getElementById('did-number').value,
       provider_name:document.getElementById('did-provider').value.trim(), provider_ips:document.getElementById('did-provider-ips').value.trim(),
       destination:document.getElementById('did-destination').value.trim(), backup_destination:document.getElementById('did-backup').value.trim(),
       sell_rate_cents:parseMoney(document.getElementById('did-sell').value), cost_rate_cents:parseMoney(document.getElementById('did-cost').value),
       billing_cycle:document.getElementById('did-cycle').value, max_channels:Number(document.getElementById('did-channels').value),
       active:document.getElementById('did-active').checked, notes:document.getElementById('did-notes').value.trim()
-    });
+    };
+    await api(id ? `/api/dids/numbers/${id}` : '/api/dids/numbers', id ? 'PATCH' : 'POST', payload);
     event.target.reset(); document.getElementById('did-cycle').value='1/1'; document.getElementById('did-channels').value='1'; document.getElementById('did-active').checked=true;
     numberDlg.close(); await load(true);
   } catch (error) { notice(error.message,true); }
@@ -415,13 +514,37 @@ document.getElementById('number-form').addEventListener('submit', async event =>
 document.getElementById('outbound-route-form').addEventListener('submit', async event => {
   event.preventDefault();
   try {
-    await api('/api/dids/outbound-routes','POST',{
+    const id = Number(document.getElementById('out-route-id').value || 0);
+    const payload = {
       client_id:Number(document.getElementById('out-client').value), terminator_id:Number(document.getElementById('out-terminator').value),
       sell_rate_cents:parseMoney(document.getElementById('out-sell').value), billing_cycle:document.getElementById('out-cycle').value,
       max_channels:Number(document.getElementById('out-channels').value), active:document.getElementById('out-active').checked
-    });
+    };
+    await api(id ? `/api/dids/outbound-routes/${id}` : '/api/dids/outbound-routes', id ? 'PATCH' : 'POST', payload);
     event.target.reset(); document.getElementById('out-cycle').value='1/1'; document.getElementById('out-channels').value='10'; document.getElementById('out-active').checked=true;
     outboundRouteDlg.close(); await load(true);
+  } catch (error) { notice(error.message,true); }
+});
+
+document.getElementById('did-delete').addEventListener('click', async () => {
+  const id = Number(document.getElementById('did-id').value || 0);
+  const number = state.numbers.find(item => item.id === id);
+  if (!id || !number || !confirm(`Удалить DID ${number.did_number}? История CDR сохранится.`)) return;
+  try {
+    await api(`/api/dids/numbers/${id}`, 'DELETE');
+    numberDlg.close();
+    await load(true);
+  } catch (error) { notice(error.message,true); }
+});
+
+document.getElementById('out-route-delete').addEventListener('click', async () => {
+  const id = Number(document.getElementById('out-route-id').value || 0);
+  const route = (state.outbound_routes || []).find(item => item.id === id);
+  if (!id || !route || !confirm(`Удалить маршрут ${route.client_name} → ${route.resolved_destination_name || route.destination_name}?`)) return;
+  try {
+    await api(`/api/dids/outbound-routes/${id}`, 'DELETE');
+    outboundRouteDlg.close();
+    await load(true);
   } catch (error) { notice(error.message,true); }
 });
 

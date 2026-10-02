@@ -1,9 +1,19 @@
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
 import db
 import did_module
+
+
+class _NoAuth:
+    ADMIN_AUTH = []
+    ADMIN_WRITE_AUTH = []
+    API_AUTH = []
 
 
 class DidBillingTests(unittest.TestCase):
@@ -39,8 +49,12 @@ class DidBillingTests(unittest.TestCase):
         ).lastrowid
         conn.commit()
         conn.close()
+        app = FastAPI()
+        did_module.install(app, _NoAuth, db, Path(did_module.__file__).parent)
+        self.http = TestClient(app)
 
     def tearDown(self):
+        self.http.close()
         db.DB_PATH = self.original_path
         self.tmp.cleanup()
 
@@ -162,6 +176,88 @@ class DidBillingTests(unittest.TestCase):
         self.assertEqual(second["provider_number"], "77848606123456")
         self.assertEqual(second["bridge_target"], "sofia/external/77848606123456@91.224.250.27")
         self.assertEqual(second["cost_rate_cents"], 350)
+
+    def test_admin_can_edit_and_delete_did_rule(self):
+        response = self.http.patch(
+            f"/api/dids/numbers/{self.number_id}",
+            json={
+                "did_number": "+48 22 999 88 77",
+                "provider_ips": "203.0.113.9, 203.0.113.0/28",
+                "destination": "198.51.100.99:5060",
+                "sell_rate_cents": 1250,
+                "active": False,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        conn = db.get_conn()
+        edited = conn.execute("SELECT * FROM did_numbers WHERE id = ?", (self.number_id,)).fetchone()
+        self.assertEqual(edited["did_number"], "48229998877")
+        self.assertEqual(edited["provider_ips"], "203.0.113.9, 203.0.113.0/28")
+        self.assertEqual(edited["destination"], "198.51.100.99:5060")
+        self.assertEqual(edited["sell_rate_cents"], 1250)
+        self.assertEqual(edited["active"], 0)
+        conn.execute(
+            "INSERT INTO did_reservations (call_uuid, did_number_id, client_id, expires_at) VALUES (?, ?, ?, ?)",
+            ("active-delete-test", self.number_id, self.client_id, int(time.time()) + 300),
+        )
+        conn.commit()
+        conn.close()
+
+        blocked = self.http.delete(f"/api/dids/numbers/{self.number_id}")
+        self.assertEqual(blocked.status_code, 409)
+
+        conn = db.get_conn()
+        conn.execute("UPDATE did_reservations SET active = 0 WHERE did_number_id = ?", (self.number_id,))
+        conn.commit()
+        conn.close()
+        deleted = self.http.delete(f"/api/dids/numbers/{self.number_id}")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        conn = db.get_conn()
+        self.assertIsNone(conn.execute("SELECT 1 FROM did_numbers WHERE id = ?", (self.number_id,)).fetchone())
+        conn.close()
+
+    def test_admin_route_edit_refreshes_selected_terminator(self):
+        conn = db.get_conn()
+        group_id = conn.execute(
+            "INSERT INTO termination_groups (name, ips, gateway_name) VALUES ('New carrier', '192.0.2.44', '')"
+        ).lastrowid
+        terminator_id = conn.execute(
+            """INSERT INTO terminators
+                   (name, gateway_group_id, destination_name, prefix, gateway_name, tech_prefix,
+                    cost_rate_cents, billing_cycle, active)
+               VALUES ('New carrier BE', ?, 'Belgium', '32', '', '880', 410, '60/1', 1)""",
+            (group_id,),
+        ).lastrowid
+        conn.commit()
+        conn.close()
+
+        response = self.http.patch(
+            f"/api/dids/outbound-routes/{self.outbound_route_id}",
+            json={
+                "terminator_id": terminator_id,
+                "sell_rate_cents": 700,
+                "billing_cycle": "60/60",
+                "max_channels": 12,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        conn = db.get_conn()
+        route = conn.execute("SELECT * FROM did_outbound_routes WHERE id = ?", (self.outbound_route_id,)).fetchone()
+        self.assertEqual(route["terminator_id"], terminator_id)
+        self.assertEqual(route["provider_name"], "New carrier")
+        self.assertEqual(route["destination_name"], "Belgium")
+        self.assertEqual(route["prefix"], "32")
+        self.assertEqual(route["route_ips"], "192.0.2.44")
+        self.assertEqual(route["tech_prefix"], "880")
+        self.assertEqual(route["cost_rate_cents"], 410)
+        self.assertEqual(route["cost_billing_cycle"], "60/1")
+        self.assertEqual(route["sell_rate_cents"], 700)
+        self.assertEqual(route["billing_cycle"], "60/60")
+        self.assertEqual(route["max_channels"], 12)
+        conn.close()
+
+        deleted = self.http.delete(f"/api/dids/outbound-routes/{self.outbound_route_id}")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
 
 
 if __name__ == "__main__":
