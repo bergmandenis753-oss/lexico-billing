@@ -22,6 +22,10 @@ class BillingLuaTransportTests(unittest.TestCase):
         self.assertIn("if session:ready() then", self.script)
         self.assertIn("caller disconnected before bridge", self.script)
 
+    def test_reserve_503_is_returned_to_the_caller(self):
+        self.assertIn('tonumber(sip_code) == 503 and "503" or "403"', self.script)
+        self.assertIn('reserve rejected (" .. code .. "): " .. body, code)', self.script)
+
 
 if __name__ == "__main__":
     unittest.main()
