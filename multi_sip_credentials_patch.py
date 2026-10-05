@@ -1,3 +1,4 @@
+import ipaddress
 import re
 import secrets
 import string
@@ -36,6 +37,10 @@ class SipCredentialUpdateIn(BaseModel):
     active: Optional[bool] = None
 
 
+class ClientIpsUpdateIn(BaseModel):
+    sip_ip: str
+
+
 def _password(length=20):
     return "".join(secrets.choice(PASSWORD_ALPHABET) for _ in range(length))
 
@@ -49,6 +54,56 @@ def _normalize_mode(value, sip_ip=""):
     if mode not in {"ip", "sip", "ip_sip"}:
         mode = "ip" if str(sip_ip or "").strip() else "sip"
     return mode
+
+
+def _normalize_ip_list(value):
+    tokens = [token for token in re.split(r"[\s,;]+", str(value or "").strip()) if token]
+    if not tokens:
+        raise HTTPException(400, "Укажите хотя бы один IP")
+    if len(tokens) > 100:
+        raise HTTPException(400, "Можно указать не больше 100 IP")
+
+    normalized = []
+    seen = set()
+    for token in tokens:
+        try:
+            if "/" in token:
+                item = ipaddress.ip_network(token, strict=False).with_prefixlen
+            else:
+                item = ipaddress.ip_address(token).compressed
+        except ValueError:
+            raise HTTPException(400, f"Некорректный IP: {token}")
+        if item not in seen:
+            seen.add(item)
+            normalized.append(item)
+    return normalized
+
+
+def _as_network(token):
+    try:
+        if "/" in token:
+            return ipaddress.ip_network(token, strict=False)
+        address = ipaddress.ip_address(token)
+        return ipaddress.ip_network(f"{address}/{address.max_prefixlen}", strict=False)
+    except ValueError:
+        return None
+
+
+def _find_ip_conflict(conn, client_id, tokens):
+    wanted = [_as_network(token) for token in tokens]
+    rows = conn.execute(
+        "SELECT id, name, sip_ip FROM clients "
+        "WHERE id != ? AND COALESCE(deleted_at, '') = ''",
+        (client_id,),
+    ).fetchall()
+    for row in rows:
+        for existing_token in re.split(r"[\s,;]+", str(row["sip_ip"] or "").strip()):
+            existing = _as_network(existing_token)
+            if existing is None:
+                continue
+            if any(network.version == existing.version and network.overlaps(existing) for network in wanted):
+                return row, existing_token
+    return None
 
 
 def _public_credential(row):
@@ -122,8 +177,25 @@ SIP_DASHBOARD_INJECTION = r"""
   .sip-credential-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px; }
   .sip-value { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all; }
   .sip-empty { color:var(--mut); padding:14px 0; }
+  .client-ip-edit { width:30px; height:30px; padding:0; font-size:17px; line-height:1; }
+  #client-ip-dlg { width:min(480px, calc(100vw - 32px)); }
+  #client-ip-list { width:100%; min-height:210px; resize:vertical; padding:9px; border:1px solid var(--line); border-radius:7px; background:var(--bg); color:var(--txt); margin-bottom:8px; font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  #client-ip-error { min-height:20px; color:var(--bad); white-space:pre-wrap; overflow-wrap:anywhere; }
   @media (max-width:700px) { .sip-credential-grid { grid-template-columns:1fr; } }
 </style>
+<dialog id="client-ip-dlg">
+  <h3>IP аккаунта</h3>
+  <p id="client-ip-name" class="mut"></p>
+  <form onsubmit="saveClientIps(event)">
+    <label for="client-ip-list">IP-адреса, по одному в строке</label>
+    <textarea id="client-ip-list" required spellcheck="false" autocomplete="off"></textarea>
+    <div id="client-ip-error"></div>
+    <div class="row">
+      <button type="button" class="ghost" onclick="document.getElementById('client-ip-dlg').close()">Отмена</button>
+      <button type="submit">Сохранить</button>
+    </div>
+  </form>
+</dialog>
 <dialog id="sip-credentials-dlg" class="wide">
   <h3>SIP доступы</h3>
   <p id="sip-client-name" class="mut"></p>
@@ -138,6 +210,7 @@ SIP_DASHBOARD_INJECTION = r"""
   if (window.__multiSipCredentialsPatch) return;
   window.__multiSipCredentialsPatch = true;
   let sipClientId = null;
+  let ipClientId = null;
   let createMode = 'ip';
   const getClients = () => { try { return Object.values(clientMap || {}); } catch (_) { return []; } };
   const safeMoney = (units, cur) => {
@@ -207,6 +280,12 @@ SIP_DASHBOARD_INJECTION = r"""
     return `<span class="mut">${esc(c.sip_ip || '')}</span>`;
   }
 
+  function ipEditButton(c) {
+    const mode = String(c.connection_mode || 'ip');
+    if (mode === 'sip') return '';
+    return `<button class="small ghost client-ip-edit" title="Редактировать IP" aria-label="Редактировать IP ${esc(c.name)}" onclick="openClientIpEditor(${c.id})">&#9998;</button>`;
+  }
+
   function renderClients() {
     const tbody = document.getElementById('t-clients');
     if (!tbody) return;
@@ -221,7 +300,7 @@ SIP_DASHBOARD_INJECTION = r"""
         <td class="right">${safeMoney(limit, c.currency)}</td>
         <td class="right ${moneyClass(available)}">${safeMoney(available, c.currency)}</td>
         <td>${c.active ? '<span class="badge on">активен</span>' : '<span class="badge off">выкл</span>'}</td>
-        <td class="right"><span class="sip-actions"><button class="small ghost" onclick="openSipCredentials(${c.id})">SIP доступы</button><button class="small ghost" onclick="openCredit(${c.id})">Кредит</button><button class="small" onclick="openTopup(${c.id})">+ Пополнить</button></span></td>
+        <td class="right"><span class="sip-actions">${ipEditButton(c)}<button class="small ghost" onclick="openSipCredentials(${c.id})">SIP доступы</button><button class="small ghost" onclick="openCredit(${c.id})">Кредит</button><button class="small" onclick="openTopup(${c.id})">+ Пополнить</button></span></td>
       </tr>`;
     }).join('') || '<tr><td class="empty" colspan="7">Нет данных</td></tr>';
   }
@@ -262,6 +341,35 @@ SIP_DASHBOARD_INJECTION = r"""
     document.getElementById('sip-client-name').textContent = client.name || ('#' + id);
     document.getElementById('sip-credentials-dlg').showModal();
     await refreshCredentials();
+  };
+  window.openClientIpEditor = function (id) {
+    const client = getClients().find(c => Number(c.id) === Number(id));
+    if (!client) return;
+    ipClientId = id;
+    document.getElementById('client-ip-name').textContent = client.name || ('#' + id);
+    const input = document.getElementById('client-ip-list');
+    input.value = String(client.sip_ip || '').split(/\s*[,;]\s*/).filter(Boolean).join('\n');
+    document.getElementById('client-ip-error').textContent = '';
+    document.getElementById('client-ip-dlg').showModal();
+    requestAnimationFrame(() => { input.setSelectionRange(0, 0); input.scrollTop = 0; });
+  };
+  window.saveClientIps = async function (event) {
+    event.preventDefault();
+    const error = document.getElementById('client-ip-error');
+    const submit = event.target.querySelector('button[type="submit"]');
+    error.textContent = '';
+    submit.disabled = true;
+    try {
+      await api(`/api/clients/${ipClientId}/ips`, 'PUT', {
+        sip_ip: document.getElementById('client-ip-list').value
+      });
+      document.getElementById('client-ip-dlg').close();
+      await load(true);
+    } catch (err) {
+      error.textContent = err.message;
+    } finally {
+      submit.disabled = false;
+    }
   };
   window.createSipCredential = async function () {
     const label = prompt('Название агента или рабочего места:', '') ?? null;
@@ -348,6 +456,33 @@ def install(app, main, db):
             return {"id": cur.lastrowid, "client": client_row(row)}
         except db.sqlite3.IntegrityError:
             raise HTTPException(409, f"IP {data.sip_ip} уже используется")
+        finally:
+            conn.close()
+
+    @app.put("/api/clients/{client_id}/ips", dependencies=main.ADMIN_WRITE_AUTH)
+    def update_client_ips(client_id: int, data: ClientIpsUpdateIn):
+        ensure_schema(db)
+        tokens = _normalize_ip_list(data.sip_ip)
+        normalized = ", ".join(tokens)
+        conn = db.get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            client = _client_or_404(conn, client_id)
+            if _normalize_mode(client["connection_mode"], client["sip_ip"]) == "sip":
+                conn.rollback()
+                raise HTTPException(409, "Для SIP-аккаунта IP не используется")
+            conflict = _find_ip_conflict(conn, client_id, tokens)
+            if conflict is not None:
+                row, ip = conflict
+                conn.rollback()
+                raise HTTPException(409, f"IP {ip} уже используется аккаунтом {row['name']}")
+            conn.execute("UPDATE clients SET sip_ip = ? WHERE id = ?", (normalized, client_id))
+            row = conn.execute("SELECT * FROM clients WHERE id = ?", (client_id,)).fetchone()
+            conn.commit()
+            return {"ok": True, "client": client_row(row)}
+        except db.sqlite3.IntegrityError:
+            conn.rollback()
+            raise HTTPException(409, "Такой список IP уже используется")
         finally:
             conn.close()
 
