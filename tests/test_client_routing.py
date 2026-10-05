@@ -55,6 +55,8 @@ class ClientRoutingTests(unittest.TestCase):
         self.assertIn("function syncDirectionFromTerm", html)
         self.assertIn("openDirectionDlg(selectedRouteClientId)", html)
         self.assertIn("openRouteSettings", html)
+        self.assertIn("openRouteNumberWhitelist('a')", html)
+        self.assertIn("openRouteNumberWhitelist('b')", html)
 
 
 if __name__ == "__main__":

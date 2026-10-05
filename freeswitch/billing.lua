@@ -123,10 +123,11 @@ local function http_post(path, json)
   return code, body
 end
 
-local function reject_call(message)
+local function reject_call(message, sip_code)
   freeswitch.consoleLog("warning", message .. "\n")
-  session:execute("respond", "403")
-  session:hangup("CALL_REJECTED")
+  local response_code = tonumber(sip_code) == 503 and "503" or "403"
+  session:execute("respond", response_code)
+  session:hangup(response_code == "503" and "NORMAL_TEMPORARY_FAILURE" or "CALL_REJECTED")
 end
 
 local rjson = string.format(
@@ -158,7 +159,7 @@ end
 
 local code, body = http_post("/api/reserve", rjson)
 if code ~= 200 then
-  reject_call("[billing] reserve rejected (" .. code .. "): " .. body)
+  reject_call("[billing] reserve rejected (" .. code .. "): " .. body, code)
   return
 end
 

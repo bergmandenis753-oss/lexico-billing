@@ -29,6 +29,7 @@ import sqlite3
 import time
 from pathlib import Path
 import caller_id
+import route_number_whitelist
 
 DEFAULT_DB_PATH = Path(__file__).with_name("billing.db")
 E164_DATA_PATH = Path(__file__).with_name("data") / "e164_prefixes.json"
@@ -173,7 +174,11 @@ def init_db() -> None:
             prefix           TEXT    NOT NULL,
             destination_name TEXT    NOT NULL,
             sell_rate_cents  INTEGER NOT NULL,       -- legacy name; 0.0001 USD/min units
-            billing_cycle    TEXT    NOT NULL DEFAULT '1/1'
+            billing_cycle    TEXT    NOT NULL DEFAULT '1/1',
+            a_number_whitelist_enabled INTEGER NOT NULL DEFAULT 0,
+            a_number_whitelist TEXT NOT NULL DEFAULT '',
+            b_number_whitelist_enabled INTEGER NOT NULL DEFAULT 0,
+            b_number_whitelist TEXT NOT NULL DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS idx_crates_client ON client_rates(client_id, prefix);
 
@@ -298,6 +303,7 @@ def init_db() -> None:
         """
     )
     caller_id.init_schema(conn)
+    route_number_whitelist.init_schema(conn)
     # Мягкая миграция: добавляем terminator_id в старую таблицу client_rates.
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(client_rates)").fetchall()]
     if "terminator_id" not in cols:

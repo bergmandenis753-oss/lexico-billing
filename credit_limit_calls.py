@@ -1,5 +1,6 @@
 import math
 import caller_id
+import route_number_whitelist
 
 from fastapi import HTTPException
 from pydantic import BaseModel
@@ -55,6 +56,10 @@ def install_call_routes(app, main, db):
             if rate_match is None:
                 raise HTTPException(403, f"Нет тарифа клиента для {data.destination}")
             rate, dial_destination, client_tech_prefix = rate_match
+            denied_kind = route_number_whitelist.denied_kind(rate, data.clid, dial_destination)
+            if denied_kind:
+                stage = f"{denied_kind}_number_whitelist"
+                raise HTTPException(503, f"{denied_kind.upper()}-номер отсутствует в whitelist роута")
             if rate["sell_rate_cents"] <= 0:
                 raise HTTPException(403, "Некорректный тариф продажи (<= 0)")
             stage = "terminator"

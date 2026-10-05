@@ -51,6 +51,14 @@
   #caller-id-error { color:var(--bad); white-space:pre-wrap; overflow-wrap:anywhere; }
   .caller-id-control { display:flex; align-items:center; gap:6px; white-space:nowrap; }
   .caller-id-control button { width:30px; height:30px; padding:0; }
+  .whitelist-actions { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:2px 0 16px; }
+  .whitelist-actions button { min-height:42px; }
+  #number-whitelist-dlg { width:min(460px, calc(100vw - 32px)); max-height:90vh; overflow:auto; }
+  #number-whitelist-dlg textarea { width:100%; min-height:220px; resize:vertical; padding:8px; border:1px solid var(--line); border-radius:7px; background:var(--bg); color:var(--txt); margin-bottom:12px; font:14px/1.5 monospace; }
+  #number-whitelist-route { overflow-wrap:anywhere; margin:0 0 14px; }
+  #number-whitelist-error { color:var(--bad); white-space:pre-wrap; overflow-wrap:anywhere; }
+  .whitelist-toggle { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:0 0 14px; color:var(--txt); }
+  .whitelist-toggle input { width:auto; margin:0; }
   .rates-wrap { overflow-x:auto; }
   .rates-wrap table { min-width:960px; }
   .route-filter { display:flex; align-items:end; gap:10px; margin:0 0 10px; }
@@ -296,7 +304,27 @@
     <label>Клиентский техпрефикс (если клиент шлёт его нам)</label><input id="crs-client-tech" placeholder="101">
     <label>Цена продажи за минуту (в валюте)</label><input id="crs-sell" type="number" step="0.0001" min="0" required>
     <label>Billing cycle</label><select id="crs-cycle"><option value="1/1">1/1</option><option value="60/1">60/1</option></select>
+    <div class="whitelist-actions">
+      <button type="button" class="ghost" id="crs-a-whitelist" onclick="openRouteNumberWhitelist('a')">+ A whitelist</button>
+      <button type="button" class="ghost" id="crs-b-whitelist" onclick="openRouteNumberWhitelist('b')">+ B whitelist</button>
+    </div>
     <div class="row"><button type="button" class="ghost" onclick="routeSettingsDlg.close()">Отмена</button><button type="submit">Сохранить</button></div>
+  </form>
+</dialog>
+
+<dialog id="number-whitelist-dlg" aria-labelledby="number-whitelist-title">
+  <h3 id="number-whitelist-title">Whitelist номера</h3>
+  <p id="number-whitelist-route" class="mut"></p>
+  <form id="number-whitelist-form">
+    <label class="whitelist-toggle" for="number-whitelist-enabled"><span>Проверка включена</span><input id="number-whitelist-enabled" type="checkbox"></label>
+    <label for="number-whitelist-numbers">Номера, по одному в строке</label>
+    <textarea id="number-whitelist-numbers" maxlength="40000" rows="10" spellcheck="false" autofocus></textarea>
+    <p id="number-whitelist-error" role="alert" hidden></p>
+    <div class="row">
+      <button type="button" class="ghost" id="number-whitelist-clear">Очистить</button>
+      <button type="button" class="ghost" onclick="numberWhitelistDlg.close()">Отмена</button>
+      <button type="submit" id="number-whitelist-save">Сохранить</button>
+    </div>
   </form>
 </dialog>
 
@@ -334,10 +362,12 @@ const directionDlg = document.getElementById('direction-dlg');
 const topupDlg  = document.getElementById('topup-dlg');
 const callerIdDlg = document.getElementById('caller-id-dlg');
 const routeSettingsDlg = document.getElementById('route-settings-dlg');
+const numberWhitelistDlg = document.getElementById('number-whitelist-dlg');
 let clientRateMap = {};
 let clientRateList = [];
 let callerIdRateId = null;
 let routeSettingsId = null;
+let numberWhitelistKind = null;
 let selectedRouteClientId = null;
 let clientMap = {};
 let groupList = [];
@@ -656,8 +686,67 @@ function openRouteSettings(id) {
   document.getElementById('crs-client-tech').value = route.client_tech_prefix || '';
   document.getElementById('crs-sell').value = (Number(route.sell_rate_cents || 0) / MONEY_SCALE).toFixed(4).replace(/0+$/, '').replace(/\.$/, '') || '0';
   document.getElementById('crs-cycle').value = cycle(route.billing_cycle);
+  refreshRouteWhitelistButtons(route);
   routeSettingsDlg.showModal();
 }
+
+function routeWhitelistConfig(route, kind) {
+  const prefix = kind === 'a' ? 'a_number' : 'b_number';
+  const numbers = String(route[`${prefix}_whitelist`] || '');
+  return {enabled: Boolean(Number(route[`${prefix}_whitelist_enabled`] || 0)), numbers};
+}
+
+function refreshRouteWhitelistButtons(route) {
+  for (const kind of ['a', 'b']) {
+    const config = routeWhitelistConfig(route, kind);
+    const count = config.numbers.split('\n').filter(Boolean).length;
+    document.getElementById(`crs-${kind}-whitelist`).textContent =
+      `+ ${kind.toUpperCase()} whitelist · ${config.enabled ? 'вкл' : 'выкл'} · ${count}`;
+  }
+}
+
+function openRouteNumberWhitelist(kind) {
+  const route = clientRateMap[routeSettingsId];
+  if (!route || !['a', 'b'].includes(kind)) return;
+  numberWhitelistKind = kind;
+  const config = routeWhitelistConfig(route, kind);
+  document.getElementById('number-whitelist-title').textContent = `${kind.toUpperCase()}-номер whitelist`;
+  document.getElementById('number-whitelist-route').textContent =
+    [route.client_name, route.terminator_name, route.destination_name, route.client_tech_prefix].filter(Boolean).join(' · ');
+  document.getElementById('number-whitelist-enabled').checked = config.enabled;
+  document.getElementById('number-whitelist-numbers').value = config.numbers;
+  document.getElementById('number-whitelist-error').hidden = true;
+  numberWhitelistDlg.showModal();
+}
+
+document.getElementById('number-whitelist-clear').addEventListener('click', () => {
+  document.getElementById('number-whitelist-numbers').value = '';
+  document.getElementById('number-whitelist-numbers').focus();
+});
+
+document.getElementById('number-whitelist-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const save = document.getElementById('number-whitelist-save');
+  if (save.disabled || !routeSettingsId || !numberWhitelistKind) return;
+  const error = document.getElementById('number-whitelist-error');
+  save.disabled = true;
+  error.hidden = true;
+  try {
+    await api(`/api/client-rates/${routeSettingsId}/${numberWhitelistKind}-number-whitelist`, 'PUT', {
+      enabled: document.getElementById('number-whitelist-enabled').checked,
+      numbers: document.getElementById('number-whitelist-numbers').value
+    });
+    numberWhitelistDlg.close();
+    await load(true);
+    const route = clientRateMap[routeSettingsId];
+    if (route) refreshRouteWhitelistButtons(route);
+  } catch (err) {
+    error.textContent = err.message;
+    error.hidden = false;
+  } finally {
+    save.disabled = false;
+  }
+});
 
 document.getElementById('route-settings-form').addEventListener('submit', async e => {
   e.preventDefault();
