@@ -16,6 +16,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 import db
 import caller_id
+import route_number_whitelist
 app = FastAPI(title='Lexico VoIP billing', docs_url=None, redoc_url=None, openapi_url=None)
 templates = Jinja2Templates(directory='.')
 basic_security = HTTPBasic(auto_error=False)
@@ -326,6 +327,10 @@ def reserve(data: ReserveIn):
         if rate_match is None:
             raise HTTPException(403, f'Нет тарифа клиента для {data.destination}')
         rate, dial_destination, client_tech_prefix = rate_match
+        denied_kind = route_number_whitelist.denied_kind(rate, data.clid, dial_destination)
+        if denied_kind:
+            stage = f'{denied_kind}_number_whitelist'
+            raise HTTPException(503, f'{denied_kind.upper()}-номер отсутствует в whitelist роута')
         sell_billing_cycle = db.normalize_billing_cycle(_row_value(rate, 'billing_cycle', db.default_billing_cycle_for_route(rate['destination_name'], rate['prefix'])))
         if rate['sell_rate_cents'] <= 0:
             raise HTTPException(403, 'Некорректный тариф продажи (<= 0)')
@@ -624,6 +629,10 @@ def update_client_rate(rid: int, data: ClientRateUpdateIn):
 class CallerIdPoolIn(BaseModel):
     numbers: str = Field(max_length=4000)
 
+class RouteNumberWhitelistIn(BaseModel):
+    enabled: bool = False
+    numbers: str = Field(default='', max_length=40000)
+
 @app.put('/api/client-rates/{rid}/caller-id', dependencies=ADMIN_WRITE_AUTH)
 def update_caller_id_pool(rid: int, data: CallerIdPoolIn):
     conn = db.get_conn()
@@ -638,6 +647,28 @@ def update_caller_id_pool(rid: int, data: CallerIdPoolIn):
         return {'ok': True}
     finally:
         conn.close()
+
+def _update_route_number_whitelist(rid: int, kind: str, data: RouteNumberWhitelistIn):
+    conn = db.get_conn()
+    try:
+        try:
+            updated, numbers = route_number_whitelist.save(conn, rid, kind, data.enabled, data.numbers)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        if not updated:
+            raise HTTPException(404, 'Тариф не найден')
+        conn.commit()
+        return {'ok': True, 'enabled': bool(data.enabled), 'numbers': numbers}
+    finally:
+        conn.close()
+
+@app.put('/api/client-rates/{rid}/a-number-whitelist', dependencies=ADMIN_WRITE_AUTH)
+def update_a_number_whitelist(rid: int, data: RouteNumberWhitelistIn):
+    return _update_route_number_whitelist(rid, 'a', data)
+
+@app.put('/api/client-rates/{rid}/b-number-whitelist', dependencies=ADMIN_WRITE_AUTH)
+def update_b_number_whitelist(rid: int, data: RouteNumberWhitelistIn):
+    return _update_route_number_whitelist(rid, 'b', data)
 
 @app.delete('/api/client-rates/{rid}', dependencies=ADMIN_WRITE_AUTH)
 def delete_client_rate(rid: int):
