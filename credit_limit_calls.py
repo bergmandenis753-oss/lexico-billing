@@ -1,5 +1,6 @@
 import math
 import caller_id
+import route_line_limit
 import route_number_whitelist
 
 from fastapi import HTTPException
@@ -60,6 +61,16 @@ def install_call_routes(app, main, db):
             if denied_kind:
                 stage = f"{denied_kind}_number_whitelist"
                 raise HTTPException(503, f"{denied_kind.upper()}-номер отсутствует в whitelist роута")
+            call_uuid = data.call_uuid or f"nouuid-{now_ts}-{client['id']}"
+            line_allowed, route_active_calls, route_line_limit_value = route_line_limit.check(
+                conn, rate, now_ts, call_uuid
+            )
+            if not line_allowed:
+                stage = "route_line_limit"
+                raise HTTPException(
+                    503,
+                    f"Лимит линий роута исчерпан: {route_active_calls}/{route_line_limit_value}",
+                )
             if rate["sell_rate_cents"] <= 0:
                 raise HTTPException(403, "Некорректный тариф продажи (<= 0)")
             stage = "terminator"
@@ -90,13 +101,13 @@ def install_call_routes(app, main, db):
             if max_seconds <= 0:
                 raise HTTPException(403, "Недостаточно средств даже на 1 секунду разговора")
 
-            call_uuid = data.call_uuid or f"nouuid-{now_ts}-{client['id']}"
             outbound_caller_id = caller_id.select_number(conn, rate, call_uuid, client['id'])
             reserved = math.ceil(max_seconds * rate["sell_rate_cents"] / 60)
             expires_at = now_ts + max_seconds + db.RESERVATION_BUFFER_SEC
             conn.execute(
-                "INSERT OR REPLACE INTO reservations (client_id, call_uuid, reserved_cents, expires_at) VALUES (?, ?, ?, ?)",
-                (client["id"], call_uuid, reserved, expires_at),
+                "INSERT OR REPLACE INTO reservations "
+                "(client_id, client_rate_id, call_uuid, reserved_cents, expires_at) VALUES (?, ?, ?, ?, ?)",
+                (client["id"], rate["id"], call_uuid, reserved, expires_at),
             )
             if outbound_caller_id:
                 conn.execute(

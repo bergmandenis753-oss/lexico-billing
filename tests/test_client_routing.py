@@ -57,6 +57,9 @@ class ClientRoutingTests(unittest.TestCase):
         self.assertIn("openRouteSettings", html)
         self.assertIn("openRouteNumberWhitelist('a')", html)
         self.assertIn("openRouteNumberWhitelist('b')", html)
+        self.assertIn('id="crs-line-limit-enabled"', html)
+        self.assertIn('id="crs-line-limit"', html)
+        self.assertIn("line_limit_enabled", html)
 
 
 if __name__ == "__main__":

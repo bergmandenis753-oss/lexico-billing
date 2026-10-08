@@ -1,5 +1,7 @@
 import math
 
+import route_line_limit
+
 from fastapi import HTTPException
 
 
@@ -53,6 +55,16 @@ def install(app, main, db):
             if rate_match is None:
                 raise HTTPException(403, f"Нет тарифа клиента для {data.destination}")
             rate, dial_destination, client_tech_prefix = rate_match
+            call_uuid = data.call_uuid or f"nouuid-{now_ts}-{client['id']}"
+            line_allowed, route_active_calls, route_line_limit_value = route_line_limit.check(
+                conn, rate, now_ts, call_uuid
+            )
+            if not line_allowed:
+                stage = "route_line_limit"
+                raise HTTPException(
+                    503,
+                    f"Лимит линий роута исчерпан: {route_active_calls}/{route_line_limit_value}",
+                )
             if rate["sell_rate_cents"] <= 0:
                 raise HTTPException(403, "Некорректный тариф продажи (<= 0)")
             stage = "terminator"
@@ -82,12 +94,12 @@ def install(app, main, db):
             if max_seconds <= 0:
                 raise HTTPException(403, "Недостаточно средств даже на 1 секунду разговора")
 
-            call_uuid = data.call_uuid or f"nouuid-{now_ts}-{client['id']}"
             reserved = math.ceil(max_seconds * rate["sell_rate_cents"] / 60)
             expires_at = now_ts + max_seconds + db.RESERVATION_BUFFER_SEC
             conn.execute(
-                "INSERT OR REPLACE INTO reservations (client_id, call_uuid, reserved_cents, expires_at) VALUES (?, ?, ?, ?)",
-                (client["id"], call_uuid, reserved, expires_at),
+                "INSERT OR REPLACE INTO reservations "
+                "(client_id, client_rate_id, call_uuid, reserved_cents, expires_at) VALUES (?, ?, ?, ?, ?)",
+                (client["id"], rate["id"], call_uuid, reserved, expires_at),
             )
             conn.commit()
             stage = "reserved"
