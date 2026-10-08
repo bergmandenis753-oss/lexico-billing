@@ -163,7 +163,7 @@
       <span class="mut" id="route-client-summary">Выберите оригинатора</span>
     </div>
     <div class="rates-wrap"><table>
-      <thead><tr><th>Терминатор</th><th>Направление</th><th>Клиентский тех</th><th>Префикс</th><th class="right">Продажа</th><th>Биллинг</th><th>Caller ID</th><th></th></tr></thead>
+      <thead><tr><th>Терминатор</th><th>Направление</th><th>Клиентский тех</th><th>Префикс</th><th class="right">Продажа</th><th>Биллинг</th><th>Caller ID</th><th>Линии</th><th></th></tr></thead>
       <tbody id="t-rates"></tbody>
     </table></div>
   </section>
@@ -308,6 +308,8 @@
       <button type="button" class="ghost" id="crs-a-whitelist" onclick="openRouteNumberWhitelist('a')">+ A whitelist</button>
       <button type="button" class="ghost" id="crs-b-whitelist" onclick="openRouteNumberWhitelist('b')">+ B whitelist</button>
     </div>
+    <label class="whitelist-toggle" for="crs-line-limit-enabled"><span>Ручное ограничение линий</span><input id="crs-line-limit-enabled" type="checkbox"></label>
+    <label for="crs-line-limit">Максимум одновременных звонков на этом роуте</label><input id="crs-line-limit" type="number" min="1" max="10000" step="1" value="5">
     <div class="row"><button type="button" class="ghost" onclick="routeSettingsDlg.close()">Отмена</button><button type="submit">Сохранить</button></div>
   </form>
 </dialog>
@@ -544,6 +546,7 @@ async function load(manual = false) {
     client_rate: 'нет тарифа',
     terminator: 'нет терминатора',
     gateway: 'нет gateway/IP',
+    route_line_limit: 'лимит линий',
     balance: 'баланс',
     reserved: 'готово'
   })[s] || s || '';
@@ -626,7 +629,7 @@ function renderClientRoutes() {
   if (!clients.length) {
     select.innerHTML = '';
     document.getElementById('route-client-summary').textContent = 'Нет оригинаторов';
-    document.getElementById('t-rates').innerHTML = emptyRow(8);
+    document.getElementById('t-rates').innerHTML = emptyRow(9);
     selectedRouteClientId = null;
     return;
   }
@@ -654,9 +657,10 @@ function renderClientRoutes() {
       <td class="right">${rate(r.sell_rate_cents, cur)}</td>
       <td class="mut">${esc(cycle(r.billing_cycle))}</td>
       <td><div class="caller-id-control"><span>${callerIdCount || '—'}</span><button class="small ghost" title="Настроить Caller ID" aria-label="Настроить Caller ID" onclick="openCallerId(${r.id})">+</button></div></td>
+      <td>${Number(r.line_limit_enabled || 0) ? `<span class="badge on">до ${Number(r.line_limit || 0)}</span>` : '<span class="mut">без лимита</span>'}</td>
       <td class="right"><div class="route-actions"><button class="small ghost" onclick="openRouteSettings(${r.id})">Настроить</button><button class="small danger" title="Удалить роут" aria-label="Удалить роут" onclick="delRate(${r.id})">✕</button></div></td>
     </tr>`;
-  }).join('') || emptyRow(8);
+  }).join('') || emptyRow(9);
 }
 
 document.getElementById('route-client-filter').addEventListener('change', e => {
@@ -686,9 +690,21 @@ function openRouteSettings(id) {
   document.getElementById('crs-client-tech').value = route.client_tech_prefix || '';
   document.getElementById('crs-sell').value = (Number(route.sell_rate_cents || 0) / MONEY_SCALE).toFixed(4).replace(/0+$/, '').replace(/\.$/, '') || '0';
   document.getElementById('crs-cycle').value = cycle(route.billing_cycle);
+  document.getElementById('crs-line-limit-enabled').checked = Boolean(Number(route.line_limit_enabled || 0));
+  document.getElementById('crs-line-limit').value = Number(route.line_limit || 0) || 5;
+  syncRouteLineLimit();
   refreshRouteWhitelistButtons(route);
   routeSettingsDlg.showModal();
 }
+
+function syncRouteLineLimit() {
+  const enabled = document.getElementById('crs-line-limit-enabled').checked;
+  const input = document.getElementById('crs-line-limit');
+  input.disabled = !enabled;
+  input.required = enabled;
+}
+
+document.getElementById('crs-line-limit-enabled').addEventListener('change', syncRouteLineLimit);
 
 function routeWhitelistConfig(route, kind) {
   const prefix = kind === 'a' ? 'a_number' : 'b_number';
@@ -758,7 +774,9 @@ document.getElementById('route-settings-form').addEventListener('submit', async 
       prefix: document.getElementById('crs-prefix').value.trim(),
       client_tech_prefix: document.getElementById('crs-client-tech').value.trim(),
       sell_rate_cents: inputMoneyUnits('crs-sell', 'Цена продажи'),
-      billing_cycle: document.getElementById('crs-cycle').value
+      billing_cycle: document.getElementById('crs-cycle').value,
+      line_limit_enabled: document.getElementById('crs-line-limit-enabled').checked,
+      line_limit: parseInt(document.getElementById('crs-line-limit').value || '0', 10)
     });
     routeSettingsDlg.close();
     routeSettingsId = null;

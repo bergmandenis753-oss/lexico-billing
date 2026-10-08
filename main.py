@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 import db
 import caller_id
 import route_number_whitelist
+import route_line_limit
 app = FastAPI(title='Lexico VoIP billing', docs_url=None, redoc_url=None, openapi_url=None)
 templates = Jinja2Templates(directory='.')
 basic_security = HTTPBasic(auto_error=False)
@@ -188,6 +189,8 @@ class ClientRateUpdateIn(BaseModel):
     destination_name: Optional[str] = None
     sell_rate_cents: Optional[int] = None
     billing_cycle: Optional[str] = None
+    line_limit_enabled: Optional[bool] = None
+    line_limit: Optional[int] = None
 
 class OpsClientRouteIn(BaseModel):
     client_ip: str
@@ -331,6 +334,16 @@ def reserve(data: ReserveIn):
         if denied_kind:
             stage = f'{denied_kind}_number_whitelist'
             raise HTTPException(503, f'{denied_kind.upper()}-номер отсутствует в whitelist роута')
+        call_uuid = data.call_uuid or f"nouuid-{now_ts}-{client['id']}"
+        line_allowed, route_active_calls, route_line_limit_value = route_line_limit.check(
+            conn, rate, now_ts, call_uuid
+        )
+        if not line_allowed:
+            stage = 'route_line_limit'
+            raise HTTPException(
+                503,
+                f'Лимит линий роута исчерпан: {route_active_calls}/{route_line_limit_value}',
+            )
         sell_billing_cycle = db.normalize_billing_cycle(_row_value(rate, 'billing_cycle', db.default_billing_cycle_for_route(rate['destination_name'], rate['prefix'])))
         if rate['sell_rate_cents'] <= 0:
             raise HTTPException(403, 'Некорректный тариф продажи (<= 0)')
@@ -362,9 +375,12 @@ def reserve(data: ReserveIn):
         max_seconds = db.max_seconds_for_balance(available, rate['sell_rate_cents'], sell_billing_cycle)
         if max_seconds <= 0:
             raise HTTPException(403, 'Недостаточно средств на минуту разговора')
-        call_uuid = data.call_uuid or f"nouuid-{now_ts}-{client['id']}"
         expires_at = now_ts + max_seconds + db.RESERVATION_BUFFER_SEC
-        conn.execute('INSERT OR REPLACE INTO reservations (client_id, call_uuid, reserved_cents, expires_at) VALUES (?, ?, ?, ?)', (client['id'], call_uuid, available, expires_at))
+        conn.execute(
+            'INSERT OR REPLACE INTO reservations '
+            '(client_id, client_rate_id, call_uuid, reserved_cents, expires_at) VALUES (?, ?, ?, ?, ?)',
+            (client['id'], rate['id'], call_uuid, available, expires_at),
+        )
         conn.commit()
         stage = 'reserved'
         _safe_record_sip_hit(data, status_text='allowed', stage=stage, reason='Холд поставлен, звонок можно отправлять дальше', client=client, rate=rate, route=route, gateway_name=gateway_name, route_ip=route_ip, dial_destination=dial_destination, provider_number=provider_number, client_tech_prefix=client_tech_prefix, max_seconds=max_seconds, sell_billing_cycle=sell_billing_cycle, cost_billing_cycle=cost_billing_cycle)
@@ -615,9 +631,23 @@ def update_client_rate(rid: int, data: ClientRateUpdateIn):
         raise HTTPException(400, 'Нет полей для обновления')
     if 'billing_cycle' in fields:
         fields['billing_cycle'] = db.normalize_billing_cycle(fields['billing_cycle'])
-    sets = ', '.join((f'{k} = ?' for k in fields))
     conn = db.get_conn()
     try:
+        row = conn.execute('SELECT * FROM client_rates WHERE id = ?', (rid,)).fetchone()
+        if row is None:
+            raise HTTPException(404, 'Тариф не найден')
+        try:
+            next_enabled, next_limit = route_line_limit.normalize(
+                fields.get('line_limit_enabled', row['line_limit_enabled']),
+                fields.get('line_limit', row['line_limit']),
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if 'line_limit_enabled' in fields:
+            fields['line_limit_enabled'] = next_enabled
+        if 'line_limit' in fields:
+            fields['line_limit'] = next_limit
+        sets = ', '.join((f'{k} = ?' for k in fields))
         cur = conn.execute(f'UPDATE client_rates SET {sets} WHERE id = ?', (*fields.values(), rid))
         conn.commit()
         if cur.rowcount == 0:

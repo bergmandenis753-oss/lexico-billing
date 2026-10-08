@@ -30,6 +30,7 @@ import time
 from pathlib import Path
 import caller_id
 import route_number_whitelist
+import route_line_limit
 
 DEFAULT_DB_PATH = Path(__file__).with_name("billing.db")
 E164_DATA_PATH = Path(__file__).with_name("data") / "e164_prefixes.json"
@@ -304,6 +305,7 @@ def init_db() -> None:
     )
     caller_id.init_schema(conn)
     route_number_whitelist.init_schema(conn)
+    route_line_limit.init_schema(conn)
     # Мягкая миграция: добавляем terminator_id в старую таблицу client_rates.
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(client_rates)").fetchall()]
     if "terminator_id" not in cols:

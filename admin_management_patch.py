@@ -5,6 +5,8 @@ from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+import route_line_limit
+
 
 class ClientRatePatchIn(BaseModel):
     terminator_id: Optional[int] = None
@@ -13,6 +15,8 @@ class ClientRatePatchIn(BaseModel):
     destination_name: Optional[str] = None
     sell_rate_cents: Optional[int] = None
     billing_cycle: Optional[str] = None
+    line_limit_enabled: Optional[bool] = None
+    line_limit: Optional[int] = None
 
 
 class TerminationGroupPatchIn(BaseModel):
@@ -298,6 +302,17 @@ def install(app, main, db, compat):
             row = conn.execute("SELECT * FROM client_rates WHERE id = ?", (rid,)).fetchone()
             if row is None:
                 raise HTTPException(404, "Тариф не найден")
+            try:
+                next_enabled, next_limit = route_line_limit.normalize(
+                    fields.get("line_limit_enabled", row["line_limit_enabled"]),
+                    fields.get("line_limit", row["line_limit"]),
+                )
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            if "line_limit_enabled" in fields:
+                fields["line_limit_enabled"] = next_enabled
+            if "line_limit" in fields:
+                fields["line_limit"] = next_limit
             if "terminator_id" in fields:
                 term = db.get_terminator(conn, fields["terminator_id"])
                 if term is None:
