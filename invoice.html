@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
-<title>Lexico VoIP — Invoice</title>
+<title>SloT VoIP — Invoice</title>
 <style>
   :root { --bg:#0f1420; --card:#1a2130; --line:#2a3446; --txt:#e6ebf2; --mut:#8a96a8; --accent:#3f8cff; --good:#37c26a; --bad:#ff5a5a; }
   * { box-sizing:border-box; }
@@ -16,18 +16,20 @@
   .mode-nav a { color:var(--mut); text-decoration:none; padding:5px 10px; border-radius:5px; font-size:13px; }
   .mode-nav a.active { background:var(--line); color:var(--txt); }
   main { max-width:1320px; margin:0 auto; padding:20px 24px 48px; }
-  .toolbar { display:grid; grid-template-columns:auto minmax(220px,1fr) 160px 160px auto auto auto; gap:10px; align-items:end; margin-bottom:22px; }
+  .toolbar { display:grid; grid-template-columns:auto minmax(200px,1fr) 145px 145px 145px auto auto auto; gap:10px; align-items:end; margin-bottom:22px; }
   .field label { display:block; color:var(--mut); font-size:11px; text-transform:uppercase; margin:0 0 5px; }
-  input,select,button { min-height:38px; border-radius:7px; font:inherit; }
-  input,select { width:100%; padding:7px 10px; color:var(--txt); background:var(--card); border:1px solid var(--line); }
+  input,select,textarea,button { min-height:38px; border-radius:7px; font:inherit; }
+  input,select,textarea { width:100%; padding:7px 10px; color:var(--txt); background:var(--card); border:1px solid var(--line); }
+  textarea { min-height:130px; resize:vertical; }
   button { padding:7px 12px; border:0; background:var(--accent); color:#fff; cursor:pointer; }
   button.ghost { background:transparent; border:1px solid var(--line); color:var(--txt); }
   button[hidden] { display:none; }
-  dialog { width:min(520px,calc(100vw - 28px)); max-height:calc(100vh - 40px); overflow:auto; color:var(--txt); background:var(--card); border:1px solid var(--line); border-radius:8px; padding:22px; }
+  dialog { width:min(620px,calc(100vw - 28px)); max-height:calc(100vh - 40px); overflow:auto; color:var(--txt); background:var(--card); border:1px solid var(--line); border-radius:8px; padding:22px; }
   dialog::backdrop { background:rgba(4,8,15,.75); }
   dialog h3 { margin:0 0 18px; font-size:18px; }
   dialog label { display:block; color:var(--mut); margin:12px 0 5px; }
   .dialog-grid { display:grid; grid-template-columns:1fr 1fr; gap:0 12px; }
+  .price-title { margin:16px 0 -4px; font-size:12px; color:var(--txt); }
   .dialog-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:20px; }
   .segments { display:flex; padding:3px; gap:3px; border:1px solid var(--line); border-radius:8px; background:var(--card); }
   .segments button { min-height:30px; padding:4px 12px; background:transparent; color:var(--mut); }
@@ -35,7 +37,7 @@
   .invoice-head { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; padding:0 0 18px; border-bottom:1px solid var(--line); }
   .invoice-head h2 { margin:0 0 4px; font-size:22px; }
   .invoice-period { text-align:right; color:var(--mut); }
-  .summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:18px 0 24px; }
+  .summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:18px 0 24px; }
   .metric { min-height:90px; padding:14px 16px; border:1px solid var(--line); background:var(--card); border-radius:8px; }
   .metric .label { color:var(--mut); text-transform:uppercase; font-size:11px; }
   .metric .value { margin-top:10px; font-size:21px; font-weight:600; }
@@ -66,13 +68,17 @@
     :root { --bg:#fff; --card:#fff; --line:#d9dde5; --txt:#111827; --mut:#5f6877; }
     header,.toolbar,#notice { display:none !important; }
     body,main { background:#fff; color:#111827; margin:0; padding:0; max-width:none; }
+    .summary { grid-template-columns:repeat(3,minmax(0,1fr)); }
     .metric,.table-wrap { break-inside:avoid; }
+    table { min-width:0; font-size:11px; }
+    th,td { padding:8px 7px; }
+    .invoice-head { margin-top:8px; }
   }
 </style>
 </head>
 <body>
 <header>
-  <h1>Lexico VoIP</h1><span class="sub">инвойсы клиентов</span>
+  <h1>SloT VoIP</h1><span class="sub">инвойсы клиентов</span>
   <nav class="mode-nav" aria-label="Режим биллинга"><a href="/">Исходящие</a><a href="/dids">DIDs</a><a href="/monitoring">Мониторинг</a><a class="active" href="/invoice">Invoice</a></nav>
 </header>
 <main>
@@ -84,6 +90,7 @@
     <div class="field client"><label for="client">Клиент</label><select id="client"></select></div>
     <div class="field"><label for="date-from">Дата с</label><input id="date-from" type="date"></div>
     <div class="field"><label for="date-to">Дата по</label><input id="date-to" type="date"></div>
+    <div class="field"><label for="opening-balance">Баланс начало</label><input id="opening-balance" type="number" step="0.0001" placeholder="авто"></div>
     <button type="button" onclick="generateInvoice()">Сформировать</button>
     <button id="add-did-button" class="ghost" type="button" onclick="openDidDialog()" hidden>+ Add DID</button>
     <button class="ghost" type="button" onclick="window.print()" title="Печать или сохранение в PDF">Печать / PDF</button>
@@ -91,7 +98,7 @@
   <div id="notice">Загрузка клиентов...</div>
   <div id="invoice-output" hidden>
     <div class="invoice-head">
-      <div><h2 id="invoice-title">Invoice</h2><div class="mut" id="invoice-client"></div></div>
+      <div><h2 id="invoice-title">Invoice</h2><div class="mut" id="invoice-client"></div><div class="mut" id="invoice-date"></div></div>
       <div class="invoice-period"><div>Период</div><strong id="invoice-period"></strong></div>
     </div>
     <div class="summary" id="summary"></div>
@@ -102,13 +109,11 @@
   <h3>Add DID</h3>
   <form id="did-form">
     <label for="did-client">Клиент</label><select id="did-client" required></select>
-    <label for="did-number">DID номер</label><input id="did-number" inputmode="tel" placeholder="420210012333" required autofocus>
+    <label for="did-numbers">DID номера</label><textarea id="did-numbers" inputmode="tel" placeholder="По одному номеру в строке:&#10;420210012333&#10;420210014180&#10;420210014181" required autofocus></textarea>
     <label for="did-sold-on">Дата продажи</label><input id="did-sold-on" type="date" required>
     <div class="dialog-grid">
-      <div><label for="did-sell-mrc">MRC клиенту</label><input id="did-sell-mrc" type="number" min="0" step="0.0001" value="0" required></div>
-      <div><label for="did-sell-nrc">NRC клиенту</label><input id="did-sell-nrc" type="number" min="0" step="0.0001" value="0" required></div>
-      <div><label for="did-cost-mrc">MRC cost</label><input id="did-cost-mrc" type="number" min="0" step="0.0001" value="0" required></div>
-      <div><label for="did-cost-nrc">NRC cost</label><input id="did-cost-nrc" type="number" min="0" step="0.0001" value="0" required></div>
+      <div><div class="price-title">Cost поставщика</div><label for="did-cost-mrc">MRC cost</label><input id="did-cost-mrc" type="number" min="0" step="0.0001" value="0" required><label for="did-cost-nrc">NRC cost</label><input id="did-cost-nrc" type="number" min="0" step="0.0001" value="0" required></div>
+      <div><div class="price-title">Продажа клиенту</div><label for="did-sell-mrc">MRC клиенту</label><input id="did-sell-mrc" type="number" min="0" step="0.0001" value="0" required><label for="did-sell-nrc">NRC клиенту</label><input id="did-sell-nrc" type="number" min="0" step="0.0001" value="0" required></div>
     </div>
     <div class="mut" style="margin-top:12px">Cost хранится для внутреннего учета и не показывается клиенту в invoice.</div>
     <div class="dialog-actions"><button class="ghost" type="button" onclick="didDialog.close()">Отмена</button><button type="submit">Сохранить DID</button></div>
@@ -122,6 +127,7 @@ let options = {traffic_clients:[],did_clients:[]};
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money = (value,currency='USD') => `${(Number(value||0)/MONEY_SCALE).toFixed(4)} ${esc(currency)}`;
 const minutes = seconds => (Number(seconds||0)/60).toFixed(2);
+const displayDate = value => { const parts=String(value||'').split('-'); return parts.length===3?`${parts[2]}.${parts[1]}.${parts[0]}`:value; };
 
 async function api(path,method='GET',body) {
   const response = await fetch(path,{method,cache:'no-store',headers:{'Content-Type':'application/json','X-Money-Scale':String(MONEY_SCALE)},body:body===undefined?undefined:JSON.stringify(body)});
@@ -154,10 +160,18 @@ function setKind(next) {
   document.getElementById('kind-dids').classList.toggle('active',kind==='dids');
   fillClients();
   document.getElementById('add-did-button').hidden=kind!=='dids';
+  document.getElementById('opening-balance').value='';
   document.getElementById('invoice-output').hidden=true;
 }
 function metric(label,value) { return `<div class="metric"><div class="label">${esc(label)}</div><div class="value">${value}</div></div>`; }
 function parseMoney(value) { return Math.round(Number(String(value||0).replace(',','.'))*MONEY_SCALE); }
+
+function invoiceBalances(data) {
+  const amount=Number(data.summary.amount_cents||0);
+  const field=document.getElementById('opening-balance');
+  const opening=field.value.trim()==='' ? Number(data.client.balance_cents||0)+amount : parseMoney(field.value);
+  return {opening,closing:opening-amount};
+}
 
 function openDidDialog() {
   if(!options.did_clients.length){const n=document.getElementById('notice');n.textContent='Сначала создайте DID-клиента.';n.className='error';return;}
@@ -170,24 +184,27 @@ function openDidDialog() {
 }
 
 function renderTraffic(data) {
-  const s=data.summary, cur=data.client.currency;
+  const s=data.summary, cur=data.client.currency, balances=invoiceBalances(data);
   document.getElementById('invoice-title').textContent='Invoice · Трафик';
   document.getElementById('summary').innerHTML=[
     metric('Всего звонков',Number(s.calls||0)), metric('Успешных',Number(s.answered_calls||0)),
-    metric('Трафик, минут',minutes(s.seconds)), metric('К оплате',money(s.amount_cents,cur))
+    metric('Трафик, минут',minutes(s.seconds)), metric('К оплате',money(s.amount_cents,cur)),
+    metric('Баланс начало',money(balances.opening,cur)), metric('Баланс конец',money(balances.closing,cur))
   ].join('');
   document.getElementById('invoice-head').innerHTML='<tr><th>Направление</th><th class="right">Звонки</th><th class="right">Успешные</th><th class="right">Минуты</th><th class="right">Сумма</th></tr>';
   document.getElementById('invoice-body').innerHTML=data.rows.map(r=>`<tr><td>${esc(r.direction)}</td><td class="right">${r.calls}</td><td class="right">${r.answered_calls}</td><td class="right">${minutes(r.seconds)}</td><td class="right">${money(r.amount_cents,cur)}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">За период трафика нет</td></tr>';
 }
 function renderDids(data) {
-  const s=data.summary, cur=data.client.currency;
+  const s=data.summary, cur=data.client.currency, balances=invoiceBalances(data);
   document.getElementById('invoice-title').textContent='Invoice · DIDs';
   document.getElementById('summary').innerHTML=[
-    metric('DID номеров',Number(s.did_count||0)), metric('MRC за период',money(s.mrc_cents,cur)),
-    metric('NRC за период',money(s.nrc_cents,cur)), metric('К оплате',money(s.amount_cents,cur))
+    metric('Всего DIDs',Number(s.did_count||0)), metric('NRC total',money(s.nrc_cents,cur)),
+    metric('MRC total',money(s.mrc_cents,cur)), metric('Всего списано',money(s.amount_cents,cur)),
+    metric('Баланс начало',money(balances.opening,cur)), metric('Баланс конец',money(balances.closing,cur))
   ].join('');
-  document.getElementById('invoice-head').innerHTML='<tr><th>DID</th><th>Дата продажи</th><th class="right">Дней</th><th class="right">MRC</th><th class="right">MRC за период</th><th class="right">NRC</th><th class="right">Итого</th></tr>';
-  document.getElementById('invoice-body').innerHTML=data.rows.map(r=>`<tr><td class="mono">${esc(r.did_number)}</td><td>${esc(r.sold_on)}</td><td class="right">${r.active_days}</td><td class="right">${money(r.sell_mrc_cents,cur)}</td><td class="right">${money(r.mrc_cents,cur)}</td><td class="right">${money(r.nrc_cents,cur)}</td><td class="right">${money(r.amount_cents,cur)}</td></tr>`).join('')||'<tr><td colspan="7" class="empty">За период начислений нет</td></tr>';
+  document.getElementById('invoice-head').innerHTML='<tr><th>#</th><th>DID Number</th><th>Date</th><th class="right">NRC</th><th class="right">MRC</th><th class="right">Total</th><th class="right">Balance</th></tr>';
+  let running=balances.opening;
+  document.getElementById('invoice-body').innerHTML=data.rows.map((r,index)=>{running-=Number(r.amount_cents||0);return `<tr><td>${index+1}</td><td class="mono">${esc(r.did_number)}</td><td>${esc(displayDate(r.sold_on))}</td><td class="right">${money(r.nrc_cents,cur)}</td><td class="right">${money(r.mrc_cents,cur)}</td><td class="right">${money(r.amount_cents,cur)}</td><td class="right">${money(running,cur)}</td></tr>`}).join('')||'<tr><td colspan="7" class="empty">За период начислений нет</td></tr>';
 }
 
 async function generateInvoice() {
@@ -200,6 +217,7 @@ async function generateInvoice() {
   try {
     const data=await api(`/api/invoices/${kind}?client_id=${encodeURIComponent(clientId)}&date_from=${encodeURIComponent(from)}&date_to=${encodeURIComponent(to)}`);
     document.getElementById('invoice-client').textContent=data.client.name;
+    document.getElementById('invoice-date').textContent=`Invoice date: ${displayDate(iso(new Date()))}`;
     document.getElementById('invoice-period').textContent=`${data.date_from} — ${data.date_to}`;
     if(kind==='traffic')renderTraffic(data);else renderDids(data);
     document.getElementById('invoice-output').hidden=false;
@@ -212,8 +230,9 @@ document.getElementById('did-form').addEventListener('submit',async event=>{
   const clientId=Number(document.getElementById('did-client').value);
   const notice=document.getElementById('notice');
   try {
-    await api('/api/invoices/dids','POST',{
-      client_id:clientId,did_number:document.getElementById('did-number').value,
+    const didNumbers=document.getElementById('did-numbers').value.split(/[\s,;]+/).filter(Boolean);
+    const saved=await api('/api/invoices/dids','POST',{
+      client_id:clientId,did_numbers:didNumbers,
       sold_on:document.getElementById('did-sold-on').value,
       sell_mrc_cents:parseMoney(document.getElementById('did-sell-mrc').value),
       sell_nrc_cents:parseMoney(document.getElementById('did-sell-nrc').value),
@@ -222,7 +241,7 @@ document.getElementById('did-form').addEventListener('submit',async event=>{
     });
     didDialog.close();
     document.getElementById('client').value=String(clientId);
-    notice.textContent='DID сохранен.';notice.className='';
+    notice.textContent=`DID сохранены: ${saved.count}. Новых: ${saved.created}, обновлено: ${saved.updated}.`;notice.className='';
     await generateInvoice();
   } catch(error){notice.textContent=error.message;notice.className='error';}
 });
@@ -232,6 +251,7 @@ async function init() {
   try { options=await api('/api/invoices/options'); fillClients(); await generateInvoice(); }
   catch(error){const n=document.getElementById('notice');n.textContent=error.message;n.className='error';}
 }
+document.getElementById('client').addEventListener('change',()=>{document.getElementById('opening-balance').value='';});
 init();
 </script>
 </body>
