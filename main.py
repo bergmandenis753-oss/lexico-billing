@@ -170,7 +170,7 @@ class TerminatorUpdateIn(BaseModel):
     prefix: Optional[str] = None
     gateway_name: Optional[str] = None
     tech_prefix: Optional[str] = None
-    cost_rate_cents: Optional[int] = None
+    cost_rate_cents: Optional[int] = Field(default=None, ge=0)
     billing_cycle: Optional[str] = None
     active: Optional[bool] = None
 
