@@ -1,14 +1,26 @@
 """Customer traffic and DID invoice reporting."""
 
 import calendar
+import re
 from datetime import date, timedelta
 from pathlib import Path
 
 from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
 
 
 MAX_PERIOD_DAYS = 731
+
+
+class DidSaleIn(BaseModel):
+    client_id: int
+    did_number: str = Field(min_length=3, max_length=32)
+    sold_on: date
+    sell_mrc_cents: int = Field(default=0, ge=0)
+    sell_nrc_cents: int = Field(default=0, ge=0)
+    cost_mrc_cents: int = Field(default=0, ge=0)
+    cost_nrc_cents: int = Field(default=0, ge=0)
 
 
 def _period(date_from: str, date_to: str):
@@ -136,6 +148,50 @@ def did_invoice(conn, client_id: int, date_from: str, date_to: str):
     }
 
 
+def save_did_sale(conn, data: DidSaleIn):
+    client = conn.execute(
+        "SELECT id FROM did_clients WHERE id = ?", (data.client_id,)
+    ).fetchone()
+    if client is None:
+        raise HTTPException(404, "DID-клиент не найден")
+    number = re.sub(r"\D", "", data.did_number or "")
+    if len(number) < 3:
+        raise HTTPException(422, "Некорректный DID номер")
+    existing = conn.execute(
+        "SELECT id, client_id FROM did_numbers WHERE did_number = ?", (number,)
+    ).fetchone()
+    if existing is not None and int(existing["client_id"]) != data.client_id:
+        raise HTTPException(409, "Этот DID уже принадлежит другому клиенту")
+    caller_id_owner = conn.execute(
+        "SELECT client_id FROM did_caller_ids WHERE caller_id = ? AND client_id <> ?",
+        (number, data.client_id),
+    ).fetchone()
+    if caller_id_owner is not None:
+        raise HTTPException(409, "Этот номер закреплён за другим DID-клиентом")
+    values = (
+        data.sold_on.isoformat(), data.sell_mrc_cents, data.sell_nrc_cents,
+        data.cost_mrc_cents, data.cost_nrc_cents,
+    )
+    if existing is not None:
+        conn.execute(
+            """UPDATE did_numbers
+                  SET sold_on = ?, sell_mrc_cents = ?, sell_nrc_cents = ?,
+                      cost_mrc_cents = ?, cost_nrc_cents = ?
+                WHERE id = ?""",
+            (*values, existing["id"]),
+        )
+        return {"id": existing["id"], "created": False, "did_number": number}
+    cursor = conn.execute(
+        """INSERT INTO did_numbers
+               (client_id, did_number, destination, sold_on, sell_mrc_cents,
+                sell_nrc_cents, cost_mrc_cents, cost_nrc_cents, active, notes)
+           VALUES (?, ?, 'invoice-only', ?, ?, ?, ?, ?, 0,
+                   'Создано из Invoice; настройте маршрут перед включением')""",
+        (data.client_id, number, *values),
+    )
+    return {"id": cursor.lastrowid, "created": True, "did_number": number}
+
+
 def install(app, main, db, base_path: Path):
     @app.get("/invoice", response_class=HTMLResponse, dependencies=main.ADMIN_AUTH)
     def invoice_page(request: Request):
@@ -185,5 +241,19 @@ def install(app, main, db, base_path: Path):
         conn = db.get_conn()
         try:
             return did_invoice(conn, client_id, date_from, date_to)
+        finally:
+            conn.close()
+
+    @app.post("/api/invoices/dids", dependencies=main.ADMIN_WRITE_AUTH)
+    def add_invoice_did(data: DidSaleIn):
+        conn = db.get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            result = save_did_sale(conn, data)
+            conn.commit()
+            return result
+        except HTTPException:
+            conn.rollback()
+            raise
         finally:
             conn.close()
