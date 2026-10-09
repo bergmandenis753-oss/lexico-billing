@@ -72,7 +72,7 @@
 <header>
   <h1>Lexico VoIP</h1>
   <span class="sub">prepaid-биллинг · входящие номера</span>
-  <nav class="mode-nav" aria-label="Режим биллинга"><a href="/">Исходящие</a><a class="active" href="/dids">DIDs</a><a href="/monitoring">Мониторинг</a></nav>
+  <nav class="mode-nav" aria-label="Режим биллинга"><a href="/">Исходящие</a><a class="active" href="/dids">DIDs</a><a href="/monitoring">Мониторинг</a><a href="/invoice">Invoice</a></nav>
   <div class="header-actions"><span class="mut" id="refresh-state">обновляю...</span><button class="ghost" onclick="load(true)">Обновить</button></div>
 </header>
 
@@ -105,7 +105,7 @@
   <section>
     <div class="section-head"><h2>Входящие номера и маршруты</h2><button class="small" onclick="openNumberDialog()">+ DID</button></div>
     <div class="table-wrap"><table>
-      <thead><tr><th>DID</th><th>Клиент</th><th>Поставщик / whitelist</th><th>Куда направляем</th><th class="right">Продажа</th><th class="right">Закупка</th><th>Линии</th><th>Статус</th><th></th></tr></thead>
+      <thead><tr><th>DID</th><th>Клиент</th><th>Поставщик / whitelist</th><th>Куда направляем</th><th class="right">Трафик продажа</th><th class="right">Трафик закупка</th><th>Продажа DID</th><th>Закупка DID</th><th>Линии</th><th>Статус</th><th></th></tr></thead>
       <tbody id="numbers-body"></tbody>
     </table></div>
   </section>
@@ -182,6 +182,11 @@
     <label>Резервный SIP URI или IP:порт</label><input id="did-backup" placeholder="198.51.100.21:5060">
     <label>Цена входящей минуты</label><input id="did-sell" type="number" min="0" step="0.0001" required>
     <label>Закупочная цена минуты</label><input id="did-cost" type="number" min="0" step="0.0001" value="0">
+    <label>Дата продажи DID</label><input id="did-sold-on" type="date" required>
+    <label>MRC клиенту</label><input id="did-sell-mrc" type="number" min="0" step="0.0001" value="0">
+    <label>NRC клиенту</label><input id="did-sell-nrc" type="number" min="0" step="0.0001" value="0">
+    <label>MRC поставщика</label><input id="did-cost-mrc" type="number" min="0" step="0.0001" value="0">
+    <label>NRC поставщика</label><input id="did-cost-nrc" type="number" min="0" step="0.0001" value="0">
     <label>Тарификация</label><select id="did-cycle"><option value="1/1">1/1</option><option value="60/1">60/1</option><option value="60/60">60/60</option></select>
     <label>Максимум одновременных линий</label><input id="did-channels" type="number" min="1" max="1000" value="1" required>
     <label>Комментарий</label><textarea id="did-notes"></textarea>
@@ -254,7 +259,7 @@ function render() {
       <td class="right">${money(c.credit_limit_cents,c.currency)}</td>
       <td class="${moneyClass(available)}">${money(available,c.currency)}</td>
       <td>${c.active ? '<span class="badge on">активен</span>' : '<span class="badge off">выкл</span>'}</td>
-      <td><div class="actions"><button class="ghost icon-button" title="Редактировать клиента" aria-label="Редактировать клиента" onclick="openClientEdit(${c.id})">✎</button><button class="small ghost" onclick="openAccess(${c.id})">Исходящие</button><button class="small ghost" onclick="topup(${c.id})">± Баланс</button><button class="small ${c.active?'danger':'ghost'}" onclick="toggleClient(${c.id},${c.active?0:1})">${c.active?'Выкл':'Вкл'}</button></div></td>
+      <td><div class="actions"><button class="ghost icon-button" title="Редактировать клиента" aria-label="Редактировать клиента" onclick="openClientEdit(${c.id})">✎</button><button class="small ghost" onclick="openNumberDialog(${c.id})">+ DID</button><button class="small ghost" onclick="openAccess(${c.id})">Исходящие</button><button class="small ghost" onclick="topup(${c.id})">± Баланс</button><button class="small ${c.active?'danger':'ghost'}" onclick="toggleClient(${c.id},${c.active?0:1})">${c.active?'Выкл':'Вкл'}</button></div></td>
     </tr>`;
   }).join('') || empty(9);
 
@@ -264,10 +269,12 @@ function render() {
     <td class="mono">${esc(n.destination)}${n.backup_destination?`<div class="mut">резерв: ${esc(n.backup_destination)}</div>`:''}</td>
     <td class="right">${money(n.sell_rate_cents,n.currency)}<div class="mut">${esc(n.billing_cycle)}</div></td>
     <td class="right">${money(n.cost_rate_cents,n.currency)}</td>
+    <td class="right">MRC ${money(n.sell_mrc_cents,n.currency)}<div class="mut">NRC ${money(n.sell_nrc_cents,n.currency)} · ${esc(n.sold_on || '—')}</div></td>
+    <td class="right">MRC ${money(n.cost_mrc_cents,n.currency)}<div class="mut">NRC ${money(n.cost_nrc_cents,n.currency)}</div></td>
     <td>${n.active_calls} / ${n.max_channels} ${n.active_calls ? '<span class="badge busy">занято</span>' : ''}</td>
     <td>${n.active ? '<span class="badge on">активен</span>' : '<span class="badge off">выкл</span>'}</td>
     <td><div class="actions"><button class="ghost icon-button" title="Редактировать правило" aria-label="Редактировать правило" onclick="openNumberEdit(${n.id})">✎</button><button class="small ${n.active?'danger':'ghost'}" onclick="toggleNumber(${n.id},${n.active?0:1})">${n.active?'Выкл':'Вкл'}</button></div></td>
-  </tr>`).join('') || empty(9);
+  </tr>`).join('') || empty(11);
 
   document.getElementById('outbound-routes-body').innerHTML = (state.outbound_routes || []).map(r => `<tr>
     <td>${esc(r.client_name)}<div class="mut mono">${esc((state.clients.find(c=>c.id===r.client_id)||{}).outbound_ips || 'нет IP')}</div></td>
@@ -330,7 +337,12 @@ async function load(manual=false) {
   } finally { loading = false; }
 }
 
-function openNumberDialog() {
+function localToday() {
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0,10);
+}
+
+function openNumberDialog(clientId=null) {
   if (!state.clients.some(c => c.active)) return notice('Сначала создайте активного DID-клиента.',true);
   const form = document.getElementById('number-form');
   form.reset();
@@ -340,8 +352,14 @@ function openNumberDialog() {
   document.getElementById('did-delete').hidden = true;
   document.getElementById('did-cycle').value = '1/1';
   document.getElementById('did-channels').value = '1';
+  document.getElementById('did-sold-on').value = localToday();
+  document.getElementById('did-sell-mrc').value = '0';
+  document.getElementById('did-sell-nrc').value = '0';
+  document.getElementById('did-cost-mrc').value = '0';
+  document.getElementById('did-cost-nrc').value = '0';
   document.getElementById('did-active').checked = true;
-  document.getElementById('did-client').value = String(state.clients.find(c => c.active).id);
+  const selectedClient = state.clients.find(c => c.id === Number(clientId) && c.active) || state.clients.find(c => c.active);
+  document.getElementById('did-client').value = String(selectedClient.id);
   numberDlg.showModal();
 }
 
@@ -401,6 +419,11 @@ function openNumberEdit(id) {
   document.getElementById('did-backup').value = number.backup_destination || '';
   document.getElementById('did-sell').value = (Number(number.sell_rate_cents || 0) / MONEY_SCALE).toFixed(4);
   document.getElementById('did-cost').value = (Number(number.cost_rate_cents || 0) / MONEY_SCALE).toFixed(4);
+  document.getElementById('did-sold-on').value = number.sold_on || localToday();
+  document.getElementById('did-sell-mrc').value = (Number(number.sell_mrc_cents || 0) / MONEY_SCALE).toFixed(4);
+  document.getElementById('did-sell-nrc').value = (Number(number.sell_nrc_cents || 0) / MONEY_SCALE).toFixed(4);
+  document.getElementById('did-cost-mrc').value = (Number(number.cost_mrc_cents || 0) / MONEY_SCALE).toFixed(4);
+  document.getElementById('did-cost-nrc').value = (Number(number.cost_nrc_cents || 0) / MONEY_SCALE).toFixed(4);
   document.getElementById('did-cycle').value = number.billing_cycle || '1/1';
   document.getElementById('did-channels').value = number.max_channels || 1;
   document.getElementById('did-notes').value = number.notes || '';
@@ -502,6 +525,9 @@ document.getElementById('number-form').addEventListener('submit', async event =>
       provider_name:document.getElementById('did-provider').value.trim(), provider_ips:document.getElementById('did-provider-ips').value.trim(),
       destination:document.getElementById('did-destination').value.trim(), backup_destination:document.getElementById('did-backup').value.trim(),
       sell_rate_cents:parseMoney(document.getElementById('did-sell').value), cost_rate_cents:parseMoney(document.getElementById('did-cost').value),
+      sold_on:document.getElementById('did-sold-on').value,
+      sell_mrc_cents:parseMoney(document.getElementById('did-sell-mrc').value), sell_nrc_cents:parseMoney(document.getElementById('did-sell-nrc').value),
+      cost_mrc_cents:parseMoney(document.getElementById('did-cost-mrc').value), cost_nrc_cents:parseMoney(document.getElementById('did-cost-nrc').value),
       billing_cycle:document.getElementById('did-cycle').value, max_channels:Number(document.getElementById('did-channels').value),
       active:document.getElementById('did-active').checked, notes:document.getElementById('did-notes').value.trim()
     };

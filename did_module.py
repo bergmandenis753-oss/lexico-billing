@@ -4,6 +4,7 @@ import ipaddress
 import re
 import sqlite3
 import time
+from datetime import date
 from pathlib import Path
 from typing import Optional
 
@@ -82,6 +83,11 @@ class DidNumberIn(BaseModel):
     backup_destination: str = Field(default="", max_length=500)
     sell_rate_cents: int = Field(ge=0)
     cost_rate_cents: int = Field(default=0, ge=0)
+    sold_on: Optional[date] = None
+    sell_mrc_cents: int = Field(default=0, ge=0)
+    sell_nrc_cents: int = Field(default=0, ge=0)
+    cost_mrc_cents: int = Field(default=0, ge=0)
+    cost_nrc_cents: int = Field(default=0, ge=0)
     billing_cycle: str = "1/1"
     max_channels: int = Field(default=1, ge=1, le=1000)
     active: bool = True
@@ -97,6 +103,11 @@ class DidNumberUpdate(BaseModel):
     backup_destination: Optional[str] = Field(default=None, max_length=500)
     sell_rate_cents: Optional[int] = Field(default=None, ge=0)
     cost_rate_cents: Optional[int] = Field(default=None, ge=0)
+    sold_on: Optional[date] = None
+    sell_mrc_cents: Optional[int] = Field(default=None, ge=0)
+    sell_nrc_cents: Optional[int] = Field(default=None, ge=0)
+    cost_mrc_cents: Optional[int] = Field(default=None, ge=0)
+    cost_nrc_cents: Optional[int] = Field(default=None, ge=0)
     billing_cycle: Optional[str] = None
     max_channels: Optional[int] = Field(default=None, ge=1, le=1000)
     active: Optional[bool] = None
@@ -196,6 +207,11 @@ def init_schema(db) -> None:
                 cost_rate_cents    INTEGER NOT NULL DEFAULT 0,
                 billing_cycle      TEXT NOT NULL DEFAULT '1/1',
                 cost_billing_cycle TEXT NOT NULL DEFAULT '1/1',
+                sold_on            TEXT,
+                sell_mrc_cents     INTEGER NOT NULL DEFAULT 0,
+                sell_nrc_cents     INTEGER NOT NULL DEFAULT 0,
+                cost_mrc_cents     INTEGER NOT NULL DEFAULT 0,
+                cost_nrc_cents     INTEGER NOT NULL DEFAULT 0,
                 max_channels       INTEGER NOT NULL DEFAULT 1,
                 active             INTEGER NOT NULL DEFAULT 1,
                 notes              TEXT NOT NULL DEFAULT '',
@@ -338,6 +354,21 @@ def init_schema(db) -> None:
             conn.execute("ALTER TABLE did_clients ADD COLUMN outbound_ips TEXT NOT NULL DEFAULT ''")
         if "outbound_tech_prefix" not in client_columns:
             conn.execute("ALTER TABLE did_clients ADD COLUMN outbound_tech_prefix TEXT NOT NULL DEFAULT ''")
+        number_columns = {row["name"] for row in conn.execute("PRAGMA table_info(did_numbers)")}
+        number_additions = {
+            "sold_on": "TEXT",
+            "sell_mrc_cents": "INTEGER NOT NULL DEFAULT 0",
+            "sell_nrc_cents": "INTEGER NOT NULL DEFAULT 0",
+            "cost_mrc_cents": "INTEGER NOT NULL DEFAULT 0",
+            "cost_nrc_cents": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for column, definition in number_additions.items():
+            if column not in number_columns:
+                conn.execute(f"ALTER TABLE did_numbers ADD COLUMN {column} {definition}")
+        conn.execute(
+            "UPDATE did_numbers SET sold_on = date(created_at) "
+            "WHERE sold_on IS NULL OR trim(sold_on) = ''"
+        )
         route_columns = {row["name"] for row in conn.execute("PRAGMA table_info(did_outbound_routes)")}
         if "terminator_id" not in route_columns:
             conn.execute("ALTER TABLE did_outbound_routes ADD COLUMN terminator_id INTEGER REFERENCES terminators(id)")
@@ -1053,12 +1084,15 @@ def install(app, main, db, base_path: Path) -> None:
                 """INSERT INTO did_numbers
                        (client_id, did_number, provider_name, provider_ips, destination,
                         backup_destination, sell_rate_cents, cost_rate_cents,
-                        billing_cycle, max_channels, active, notes)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        sold_on, sell_mrc_cents, sell_nrc_cents, cost_mrc_cents,
+                        cost_nrc_cents, billing_cycle, max_channels, active, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     data.client_id, number, _clean_text(data.provider_name, 120), data.provider_ips.strip(),
                     data.destination.strip(), data.backup_destination.strip(), data.sell_rate_cents,
-                    data.cost_rate_cents, db.normalize_billing_cycle(data.billing_cycle),
+                    data.cost_rate_cents, (data.sold_on or date.today()).isoformat(),
+                    data.sell_mrc_cents, data.sell_nrc_cents, data.cost_mrc_cents,
+                    data.cost_nrc_cents, db.normalize_billing_cycle(data.billing_cycle),
                     data.max_channels, int(data.active), data.notes.strip(),
                 ),
             )
@@ -1082,6 +1116,8 @@ def install(app, main, db, base_path: Path) -> None:
             fields["active"] = int(fields["active"])
         if "billing_cycle" in fields:
             fields["billing_cycle"] = db.normalize_billing_cycle(fields["billing_cycle"])
+        if "sold_on" in fields:
+            fields["sold_on"] = fields["sold_on"].isoformat() if fields["sold_on"] else date.today().isoformat()
         if "provider_name" in fields:
             fields["provider_name"] = _clean_text(fields["provider_name"], 120)
         for key in ("provider_ips", "destination", "backup_destination", "notes"):
