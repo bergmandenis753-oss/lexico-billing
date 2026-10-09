@@ -100,6 +100,46 @@ class InvoiceTests(unittest.TestCase):
         conn.close()
         self.assertEqual(error.exception.status_code, 422)
 
+    def test_add_did_from_invoice_creates_safe_billing_record_and_updates_it(self):
+        conn = db.get_conn()
+        created = invoice_module.save_did_sale(conn, invoice_module.DidSaleIn(
+            client_id=self.did_client_id,
+            did_number="+420 210 012 333",
+            sold_on="2026-09-12",
+            sell_mrc_cents=22000,
+            sell_nrc_cents=22000,
+            cost_mrc_cents=15000,
+            cost_nrc_cents=15000,
+        ))
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM did_numbers WHERE id = ?", (created["id"],)
+        ).fetchone()
+        self.assertEqual(row["did_number"], "420210012333")
+        self.assertEqual(row["active"], 0)
+        self.assertEqual(row["destination"], "invoice-only")
+        self.assertEqual(row["cost_mrc_cents"], 15000)
+
+        updated = invoice_module.save_did_sale(conn, invoice_module.DidSaleIn(
+            client_id=self.did_client_id,
+            did_number="420210012333",
+            sold_on="2026-09-13",
+            sell_mrc_cents=25000,
+            sell_nrc_cents=10000,
+            cost_mrc_cents=16000,
+            cost_nrc_cents=9000,
+        ))
+        conn.commit()
+        changed = conn.execute(
+            "SELECT * FROM did_numbers WHERE id = ?", (created["id"],)
+        ).fetchone()
+        conn.close()
+        self.assertFalse(updated["created"])
+        self.assertEqual(updated["id"], created["id"])
+        self.assertEqual(changed["sold_on"], "2026-09-13")
+        self.assertEqual(changed["sell_mrc_cents"], 25000)
+        self.assertEqual(changed["cost_nrc_cents"], 9000)
+
 
 if __name__ == "__main__":
     unittest.main()
