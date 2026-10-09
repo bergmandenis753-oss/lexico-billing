@@ -32,11 +32,14 @@ def install(app, main, db):
                 raise HTTPException(404, "Терминационная группа не найдена")
             if group is None and (not data.gateway_name.strip()) and (not db.split_ip_list(data.ips)):
                 raise HTTPException(400, "Укажите gateway или IP терминатора")
+            billing_cycle = db.normalize_billing_cycle(
+                data.billing_cycle or db.default_billing_cycle_for_route(data.destination_name, data.prefix)
+            )
             conn.execute("BEGIN IMMEDIATE")
             cur = conn.execute(
                 "INSERT INTO terminators "
-                "(name, gateway_group_id, ips, destination_name, prefix, gateway_name, tech_prefix, cost_rate_cents, active) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(name, gateway_group_id, ips, destination_name, prefix, gateway_name, tech_prefix, "
+                "cost_rate_cents, billing_cycle, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     data.name,
                     data.gateway_group_id,
@@ -46,6 +49,7 @@ def install(app, main, db):
                     data.gateway_name,
                     data.tech_prefix,
                     data.cost_rate_cents,
+                    billing_cycle,
                     int(data.active),
                 ),
             )
@@ -59,6 +63,8 @@ def install(app, main, db):
         fields = _model_fields(data)
         if not fields:
             raise HTTPException(400, "Нет полей для обновления")
+        if "billing_cycle" in fields:
+            fields["billing_cycle"] = db.normalize_billing_cycle(fields["billing_cycle"])
         conn = db.get_conn()
         try:
             conn.execute("BEGIN IMMEDIATE")
