@@ -1,6 +1,5 @@
 """Customer traffic and DID invoice reporting."""
 
-import calendar
 import re
 from datetime import date, timedelta
 from pathlib import Path
@@ -23,6 +22,16 @@ class DidSaleIn(BaseModel):
     cost_nrc_cents: int = Field(default=0, ge=0)
 
 
+class DidSaleBatchIn(BaseModel):
+    client_id: int
+    did_numbers: list[str] = Field(min_length=1, max_length=500)
+    sold_on: date
+    sell_mrc_cents: int = Field(default=0, ge=0)
+    sell_nrc_cents: int = Field(default=0, ge=0)
+    cost_mrc_cents: int = Field(default=0, ge=0)
+    cost_nrc_cents: int = Field(default=0, ge=0)
+
+
 def _period(date_from: str, date_to: str):
     try:
         start = date.fromisoformat(str(date_from or ""))
@@ -38,7 +47,7 @@ def _period(date_from: str, date_to: str):
 
 def _client(conn, table: str, client_id: int):
     row = conn.execute(
-        f"SELECT id, name, currency FROM {table} WHERE id = ?", (client_id,)
+        f"SELECT id, name, currency, balance_cents FROM {table} WHERE id = ?", (client_id,)
     ).fetchone()
     if row is None:
         raise HTTPException(404, "Клиент не найден")
@@ -81,19 +90,20 @@ def traffic_invoice(conn, client_id: int, date_from: str, date_to: str):
     }
 
 
-def _prorated_mrc(monthly_units: int, active_from: date, period_end: date):
-    total = 0
-    active_days = 0
-    cursor = active_from
+def _next_month(value: date):
+    if value.month == 12:
+        return date(value.year + 1, 1, 1)
+    return date(value.year, value.month + 1, 1)
+
+
+def _mrc_charge(monthly_units: int, sold_on: date, period_start: date, period_end: date):
+    events = 1 if period_start <= sold_on <= period_end else 0
+    cursor = _next_month(sold_on)
     while cursor <= period_end:
-        days_in_month = calendar.monthrange(cursor.year, cursor.month)[1]
-        month_end = date(cursor.year, cursor.month, days_in_month)
-        segment_end = min(month_end, period_end)
-        days = (segment_end - cursor).days + 1
-        total += (int(monthly_units or 0) * days + days_in_month // 2) // days_in_month
-        active_days += days
-        cursor = segment_end + timedelta(days=1)
-    return total, active_days
+        if cursor >= period_start:
+            events += 1
+        cursor = _next_month(cursor)
+    return int(monthly_units or 0) * events, events
 
 
 def did_invoice(conn, client_id: int, date_from: str, date_to: str):
@@ -114,9 +124,10 @@ def did_invoice(conn, client_id: int, date_from: str, date_to: str):
             sold_on = date.fromisoformat(number["sold_on"])
         except (TypeError, ValueError):
             continue
-        active_from = max(start, sold_on)
-        mrc, active_days = _prorated_mrc(number["sell_mrc_cents"], active_from, end)
+        mrc, billing_events = _mrc_charge(number["sell_mrc_cents"], sold_on, start, end)
         nrc = int(number["sell_nrc_cents"] or 0) if start <= sold_on <= end else 0
+        if not mrc and not nrc:
+            continue
         total_mrc += mrc
         total_nrc += nrc
         rows.append(
@@ -125,7 +136,7 @@ def did_invoice(conn, client_id: int, date_from: str, date_to: str):
                 "did_number": number["did_number"],
                 "sold_on": sold_on.isoformat(),
                 "active": int(number["active"] or 0),
-                "active_days": active_days,
+                "billing_events": billing_events,
                 "sell_mrc_cents": int(number["sell_mrc_cents"] or 0),
                 "sell_nrc_cents": int(number["sell_nrc_cents"] or 0),
                 "mrc_cents": mrc,
@@ -192,6 +203,36 @@ def save_did_sale(conn, data: DidSaleIn):
     return {"id": cursor.lastrowid, "created": True, "did_number": number}
 
 
+def save_did_sales(conn, data: DidSaleBatchIn):
+    unique_numbers = []
+    seen = set()
+    for raw_number in data.did_numbers:
+        number = re.sub(r"\D", "", raw_number or "")
+        if number and number not in seen:
+            seen.add(number)
+            unique_numbers.append(number)
+    if not unique_numbers:
+        raise HTTPException(422, "Укажите хотя бы один DID номер")
+    results = [
+        save_did_sale(conn, DidSaleIn(
+            client_id=data.client_id,
+            did_number=number,
+            sold_on=data.sold_on,
+            sell_mrc_cents=data.sell_mrc_cents,
+            sell_nrc_cents=data.sell_nrc_cents,
+            cost_mrc_cents=data.cost_mrc_cents,
+            cost_nrc_cents=data.cost_nrc_cents,
+        ))
+        for number in unique_numbers
+    ]
+    return {
+        "count": len(results),
+        "created": sum(1 for result in results if result["created"]),
+        "updated": sum(1 for result in results if not result["created"]),
+        "items": results,
+    }
+
+
 def install(app, main, db, base_path: Path):
     @app.get("/invoice", response_class=HTMLResponse, dependencies=main.ADMIN_AUTH)
     def invoice_page(request: Request):
@@ -245,11 +286,11 @@ def install(app, main, db, base_path: Path):
             conn.close()
 
     @app.post("/api/invoices/dids", dependencies=main.ADMIN_WRITE_AUTH)
-    def add_invoice_did(data: DidSaleIn):
+    def add_invoice_did(data: DidSaleBatchIn):
         conn = db.get_conn()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            result = save_did_sale(conn, data)
+            result = save_did_sales(conn, data)
             conn.commit()
             return result
         except HTTPException:
