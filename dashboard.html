@@ -243,7 +243,7 @@
 
 <!-- Добавить роут -->
 <dialog id="route-dlg">
-  <h3>Новый терминатор</h3>
+  <h3 id="route-dlg-title">Новый терминатор</h3>
   <form id="route-form">
     <label>Название (поставщик)</label><input id="rt-name" placeholder="Lexico" required autofocus>
     <label>Терминационная группа</label><select id="rt-group" required></select>
@@ -253,7 +253,7 @@
     <label>Закупочная цена за минуту (в валюте)</label><input id="rt-cost" type="number" step="0.0001" min="0" required>
     <label>Billing cycle</label><select id="rt-billing-cycle"><option value="1/1">1/1</option><option value="60/1">60/1</option></select>
     <label style="display:flex;align-items:center;gap:8px"><input id="rt-active" type="checkbox" checked style="width:auto;margin:0"> Сделать активным</label>
-    <div class="row"><button type="button" class="ghost" onclick="routeDlg.close()">Отмена</button><button type="submit">Создать</button></div>
+    <div class="row"><button type="button" class="ghost" onclick="routeDlg.close()">Отмена</button><button id="route-submit" type="submit">Создать</button></div>
   </form>
 </dialog>
 
@@ -375,6 +375,7 @@ let clientMap = {};
 let groupList = [];
 let groupMap = {};
 let termList = [];
+let editingTerminatorId = null;
 let topupClientId = null;
 let loadInFlight = false;
 let directionList = [];
@@ -531,6 +532,7 @@ async function load(manual = false) {
       <td>${r.active ? '<span class="badge on">активен</span>' : '<span class="badge off">резерв</span>'}</td>
       <td class="right">
         ${r.active ? '' : `<button class="small" onclick="activateRoute(${r.id})">Сделать активным</button> `}
+        <button class="small" type="button" title="Редактировать терминатор" aria-label="Редактировать терминатор" onclick="openTermEdit(${r.id})">&#9998;</button>
         <button class="small danger" onclick="delRoute(${r.id})">✕</button>
       </td>
     </tr>`; }).join('') || emptyRow(9);
@@ -850,10 +852,36 @@ document.getElementById('group-form').addEventListener('submit', async e => {
 
 // ---- создание терминатора ----
 function openTermDlg() {
+  editingTerminatorId = null;
+  document.getElementById('route-form').reset();
+  document.getElementById('route-dlg-title').textContent = 'Новый терминатор';
+  document.getElementById('route-submit').textContent = 'Создать';
   const sel = document.getElementById('rt-group');
   sel.innerHTML = groupList.map(g => `<option value="${g.id}">${esc(g.name)} · ${esc(g.ips || g.gateway_name || '')}</option>`).join('');
   if (!sel.innerHTML) { alert('Сначала создайте терминационную группу'); return; }
+  document.getElementById('rt-dest').value = 'Australia';
+  document.getElementById('rt-prefix').value = '61';
+  document.getElementById('rt-active').checked = true;
   syncBillingCycle('rt-dest', 'rt-prefix', 'rt-billing-cycle');
+  routeDlg.showModal();
+}
+function openTermEdit(id) {
+  const route = termList.find(t => Number(t.id) === Number(id));
+  if (!route) return;
+  editingTerminatorId = Number(id);
+  document.getElementById('route-dlg-title').textContent = 'Настройка терминатора';
+  document.getElementById('route-submit').textContent = 'Сохранить';
+  const sel = document.getElementById('rt-group');
+  sel.innerHTML = groupList.map(g => `<option value="${g.id}">${esc(g.name)} · ${esc(g.ips || g.gateway_name || '')}</option>`).join('');
+  if (!sel.innerHTML) { alert('Терминационная группа не найдена'); return; }
+  document.getElementById('rt-name').value = route.name || '';
+  document.getElementById('rt-group').value = String(route.gateway_group_id || '');
+  document.getElementById('rt-dest').value = route.destination_name || '';
+  document.getElementById('rt-prefix').value = route.prefix || '';
+  document.getElementById('rt-tech').value = route.tech_prefix || '';
+  document.getElementById('rt-cost').value = (Number(route.cost_rate_cents || 0) / MONEY_SCALE).toFixed(4);
+  document.getElementById('rt-billing-cycle').value = cycle(route.billing_cycle);
+  document.getElementById('rt-active').checked = Boolean(route.active);
   routeDlg.showModal();
 }
 function fillDirectionPrefix(directionInputId, prefixInputId, force = false) {
@@ -875,7 +903,7 @@ function syncDirectionFromTerm(termSelectId, directionInputId, prefixInputId, cy
 document.getElementById('route-form').addEventListener('submit', async e => {
   e.preventDefault();
   try {
-    await api('/api/terminators', 'POST', {
+    const payload = {
       name: document.getElementById('rt-name').value,
       gateway_group_id: parseInt(document.getElementById('rt-group').value),
       ips: '',
@@ -886,8 +914,13 @@ document.getElementById('route-form').addEventListener('submit', async e => {
       cost_rate_cents: inputMoneyUnits('rt-cost', 'Закупка'),
       billing_cycle: document.getElementById('rt-billing-cycle').value,
       active: document.getElementById('rt-active').checked
-    });
-    routeDlg.close(); e.target.reset(); load();
+    };
+    const id = editingTerminatorId;
+    await api(id ? `/api/terminators/${id}` : '/api/terminators', id ? 'PATCH' : 'POST', payload);
+    routeDlg.close();
+    editingTerminatorId = null;
+    e.target.reset();
+    load(true);
   } catch (err) { alert('Ошибка: ' + err.message); }
 });
 
