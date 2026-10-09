@@ -60,6 +60,16 @@ class ClientRoutingTests(unittest.TestCase):
         self.assertIn('id="crs-line-limit-enabled"', html)
         self.assertIn('id="crs-line-limit"', html)
         self.assertIn("line_limit_enabled", html)
+        self.assertIn("function openTermEdit", html)
+        self.assertIn("Редактировать терминатор", html)
+        self.assertIn("`/api/terminators/${id}`", html)
+
+    def test_terminator_patch_rejects_negative_cost(self):
+        from pydantic import ValidationError
+        import main
+
+        with self.assertRaises(ValidationError):
+            main.TerminatorUpdateIn(cost_rate_cents=-1)
 
 
 if __name__ == "__main__":
