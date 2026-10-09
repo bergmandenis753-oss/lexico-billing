@@ -185,6 +185,11 @@ class DidBillingTests(unittest.TestCase):
                 "provider_ips": "203.0.113.9, 203.0.113.0/28",
                 "destination": "198.51.100.99:5060",
                 "sell_rate_cents": 1250,
+                "sold_on": "2026-09-12",
+                "sell_mrc_cents": 22000,
+                "sell_nrc_cents": 22000,
+                "cost_mrc_cents": 15000,
+                "cost_nrc_cents": 15000,
                 "active": False,
             },
         )
@@ -195,6 +200,11 @@ class DidBillingTests(unittest.TestCase):
         self.assertEqual(edited["provider_ips"], "203.0.113.9, 203.0.113.0/28")
         self.assertEqual(edited["destination"], "198.51.100.99:5060")
         self.assertEqual(edited["sell_rate_cents"], 1250)
+        self.assertEqual(edited["sold_on"], "2026-09-12")
+        self.assertEqual(edited["sell_mrc_cents"], 22000)
+        self.assertEqual(edited["sell_nrc_cents"], 22000)
+        self.assertEqual(edited["cost_mrc_cents"], 15000)
+        self.assertEqual(edited["cost_nrc_cents"], 15000)
         self.assertEqual(edited["active"], 0)
         conn.execute(
             "INSERT INTO did_reservations (call_uuid, did_number_id, client_id, expires_at) VALUES (?, ?, ?, ?)",
