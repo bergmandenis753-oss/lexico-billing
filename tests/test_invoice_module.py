@@ -82,10 +82,10 @@ class InvoiceTests(unittest.TestCase):
         )
         conn.close()
 
-        self.assertEqual(september["rows"][0]["active_days"], 19)
-        self.assertEqual(september["summary"]["mrc_cents"], 19000)
+        self.assertEqual(september["rows"][0]["billing_events"], 1)
+        self.assertEqual(september["summary"]["mrc_cents"], 30000)
         self.assertEqual(september["summary"]["nrc_cents"], 5000)
-        self.assertEqual(september["summary"]["amount_cents"], 24000)
+        self.assertEqual(september["summary"]["amount_cents"], 35000)
         self.assertEqual(october["summary"]["mrc_cents"], 30000)
         self.assertEqual(october["summary"]["nrc_cents"], 0)
         self.assertNotIn("cost_mrc_cents", september["rows"][0])
@@ -102,9 +102,9 @@ class InvoiceTests(unittest.TestCase):
 
     def test_add_did_from_invoice_creates_safe_billing_record_and_updates_it(self):
         conn = db.get_conn()
-        created = invoice_module.save_did_sale(conn, invoice_module.DidSaleIn(
+        batch = invoice_module.save_did_sales(conn, invoice_module.DidSaleBatchIn(
             client_id=self.did_client_id,
-            did_number="+420 210 012 333",
+            did_numbers=["+420 210 012 333", "420210014180", "420210014180"],
             sold_on="2026-09-12",
             sell_mrc_cents=22000,
             sell_nrc_cents=22000,
@@ -112,6 +112,9 @@ class InvoiceTests(unittest.TestCase):
             cost_nrc_cents=15000,
         ))
         conn.commit()
+        self.assertEqual(batch["count"], 2)
+        self.assertEqual(batch["created"], 2)
+        created = batch["items"][0]
         row = conn.execute(
             "SELECT * FROM did_numbers WHERE id = ?", (created["id"],)
         ).fetchone()
