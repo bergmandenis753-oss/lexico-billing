@@ -1,7 +1,7 @@
 import re
 import urllib.parse
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation
 
 
 def _load_client_cdr_duration(bot, client_id, min_billsec):
@@ -11,6 +11,17 @@ def _load_client_cdr_duration(bot, client_id, min_billsec):
     query = urllib.parse.urlencode({"min_billsec": int(min_billsec or 0), "limit": 5000})
     return bot._get_json(
         f"{base}/api/ops/client-cdr-duration/{client_id}?{query}",
+        headers=bot._billing_headers(),
+    )
+
+
+def _load_country_cdr_duration(bot, country_code, min_billsec):
+    base = bot._billing_base_url()
+    if not base:
+        raise RuntimeError("BILLING_API_BASE_URL не задан")
+    query = urllib.parse.urlencode({"min_billsec": int(min_billsec or 0), "limit": 10000})
+    return bot._get_json(
+        f"{base}/api/ops/cdr-duration-country/{country_code.upper()}?{query}",
         headers=bot._billing_headers(),
     )
 
@@ -53,8 +64,8 @@ def _parse_duration_seconds(value):
     if amount < 0:
         raise ValueError("длительность не может быть отрицательной")
     if as_seconds:
-        return int(amount.to_integral_value(rounding=ROUND_HALF_UP))
-    return int((amount * Decimal(60)).to_integral_value(rounding=ROUND_HALF_UP))
+        return int(amount)
+    return int(amount * Decimal(60))
 
 
 def _format_duration(seconds):
@@ -104,6 +115,22 @@ def _format_duration_report(bot, client, report):
     return bot.DocumentResponse(
         file_name=file_name,
         content=content,
+        content_type="text/plain; charset=utf-8",
+    )
+
+
+def _format_country_duration_report(bot, country_code, report):
+    rows = report.get("cdr") or []
+    numbers = [number for row in rows if (number := _cdr_number(row))]
+    if not numbers:
+        return f"Сегодня по {country_code.upper()} звонков под этот фильтр нет."
+
+    file_name = f"CDR_{country_code.upper()}_{_report_date(rows)}.txt"
+    content = ("\n".join(numbers) + "\n").encode("utf-8")
+    return bot.DocumentResponse(
+        file_name=file_name,
+        content=content,
+        caption=f"{report.get('country_name') or country_code.upper()}: {len(numbers)} B-номеров",
         content_type="text/plain; charset=utf-8",
     )
 
@@ -160,12 +187,27 @@ def install(app, bot):
             parts = ["/cdrcheck", *parts[2:]]
         if len(parts) < 3:
             return (
-                "Формат: /cdrcheck <ID клиента> <минуты или мм:сс>\n"
-                "Пример: /cdrcheck 10 5\n"
-                "Пример: /cdrcheck 10 05:10",
+                "По всем клиентам страны:\n"
+                "/cdrshop PL 0.01\n"
+                "/cdrshop CZ 0.01\n\n"
+                "По одному клиенту:\n"
+                "/cdrcheck <ID клиента> <минуты или мм:сс>",
                 bot.MAIN_MENU,
             )
-        client_id = parts[1]
+        target = parts[1].strip()
+        if re.fullmatch(r"[A-Za-z]{2}", target):
+            country_code = target.upper()
+            try:
+                min_billsec = _parse_duration_seconds(parts[2])
+            except ValueError as exc:
+                return f"Не понял длительность: {exc}", bot.MAIN_MENU
+            try:
+                report = _load_country_cdr_duration(bot, country_code, min_billsec)
+            except Exception as exc:
+                return f"Не удалось получить CDR для {country_code}: {exc}", bot.MAIN_MENU
+            return _format_country_duration_report(bot, country_code, report), bot.MAIN_MENU
+
+        client_id = target
         client = bot._client_by_id(data, client_id)
         if not client:
             return "Клиент не найден.", bot.MAIN_MENU
