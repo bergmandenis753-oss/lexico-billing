@@ -233,6 +233,26 @@ def save_did_sales(conn, data: DidSaleBatchIn):
     }
 
 
+def invoice_options_data(conn, money_scale: int):
+    return {
+        "money_scale": money_scale,
+        "traffic_clients": [
+            dict(row)
+            for row in conn.execute(
+                "SELECT id, name, currency, active FROM clients "
+                "ORDER BY active DESC, name"
+            ).fetchall()
+        ],
+        "did_clients": [
+            dict(row)
+            for row in conn.execute(
+                "SELECT id, name, currency, active FROM did_clients "
+                "ORDER BY active DESC, name"
+            ).fetchall()
+        ],
+    }
+
+
 def install(app, main, db, base_path: Path):
     @app.get("/invoice", response_class=HTMLResponse, dependencies=main.ADMIN_AUTH)
     def invoice_page(request: Request):
@@ -249,23 +269,7 @@ def install(app, main, db, base_path: Path):
     def invoice_options():
         conn = db.get_conn()
         try:
-            return {
-                "money_scale": db.MONEY_SCALE,
-                "traffic_clients": [
-                    dict(row)
-                    for row in conn.execute(
-                        "SELECT id, name, currency FROM clients "
-                        "WHERE active = 1 ORDER BY name"
-                    ).fetchall()
-                ],
-                "did_clients": [
-                    dict(row)
-                    for row in conn.execute(
-                        "SELECT id, name, currency FROM did_clients "
-                        "WHERE active = 1 ORDER BY name"
-                    ).fetchall()
-                ],
-            }
+            return invoice_options_data(conn, db.MONEY_SCALE)
         finally:
             conn.close()
 
