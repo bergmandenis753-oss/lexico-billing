@@ -149,10 +149,11 @@ function defaultPeriod() {
 }
 
 function clientsForKind() { return kind==='traffic' ? options.traffic_clients : options.did_clients; }
+function clientLabel(client) { return `${client.name} · ${client.currency}${Number(client.active)===0?' · неактивен':''}`; }
 function fillClients() {
   const list=clientsForKind();
-  document.getElementById('client').innerHTML=list.map(c=>`<option value="${c.id}">${esc(c.name)} · ${esc(c.currency)}</option>`).join('');
-  document.getElementById('notice').textContent=list.length?'':'Нет активных клиентов этого типа.';
+  document.getElementById('client').innerHTML=list.map(c=>`<option value="${c.id}">${esc(clientLabel(c))}</option>`).join('');
+  document.getElementById('notice').textContent=list.length?'':'Нет клиентов этого типа.';
 }
 function setKind(next) {
   kind=next;
@@ -177,7 +178,7 @@ function openDidDialog() {
   if(!options.did_clients.length){const n=document.getElementById('notice');n.textContent='Сначала создайте DID-клиента.';n.className='error';return;}
   const current=document.getElementById('client').value;
   document.getElementById('did-form').reset();
-  document.getElementById('did-client').innerHTML=options.did_clients.map(c=>`<option value="${c.id}">${esc(c.name)} · ${esc(c.currency)}</option>`).join('');
+  document.getElementById('did-client').innerHTML=options.did_clients.map(c=>`<option value="${c.id}">${esc(clientLabel(c))}</option>`).join('');
   document.getElementById('did-client').value=current || String(options.did_clients[0].id);
   document.getElementById('did-sold-on').value=iso(new Date());
   didDialog.showModal();
