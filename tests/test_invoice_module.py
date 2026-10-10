@@ -100,6 +100,24 @@ class InvoiceTests(unittest.TestCase):
         conn.close()
         self.assertEqual(error.exception.status_code, 422)
 
+    def test_invoice_options_include_inactive_clients(self):
+        conn = db.get_conn()
+        conn.execute(
+            "UPDATE clients SET active = 0 WHERE id = ?", (self.traffic_client_id,)
+        )
+        conn.execute(
+            "UPDATE did_clients SET active = 0 WHERE id = ?", (self.did_client_id,)
+        )
+        conn.commit()
+
+        result = invoice_module.invoice_options_data(conn, db.MONEY_SCALE)
+        conn.close()
+
+        self.assertEqual(result["traffic_clients"][0]["id"], self.traffic_client_id)
+        self.assertEqual(result["traffic_clients"][0]["active"], 0)
+        self.assertEqual(result["did_clients"][0]["id"], self.did_client_id)
+        self.assertEqual(result["did_clients"][0]["active"], 0)
+
     def test_add_did_from_invoice_creates_safe_billing_record_and_updates_it(self):
         conn = db.get_conn()
         batch = invoice_module.save_did_sales(conn, invoice_module.DidSaleBatchIn(
