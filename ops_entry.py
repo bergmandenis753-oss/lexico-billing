@@ -1,3 +1,6 @@
+import re
+
+from fastapi import HTTPException
 from pydantic import BaseModel
 
 import admin_delete_patch
@@ -81,6 +84,70 @@ def _rows(rows):
 
 def _limited_rows(conn, query, params=()):
     return _rows(conn.execute(query, params).fetchall())
+
+
+def _phone_digits(value):
+    return re.sub(r"\D", "", str(value or ""))
+
+
+def _matches_b_number(row, number):
+    return any(
+        _phone_digits(row.get(field)).endswith(number)
+        for field in ("destination", "dial_destination", "provider_number")
+    )
+
+
+def call_check_context(conn, raw_number):
+    number = _phone_digits(raw_number)
+    if len(number) < 5:
+        raise HTTPException(422, "Укажите корректный B-номер")
+
+    suffix = f"%{number}"
+    sip_hits = _limited_rows(
+        conn,
+        "SELECT sh.*, c.currency AS client_currency FROM sip_hits sh "
+        "LEFT JOIN clients c ON c.id = sh.client_id "
+        "WHERE sh.destination LIKE ? OR sh.dial_destination LIKE ? "
+        "OR sh.provider_number LIKE ? ORDER BY sh.id DESC LIMIT 50",
+        (suffix, suffix, suffix),
+    )
+    sip_hits = [row for row in sip_hits if _matches_b_number(row, number)][:20]
+
+    cdr = _limited_rows(
+        conn,
+        "SELECT cd.*, c.name AS client_name, c.sip_ip AS client_sip_ip, "
+        "c.currency AS client_currency FROM cdr cd "
+        "LEFT JOIN clients c ON c.id = cd.client_id "
+        "WHERE cd.destination LIKE ? OR cd.dial_destination LIKE ? "
+        "OR cd.provider_number LIKE ? ORDER BY cd.id DESC LIMIT 50",
+        (suffix, suffix, suffix),
+    )
+    cdr = [row for row in cdr if _matches_b_number(row, number)][:20]
+
+    call_ids = {
+        str(value)
+        for row in sip_hits
+        for value in (row.get("sip_call_id"), row.get("call_uuid"))
+        if value
+    }
+    call_ids.update(str(row.get("call_uuid")) for row in cdr if row.get("call_uuid"))
+    pcap_events = []
+    if call_ids:
+        placeholders = ", ".join("?" for _ in call_ids)
+        pcap_events = _limited_rows(
+            conn,
+            f"SELECT * FROM pcap_events WHERE call_id IN ({placeholders}) "
+            "ORDER BY id DESC LIMIT 200",
+            tuple(call_ids),
+        )
+
+    return {
+        "ok": True,
+        "number": number,
+        "sip_hits": sip_hits,
+        "cdr": cdr,
+        "pcap_events": pcap_events,
+    }
 
 
 @app.post("/api/pcap-events", dependencies=main.API_AUTH)
@@ -183,6 +250,17 @@ def ops_diagnostics(limit: int = 100, cdr_limit: int = 50, pcap_limit: int = 200
             "sip_hits": sip_hits,
             "pcap_events": pcap_events,
         }
+    finally:
+        conn.close()
+
+
+@app.get("/api/ops/call-check/{number}", dependencies=main.API_AUTH)
+def ops_call_check(number: str):
+    conn = db.get_conn()
+    try:
+        result = call_check_context(conn, number)
+        result["money_scale"] = db.MONEY_SCALE
+        return result
     finally:
         conn.close()
 
