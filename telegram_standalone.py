@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import textwrap
 import urllib.error
 import urllib.parse
@@ -235,6 +236,17 @@ def _load_diagnostics():
     return _get_json(f"{base}/api/ops/diagnostics", headers=_billing_headers())
 
 
+def _load_call_check(number):
+    base = _billing_base_url()
+    if not base:
+        raise RuntimeError("BILLING_API_BASE_URL не задан")
+    safe_number = urllib.parse.quote(str(number), safe="")
+    return _get_json(
+        f"{base}/api/ops/call-check/{safe_number}",
+        headers=_billing_headers(),
+    )
+
+
 def _client_name(client):
     return client.get("name") or f"#{client.get('id')}"
 
@@ -268,7 +280,8 @@ def _format_hit(hit):
             f"Статус: {hit.get('status') or '-'}",
             f"Причина: {reason or '-'}",
             f"Терминатор: {hit.get('terminator_name') or '-'}",
-            f"Куда: {route}",
+            f"Направление: {hit.get('terminator_destination_name') or '-'}",
+            f"Gateway/IP: {route}",
         ]
     )
 
@@ -441,12 +454,12 @@ def _pcap_for_hit(data, hit):
     return [event for event in events if event.get("src_ip") == ip or event.get("dst_ip") == ip][:12]
 
 
-def _local_analysis(data):
+def _local_analysis(data, title="Разбор последнего SIP хита:"):
     hits = data.get("sip_hits", [])
     if not hits:
         return "Последних SIP хитов нет."
     hit = hits[0]
-    lines = ["Разбор последнего SIP хита:", _format_hit(hit), ""]
+    lines = [title, _format_hit(hit), ""]
     stage = str(hit.get("stage") or "")
     status_value = str(hit.get("status") or "")
     reason = str(hit.get("reason") or "")
@@ -492,6 +505,32 @@ def _local_analysis(data):
     return "\n".join(lines)
 
 
+def _check_call_text(data, text):
+    parts = str(text or "").strip().split(maxsplit=1)
+    if len(parts) < 2:
+        return "Формат: /check B-номер\nПример: /check 998955601166"
+    number = re.sub(r"\D", "", parts[1])
+    if len(number) < 5:
+        return "Укажите корректный B-номер. Пример: /check 998955601166"
+
+    report = _load_call_check(number)
+    scoped = dict(data)
+    scoped["sip_hits"] = report.get("sip_hits", [])
+    scoped["cdr"] = report.get("cdr", [])
+    scoped["pcap_events"] = report.get("pcap_events", [])
+    if report.get("money_scale"):
+        scoped["money_scale"] = report["money_scale"]
+
+    if scoped["sip_hits"]:
+        return _local_analysis(scoped, f"Разбор SIP хита по B-номеру {number}:")
+    if scoped["cdr"]:
+        return (
+            f"SIP hit по B-номеру {number} не найден, но найден CDR:\n"
+            f"{_format_cdr(scoped['cdr'][0], scoped)}"
+        )
+    return f"По B-номеру {number} SIP hit и CDR не найдены. Чужой последний звонок не показываю."
+
+
 def _openai_analysis(data, question, fallback):
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
     if not api_key:
@@ -533,6 +572,9 @@ def _openai_analysis(data, question, fallback):
 def _answer_for_text(data, text):
     text = (text or "").strip()
     cmd = text.lower()
+    command = cmd.split(maxsplit=1)[0].split("@", 1)[0] if cmd else ""
+    if command in {"/check", "check"}:
+        return _check_call_text(data, text), MAIN_MENU
     if cmd.startswith("/refund ") or cmd.startswith("refund "):
         return _refund_text(data, text), MAIN_MENU
     if cmd in {"/start", "/help", "меню"}:
