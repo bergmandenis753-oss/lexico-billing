@@ -1,0 +1,19 @@
+[Unit]
+Description=Lexico voice server system and RTP quality monitor
+After=network-online.target freeswitch.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+Environment=BILLING_API=https://web-production-d5e1c.up.railway.app
+Environment=BILLING_API_KEY_FILE=/etc/freeswitch/billing_api_key
+Environment=SYSTEM_MONITOR_INTERVAL=15
+ExecStart=/usr/bin/python3 /usr/local/sbin/lexico-system-monitor-agent.py
+Restart=always
+RestartSec=3
+CPUQuota=2%
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target

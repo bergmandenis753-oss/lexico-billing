@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
+<title>SloT VoIP — система</title>
+<style>
+  :root { --bg:#0f1420; --card:#1a2130; --line:#2a3446; --txt:#e6ebf2; --mut:#8a96a8; --accent:#3f8cff; --good:#37c26a; --warn:#ffbf47; --bad:#ff5a5a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif; }
+  header { min-height:68px; padding:14px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+  header h1 { margin:0; font-size:18px; font-weight:600; }
+  header .sub { color:var(--mut); font-size:13px; }
+  .mode-nav { display:flex; gap:4px; margin-left:16px; padding:3px; border:1px solid var(--line); border-radius:8px; }
+  .mode-nav a { color:var(--mut); text-decoration:none; padding:5px 10px; border-radius:5px; font-size:13px; white-space:nowrap; }
+  .mode-nav a.active { background:var(--line); color:var(--txt); }
+  .header-actions { margin-left:auto; display:flex; align-items:center; gap:10px; }
+  main { max-width:1440px; margin:0 auto; padding:20px 24px 40px; }
+  .summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-bottom:22px; }
+  .metric { min-height:150px; padding:16px; background:var(--card); border:1px solid var(--line); border-radius:8px; }
+  .metric-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+  .label { color:var(--mut); font-size:11px; text-transform:uppercase; }
+  .value { margin:13px 0 6px; font-size:30px; font-weight:650; }
+  .hint { min-height:40px; color:var(--mut); font-size:12px; }
+  .badge { display:inline-flex; padding:2px 8px; border-radius:20px; font-size:11px; }
+  .good { color:var(--good); background:rgba(55,194,106,.14); }
+  .warn { color:var(--warn); background:rgba(255,191,71,.14); }
+  .bad { color:var(--bad); background:rgba(255,90,90,.14); }
+  .neutral { color:var(--mut); background:rgba(138,150,168,.14); }
+  .scale { height:5px; margin-top:13px; overflow:hidden; background:#111827; border-radius:3px; }
+  .scale span { display:block; height:100%; width:0; background:var(--good); border-radius:3px; transition:width .2s ease; }
+  .scale span.warn-fill { background:var(--warn); }
+  .scale span.bad-fill { background:var(--bad); }
+  .panel { border:1px solid var(--line); border-radius:8px; background:var(--card); overflow:hidden; }
+  .panel-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 16px; border-bottom:1px solid var(--line); }
+  .panel-head h2 { margin:0; font-size:15px; font-weight:600; }
+  .charts { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); }
+  .chart { min-width:0; padding:14px 16px 16px; border-right:1px solid var(--line); }
+  .chart:last-child { border-right:0; }
+  .chart-title { display:flex; justify-content:space-between; gap:10px; margin-bottom:8px; color:var(--mut); font-size:12px; }
+  svg { display:block; width:100%; height:92px; overflow:visible; }
+  .grid-line { stroke:var(--line); stroke-width:1; }
+  .spark { fill:none; stroke:var(--accent); stroke-width:2; vector-effect:non-scaling-stroke; }
+  .spark.warn-line { stroke:var(--warn); }
+  .spark.bad-line { stroke:var(--bad); }
+  button { height:34px; padding:0 11px; color:var(--txt); background:transparent; border:1px solid var(--line); border-radius:7px; cursor:pointer; font:inherit; }
+  .mut { color:var(--mut); }
+  .status { min-height:20px; margin-top:10px; color:var(--mut); font-size:12px; }
+  @media (max-width:1000px) {
+    .summary,.charts { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .chart:nth-child(2) { border-right:0; }
+    .chart:nth-child(-n+2) { border-bottom:1px solid var(--line); }
+  }
+  @media (max-width:680px) {
+    header { flex-wrap:wrap; padding:12px 16px; }
+    header .sub { display:none; }
+    .mode-nav { order:3; width:100%; margin:0; overflow-x:auto; }
+    .header-actions { margin-left:auto; }
+    main { padding:16px; }
+    .summary { grid-template-columns:1fr; }
+    .charts { grid-template-columns:1fr; }
+    .chart { border-right:0; border-bottom:1px solid var(--line); }
+    .chart:last-child { border-bottom:0; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>SloT VoIP</h1>
+  <span class="sub">состояние голосового сервера</span>
+  <nav class="mode-nav" aria-label="Режим биллинга"><a href="/">Исходящие</a><a href="/dids">DIDs</a><a href="/monitoring">Мониторинг</a><a href="/invoice">Invoice</a><a class="active" href="/system">Система</a></nav>
+  <div class="header-actions"><span class="mut" id="header-state">обновляю...</span><button onclick="load()">Обновить</button></div>
+</header>
+<main>
+  <div class="summary">
+    <div class="metric">
+      <div class="metric-head"><div class="label">CPU Usage</div><span class="badge neutral" id="cpu-badge">—</span></div>
+      <div class="value" id="cpu-value">—</div><div class="hint" id="cpu-hint">Насколько загружен процессор</div>
+      <div class="scale"><span id="cpu-scale"></span></div>
+    </div>
+    <div class="metric">
+      <div class="metric-head"><div class="label">Packet Loss</div><span class="badge neutral" id="loss-badge">—</span></div>
+      <div class="value" id="loss-value">—</div><div class="hint" id="loss-hint">Потеря голосовых пакетов за 5 минут</div>
+      <div class="scale"><span id="loss-scale"></span></div>
+    </div>
+    <div class="metric">
+      <div class="metric-head"><div class="label">Jitter</div><span class="badge neutral" id="jitter-badge">—</span></div>
+      <div class="value" id="jitter-value">—</div><div class="hint" id="jitter-hint">Нестабильность интервалов между пакетами</div>
+      <div class="scale"><span id="jitter-scale"></span></div>
+    </div>
+    <div class="metric">
+      <div class="metric-head"><div class="label">В разговоре</div><span class="badge neutral" id="calls-badge">live</span></div>
+      <div class="value" id="calls-value">—</div><div class="hint">Количество соединённых звонков сейчас</div>
+      <div class="scale"><span id="calls-scale"></span></div>
+    </div>
+  </div>
+
+  <section class="panel">
+    <div class="panel-head"><h2>История за последние 6 часов</h2><span class="mut" id="quality-window"></span></div>
+    <div class="charts">
+      <div class="chart"><div class="chart-title"><span>CPU</span><span id="cpu-range">—</span></div><svg viewBox="0 0 300 92" preserveAspectRatio="none"><line class="grid-line" x1="0" y1="91" x2="300" y2="91"/><polyline class="spark" id="cpu-line" points=""/></svg></div>
+      <div class="chart"><div class="chart-title"><span>Packet Loss</span><span id="loss-range">—</span></div><svg viewBox="0 0 300 92" preserveAspectRatio="none"><line class="grid-line" x1="0" y1="91" x2="300" y2="91"/><polyline class="spark" id="loss-line" points=""/></svg></div>
+      <div class="chart"><div class="chart-title"><span>Jitter</span><span id="jitter-range">—</span></div><svg viewBox="0 0 300 92" preserveAspectRatio="none"><line class="grid-line" x1="0" y1="91" x2="300" y2="91"/><polyline class="spark" id="jitter-line" points=""/></svg></div>
+      <div class="chart"><div class="chart-title"><span>Звонки</span><span id="calls-range">—</span></div><svg viewBox="0 0 300 92" preserveAspectRatio="none"><line class="grid-line" x1="0" y1="91" x2="300" y2="91"/><polyline class="spark" id="calls-line" points=""/></svg></div>
+    </div>
+  </section>
+  <div class="status" id="status"></div>
+</main>
+<script>
+let loading=false;
+const thresholds={cpu:[70,85],loss:[1,3],jitter:[20,30]};
+
+function severity(value,key) {
+  if (value===null || value===undefined || Number.isNaN(Number(value))) return ['neutral','нет данных'];
+  const [warn,bad]=thresholds[key]||[Infinity,Infinity];
+  if (Number(value)>=bad) return ['bad','очень высокая'];
+  if (Number(value)>=warn) return ['warn','повышенная'];
+  return ['good','норма'];
+}
+function setMetric(key,value,unit,max,hint) {
+  const [level,label]=severity(value,key);
+  const badge=document.getElementById(`${key}-badge`);
+  badge.className=`badge ${level}`; badge.textContent=label;
+  document.getElementById(`${key}-value`).textContent=value===null || value===undefined ? '—' : `${Number(value).toFixed(key==='cpu'?1:2)}${unit}`;
+  if (hint) document.getElementById(`${key}-hint`).textContent=hint;
+  const scale=document.getElementById(`${key}-scale`);
+  scale.className=level==='bad'?'bad-fill':level==='warn'?'warn-fill':'';
+  scale.style.width=value===null || value===undefined?'0%':`${Math.min(100,Math.max(0,Number(value)/max*100))}%`;
+}
+function setCalls(value) {
+  const count=Number(value||0);
+  document.getElementById('calls-value').textContent=count.toLocaleString('ru-RU');
+  document.getElementById('calls-scale').style.width=`${Math.min(100,count/500*100)}%`;
+}
+function spark(id,rangeId,values,suffix) {
+  const clean=values.map(Number).filter(Number.isFinite);
+  if (!clean.length) { document.getElementById(id).setAttribute('points',''); document.getElementById(rangeId).textContent='нет данных'; return; }
+  const max=Math.max(1,...clean), min=Math.min(0,...clean), span=Math.max(1,max-min);
+  const points=values.map((value,index)=>{
+    const n=Number(value); if(!Number.isFinite(n)) return null;
+    const x=values.length===1?300:index/(values.length-1)*300;
+    const y=91-(n-min)/span*86;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).filter(Boolean).join(' ');
+  document.getElementById(id).setAttribute('points',points);
+  document.getElementById(rangeId).textContent=`max ${max.toFixed(suffix==='%'?1:0)}${suffix}`;
+}
+function render(data) {
+  const latest=data.latest;
+  if (!latest) {
+    setMetric('cpu',null,'%',100); setMetric('loss',null,'%',5); setMetric('jitter',null,' ms',50); setCalls(0);
+    document.getElementById('header-state').textContent='сборщик не подключён';
+    document.getElementById('status').textContent='Метрики ещё не поступали с голосового сервера.';
+    return;
+  }
+  const quality=data.quality||{};
+  setMetric('cpu',latest.cpu_percent,'%',100,`Нагрузка сервера · steal ${Number(latest.cpu_steal_percent||0).toFixed(1)}%`);
+  setMetric('loss',quality.packet_loss_percent,'%',5,quality.rtp_legs?`Потеря голосовых пакетов · ${quality.rtp_legs} RTP legs`:'За 5 минут завершённых RTP-потоков нет');
+  setMetric('jitter',quality.jitter_ms,' ms',50,quality.rtp_packets?`Взвешено по ${Number(quality.rtp_packets).toLocaleString('ru-RU')} пакетам`:'За 5 минут завершённых RTP-потоков нет');
+  setCalls(latest.active_calls);
+  document.getElementById('header-state').textContent=data.stale?'данные устарели':'онлайн';
+  document.getElementById('quality-window').textContent='качество: последние 5 минут';
+  const history=data.history||[];
+  spark('cpu-line','cpu-range',history.map(x=>x.cpu_percent),'%');
+  spark('loss-line','loss-range',history.map(x=>x.packet_loss_percent),'%');
+  spark('jitter-line','jitter-range',history.map(x=>x.jitter_ms),' ms');
+  spark('calls-line','calls-range',history.map(x=>x.active_calls),'');
+  document.getElementById('status').textContent=`Последнее измерение: ${latest.sampled_at} UTC · ${data.age_seconds} сек. назад`;
+}
+async function load() {
+  if (loading) return; loading=true;
+  document.getElementById('header-state').textContent='обновляю...';
+  try {
+    const response=await fetch('/api/system-monitoring',{cache:'no-store'});
+    if(!response.ok) throw new Error(await response.text());
+    render(await response.json());
+  } catch(error) {
+    document.getElementById('header-state').textContent='ошибка';
+    document.getElementById('status').textContent=error.message;
+  } finally { loading=false; }
+}
+load(); setInterval(load,15000);
+</script>
+</body>
+</html>
