@@ -4,6 +4,7 @@ import cdr_shop_patch
 import did_module
 import invoice_module
 import monitoring_module
+import system_monitoring_module
 import ops_entry
 
 
@@ -12,3 +13,4 @@ cdr_shop_patch.install(app, ops_entry.main, ops_entry.db)
 did_module.install(app, ops_entry.main, ops_entry.db, Path(__file__).parent)
 monitoring_module.install(app, ops_entry.main, ops_entry.db, Path(__file__).parent)
 invoice_module.install(app, ops_entry.main, ops_entry.db, Path(__file__).parent)
+system_monitoring_module.install(app, ops_entry.main, ops_entry.db, Path(__file__).parent)
