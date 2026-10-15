@@ -2,6 +2,7 @@ import math
 import caller_id
 import route_line_limit
 import route_number_whitelist
+import voice_nodes
 
 from fastapi import HTTPException
 from pydantic import BaseModel
@@ -54,8 +55,21 @@ def install_call_routes(app, main, db):
                 or data.sip_call_id
                 or f"{data.sip_ip}:{data.sip_port}:{data.clid}:{data.destination}:{now_ts}"
             )
-            rate_match = db.match_client_rate_for_destination(conn, client["id"], data.destination, route_seed)
+            incoming_node = voice_nodes.normalize(data.voice_node)
+            rate_match = db.match_client_rate_for_destination(
+                conn, client["id"], data.destination, route_seed, incoming_node
+            )
             if rate_match is None:
+                other_node_match = db.match_client_rate_for_destination(
+                    conn, client["id"], data.destination, route_seed
+                )
+                if other_node_match is not None:
+                    stage = "voice_node"
+                    assigned_node = voice_nodes.normalize(other_node_match[0]["voice_node"])
+                    raise HTTPException(
+                        503,
+                        f"Роут назначен серверу {assigned_node}, звонок пришёл на {incoming_node}",
+                    )
                 raise HTTPException(403, f"Нет тарифа клиента для {data.destination}")
             rate, dial_destination, client_tech_prefix = rate_match
             denied_kind = route_number_whitelist.denied_kind(rate, data.clid, dial_destination)
@@ -151,6 +165,7 @@ def install_call_routes(app, main, db):
                 "terminator_destination_name": route["destination_name"],
                 "terminator_prefix": route["prefix"],
                 "terminator_tech_prefix": route["tech_prefix"],
+                "voice_node": incoming_node,
                 "client_id": client["id"],
                 "call_uuid": call_uuid,
             }
@@ -231,7 +246,7 @@ def install_call_routes(app, main, db):
                 "dial_destination, provider_number, outbound_caller_id, gateway_name, route_ip, terminator_id, terminator_name, "
                 "terminator_destination_name, terminator_prefix, terminator_tech_prefix, hangup_cause, "
                 "bridge_hangup_cause, result, billsec, sell_rate_cents, cost_rate_cents, sell_billing_cycle, "
-                "cost_billing_cycle, charged_cents, margin_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "cost_billing_cycle, charged_cents, margin_cents, voice_node) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     data.client_id,
                     data.call_uuid,
@@ -259,6 +274,7 @@ def install_call_routes(app, main, db):
                     cost_billing_cycle,
                     charged,
                     margin,
+                    voice_nodes.normalize(data.voice_node),
                 ),
             )
             supplier_charge = post_call_cost(conn, cdr_cursor.lastrowid)
@@ -276,7 +292,7 @@ def install_call_routes(app, main, db):
                 "client_tech_prefix = ?, dial_destination = ?, provider_number = ?, outbound_caller_id = ?, gateway_name = ?, "
                 "route_ip = ?, terminator_id = ?, terminator_name = ?, terminator_destination_name = ?, "
                 "terminator_prefix = ?, sell_rate_cents = ?, cost_rate_cents = ?, sell_billing_cycle = ?, "
-                "cost_billing_cycle = ? WHERE call_uuid = ?",
+                "cost_billing_cycle = ?, voice_node = ? WHERE call_uuid = ?",
                 (
                     final_status,
                     "finalized",
@@ -297,6 +313,7 @@ def install_call_routes(app, main, db):
                     data.cost_rate_cents,
                     sell_billing_cycle,
                     cost_billing_cycle,
+                    voice_nodes.normalize(data.voice_node),
                     data.call_uuid,
                 ),
             )

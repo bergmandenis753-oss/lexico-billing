@@ -100,6 +100,7 @@ _remove_routes({"/", "/api/dashboard-data", "/api/firewall-whitelist", "/api/fin
 
 
 class PcapEventIn(BaseModel):
+    source: str = ""
     observed_at: str = ""
     direction: str = ""
     src_ip: str = ""
@@ -145,6 +146,7 @@ def _trim_text(value, limit=1000):
 def _pcap_event_dict(item):
     data = _model_dict(item)
     for key in (
+        "source",
         "observed_at",
         "direction",
         "src_ip",

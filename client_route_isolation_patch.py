@@ -1,5 +1,7 @@
 from fastapi import HTTPException
 
+import voice_nodes
+
 
 def _remove_routes(app, path, methods=None):
     wanted = {m.upper() for m in methods} if methods else None
@@ -82,29 +84,55 @@ def _upsert_client_route(conn, data, *, update_existing=True):
     prefix = _clean(data.get("prefix"))
     dest = _clean(data.get("destination_name"))
     billing_cycle = _billing_cycle(data.get("billing_cycle"))
+    try:
+        voice_node = voice_nodes.validate(data.get("voice_node") or voice_nodes.PRIMARY_NODE)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    has_voice_node = any(
+        row["name"] == "voice_node" for row in conn.execute("PRAGMA table_info(client_rates)")
+    )
     if not prefix or not dest:
         raise HTTPException(400, "Укажите направление и префикс")
+    node_filter = "AND COALESCE(NULLIF(voice_node, ''), 'primary') = ? " if has_voice_node else ""
+    params = (client_id, tech, prefix, terminator_id, voice_node) if has_voice_node else (
+        client_id, tech, prefix, terminator_id
+    )
     existing = conn.execute(
         "SELECT * FROM client_rates "
         "WHERE client_id = ? AND COALESCE(client_tech_prefix, '') = ? AND prefix = ? "
         "AND COALESCE(terminator_id, -1) = COALESCE(?, -1) "
-        "ORDER BY id LIMIT 1",
-        (client_id, tech, prefix, terminator_id),
+        + node_filter
+        + "ORDER BY id LIMIT 1",
+        params,
     ).fetchone()
     if existing is None:
-        cur = conn.execute(
-            "INSERT INTO client_rates "
-            "(client_id, terminator_id, client_tech_prefix, prefix, destination_name, sell_rate_cents, billing_cycle) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (client_id, terminator_id, tech, prefix, dest, int(data["sell_rate_cents"]), billing_cycle),
-        )
+        if has_voice_node:
+            cur = conn.execute(
+                "INSERT INTO client_rates "
+                "(client_id, terminator_id, client_tech_prefix, prefix, destination_name, sell_rate_cents, billing_cycle, voice_node) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (client_id, terminator_id, tech, prefix, dest, int(data["sell_rate_cents"]), billing_cycle, voice_node),
+            )
+        else:
+            cur = conn.execute(
+                "INSERT INTO client_rates "
+                "(client_id, terminator_id, client_tech_prefix, prefix, destination_name, sell_rate_cents, billing_cycle) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (client_id, terminator_id, tech, prefix, dest, int(data["sell_rate_cents"]), billing_cycle),
+            )
         return cur.lastrowid, True
     if not update_existing:
         raise HTTPException(409, "Такое направление у этого оригинатора и терминатора уже есть")
-    conn.execute(
-        "UPDATE client_rates SET destination_name = ?, sell_rate_cents = ?, billing_cycle = ? WHERE id = ?",
-        (dest, int(data["sell_rate_cents"]), billing_cycle, existing["id"]),
-    )
+    if has_voice_node:
+        conn.execute(
+            "UPDATE client_rates SET destination_name = ?, sell_rate_cents = ?, billing_cycle = ?, voice_node = ? WHERE id = ?",
+            (dest, int(data["sell_rate_cents"]), billing_cycle, voice_node, existing["id"]),
+        )
+    else:
+        conn.execute(
+            "UPDATE client_rates SET destination_name = ?, sell_rate_cents = ?, billing_cycle = ? WHERE id = ?",
+            (dest, int(data["sell_rate_cents"]), billing_cycle, existing["id"]),
+        )
     return existing["id"], False
 
 

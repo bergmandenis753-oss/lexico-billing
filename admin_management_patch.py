@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 import route_line_limit
+import voice_nodes
 
 
 class ClientRatePatchIn(BaseModel):
@@ -17,6 +18,7 @@ class ClientRatePatchIn(BaseModel):
     billing_cycle: Optional[str] = None
     line_limit_enabled: Optional[bool] = None
     line_limit: Optional[int] = None
+    voice_node: Optional[str] = None
 
 
 class TerminationGroupPatchIn(BaseModel):
@@ -177,6 +179,7 @@ def install(app, main, db, compat):
                 "LEFT JOIN clients c ON c.id = sh.client_id ORDER BY sh.id DESC LIMIT 50"
             ).fetchall()
             e164_directions = db.list_e164_countries(conn)
+            available_voice_nodes = voice_nodes.list_nodes()
             total_balance = conn.execute(
                 "SELECT COALESCE(SUM(balance_cents),0) AS s FROM clients WHERE deleted_at IS NULL"
             ).fetchone()["s"]
@@ -200,6 +203,7 @@ def install(app, main, db, compat):
                 "cdr": _legacy_rows(cdr, ("sell_rate_cents", "cost_rate_cents", "charged_cents", "margin_cents")),
                 "sip_hits": _legacy_rows(sip_hits, ("sell_rate_cents", "cost_rate_cents")),
                 "e164_directions": e164_directions,
+                "voice_nodes": available_voice_nodes,
                 "summary": {
                     "total_balance_cents": _legacy_money(total_balance),
                     "margin_today_cents": _legacy_money(margin_today),
@@ -216,6 +220,7 @@ def install(app, main, db, compat):
             "cdr": _rows(cdr),
             "sip_hits": _rows(sip_hits),
             "e164_directions": e164_directions,
+            "voice_nodes": available_voice_nodes,
             "summary": {
                 "total_balance_cents": total_balance,
                 "margin_today_cents": margin_today,
@@ -297,6 +302,11 @@ def install(app, main, db, compat):
             raise HTTPException(400, "Цена продажи не может быть отрицательной")
         if "billing_cycle" in fields:
             fields["billing_cycle"] = db.normalize_billing_cycle(fields["billing_cycle"])
+        if "voice_node" in fields:
+            try:
+                fields["voice_node"] = voice_nodes.validate(fields["voice_node"])
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
         conn = db.get_conn()
         try:
             row = conn.execute("SELECT * FROM client_rates WHERE id = ?", (rid,)).fetchone()

@@ -1,6 +1,7 @@
 import math
 
 import route_line_limit
+import voice_nodes
 
 from fastapi import HTTPException
 
@@ -51,8 +52,21 @@ def install(app, main, db):
                 or data.sip_call_id
                 or f"{data.sip_ip}:{data.sip_port}:{data.clid}:{data.destination}:{now_ts}"
             )
-            rate_match = db.match_client_rate_for_destination(conn, client["id"], data.destination, route_seed)
+            incoming_node = voice_nodes.normalize(data.voice_node)
+            rate_match = db.match_client_rate_for_destination(
+                conn, client["id"], data.destination, route_seed, incoming_node
+            )
             if rate_match is None:
+                other_node_match = db.match_client_rate_for_destination(
+                    conn, client["id"], data.destination, route_seed
+                )
+                if other_node_match is not None:
+                    stage = "voice_node"
+                    assigned_node = voice_nodes.normalize(other_node_match[0]["voice_node"])
+                    raise HTTPException(
+                        503,
+                        f"Роут назначен серверу {assigned_node}, звонок пришёл на {incoming_node}",
+                    )
                 raise HTTPException(403, f"Нет тарифа клиента для {data.destination}")
             rate, dial_destination, client_tech_prefix = rate_match
             call_uuid = data.call_uuid or f"nouuid-{now_ts}-{client['id']}"
@@ -116,7 +130,8 @@ def install(app, main, db):
                 "client_tech_prefix": client_tech_prefix, "dial_destination": dial_destination,
                 "provider_number": provider_number, "terminator_id": route["id"], "terminator_name": route["name"],
                 "terminator_destination_name": route["destination_name"], "terminator_prefix": route["prefix"],
-                "terminator_tech_prefix": route["tech_prefix"], "client_id": client["id"], "call_uuid": call_uuid,
+                "terminator_tech_prefix": route["tech_prefix"], "voice_node": incoming_node,
+                "client_id": client["id"], "call_uuid": call_uuid,
             }
         except HTTPException as exc:
             conn.rollback()

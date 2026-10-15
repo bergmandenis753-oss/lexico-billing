@@ -30,6 +30,7 @@ MANUAL_MARGIN_MONTH = "2026-07"
 
 
 class PcapEventIn(BaseModel):
+    source: str = ""
     observed_at: str = ""
     direction: str = ""
     src_ip: str = ""
@@ -54,6 +55,7 @@ class PcapEventsIn(BaseModel):
 
 
 PCAP_COLUMNS = (
+    "source",
     "observed_at",
     "direction",
     "src_ip",

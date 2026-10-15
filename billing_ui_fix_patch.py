@@ -4,6 +4,8 @@ from pathlib import Path
 from fastapi import Request
 from fastapi.responses import HTMLResponse
 
+import voice_nodes
+
 
 MANUAL_MARGIN_ADJUSTMENT = 663900
 MANUAL_MARGIN_DAY = "2026-07-24"
@@ -115,6 +117,7 @@ def install(app, main, db):
             margin_today, margin_month = _apply_manual_margin_adjustment(conn, margin_today, margin_month)
             return {
                 "money_scale": db.MONEY_SCALE,
+                "voice_nodes": voice_nodes.list_nodes(),
                 "clients": _rows(clients),
                 "termination_groups": _rows(groups),
                 "terminators": _rows(terminators),

@@ -163,7 +163,7 @@
       <span class="mut" id="route-client-summary">Выберите оригинатора</span>
     </div>
     <div class="rates-wrap"><table>
-      <thead><tr><th>Терминатор</th><th>Направление</th><th>Клиентский тех</th><th>Префикс</th><th class="right">Продажа</th><th>Биллинг</th><th>Caller ID</th><th>Линии</th><th></th></tr></thead>
+      <thead><tr><th>Терминатор</th><th>Направление</th><th>Клиентский тех</th><th>Префикс</th><th class="right">Продажа</th><th>Биллинг</th><th>Caller ID</th><th>Сервер</th><th>Линии</th><th></th></tr></thead>
       <tbody id="t-rates"></tbody>
     </table></div>
   </section>
@@ -268,6 +268,7 @@
     <label>Префикс</label><input id="ra-prefix" value="61" required>
     <label>Цена продажи за минуту (в валюте)</label><input id="ra-sell" type="number" step="0.0001" min="0" required>
     <label>Billing cycle</label><select id="ra-billing-cycle"><option value="1/1">1/1</option><option value="60/1">60/1</option></select>
+    <label>Голосовой сервер</label><select id="ra-voice-node" required></select>
     <div class="row"><button type="button" class="ghost" onclick="rateDlg.close()">Отмена</button><button type="submit">Создать</button></div>
   </form>
 </dialog>
@@ -283,6 +284,7 @@
     <label>Клиентский техпрефикс (если клиент шлёт его нам)</label><input id="di-client-tech" placeholder="101">
     <label>Цена продажи за минуту (в валюте)</label><input id="di-sell" type="number" step="0.0001" min="0.0001" required>
     <label>Billing cycle</label><select id="di-billing-cycle"><option value="1/1">1/1</option><option value="60/1">60/1</option></select>
+    <label>Голосовой сервер</label><select id="di-voice-node" required></select>
     <label>Тестовый номер (можно пусто)</label><input id="di-test-number" placeholder="101420777123456">
     <div id="di-preview" class="check" style="display:none"></div>
     <div class="row">
@@ -304,6 +306,7 @@
     <label>Клиентский техпрефикс (если клиент шлёт его нам)</label><input id="crs-client-tech" placeholder="101">
     <label>Цена продажи за минуту (в валюте)</label><input id="crs-sell" type="number" step="0.0001" min="0" required>
     <label>Billing cycle</label><select id="crs-cycle"><option value="1/1">1/1</option><option value="60/1">60/1</option></select>
+    <label>Голосовой сервер</label><select id="crs-voice-node" required></select>
     <div class="whitelist-actions">
       <button type="button" class="ghost" id="crs-a-whitelist" onclick="openRouteNumberWhitelist('a')">+ A whitelist</button>
       <button type="button" class="ghost" id="crs-b-whitelist" onclick="openRouteNumberWhitelist('b')">+ B whitelist</button>
@@ -375,6 +378,8 @@ let clientMap = {};
 let groupList = [];
 let groupMap = {};
 let termList = [];
+let voiceNodeList = [];
+let voiceNodeMap = {};
 let editingTerminatorId = null;
 let topupClientId = null;
 let loadInFlight = false;
@@ -492,6 +497,8 @@ async function load(manual = false) {
   groupMap = {};
   groupList.forEach(g => groupMap[g.id] = g);
   termList = d.terminators || [];
+  voiceNodeList = d.voice_nodes || [];
+  voiceNodeMap = Object.fromEntries(voiceNodeList.map(node => [node.id, node]));
   directionList = d.e164_directions || [];
   directionMap = {};
   directionList.forEach(x => directionMap[x.country] = x);
@@ -549,6 +556,7 @@ async function load(manual = false) {
     terminator: 'нет терминатора',
     gateway: 'нет gateway/IP',
     route_line_limit: 'лимит линий',
+    voice_node: 'другой сервер',
     balance: 'баланс',
     reserved: 'готово'
   })[s] || s || '';
@@ -631,7 +639,7 @@ function renderClientRoutes() {
   if (!clients.length) {
     select.innerHTML = '';
     document.getElementById('route-client-summary').textContent = 'Нет оригинаторов';
-    document.getElementById('t-rates').innerHTML = emptyRow(9);
+    document.getElementById('t-rates').innerHTML = emptyRow(10);
     selectedRouteClientId = null;
     return;
   }
@@ -651,6 +659,7 @@ function renderClientRoutes() {
     const label = r.terminator_name
       ? [r.terminator_name, r.terminator_tech_prefix ? `TP ${r.terminator_tech_prefix}` : '', `buy ${rate(r.terminator_cost_rate_cents, cur)} ${cycle(r.terminator_billing_cycle)}`].filter(Boolean).join(' · ')
       : '— (активный)';
+    const node = voiceNodeMap[r.voice_node || 'primary'] || {name: r.voice_node || 'primary', public_ip: ''};
     return `<tr>
       <td>${r.terminator_name ? esc(label) : '<span class="mut">— (активный)</span>'}</td>
       <td>${esc(r.destination_name)}</td>
@@ -659,10 +668,11 @@ function renderClientRoutes() {
       <td class="right">${rate(r.sell_rate_cents, cur)}</td>
       <td class="mut">${esc(cycle(r.billing_cycle))}</td>
       <td><div class="caller-id-control"><span>${callerIdCount || '—'}</span><button class="small ghost" title="Настроить Caller ID" aria-label="Настроить Caller ID" onclick="openCallerId(${r.id})">+</button></div></td>
+      <td><span class="badge on">${esc(node.name)}</span><div class="mut">${esc(node.public_ip)}</div></td>
       <td>${Number(r.line_limit_enabled || 0) ? `<span class="badge on">до ${Number(r.line_limit || 0)}</span>` : '<span class="mut">без лимита</span>'}</td>
       <td class="right"><div class="route-actions"><button class="small ghost" onclick="openRouteSettings(${r.id})">Настроить</button><button class="small danger" title="Удалить роут" aria-label="Удалить роут" onclick="delRate(${r.id})">✕</button></div></td>
     </tr>`;
-  }).join('') || emptyRow(9);
+  }).join('') || emptyRow(10);
 }
 
 document.getElementById('route-client-filter').addEventListener('change', e => {
@@ -692,6 +702,11 @@ function openRouteSettings(id) {
   document.getElementById('crs-client-tech').value = route.client_tech_prefix || '';
   document.getElementById('crs-sell').value = (Number(route.sell_rate_cents || 0) / MONEY_SCALE).toFixed(4).replace(/0+$/, '').replace(/\.$/, '') || '0';
   document.getElementById('crs-cycle').value = cycle(route.billing_cycle);
+  const voiceNodeSelect = document.getElementById('crs-voice-node');
+  voiceNodeSelect.innerHTML = voiceNodeList.map(node =>
+    `<option value="${esc(node.id)}">${esc(node.name)} · ${esc(node.public_ip)}</option>`
+  ).join('');
+  voiceNodeSelect.value = route.voice_node || 'primary';
   document.getElementById('crs-line-limit-enabled').checked = Boolean(Number(route.line_limit_enabled || 0));
   document.getElementById('crs-line-limit').value = Number(route.line_limit || 0) || 5;
   syncRouteLineLimit();
@@ -777,6 +792,7 @@ document.getElementById('route-settings-form').addEventListener('submit', async 
       client_tech_prefix: document.getElementById('crs-client-tech').value.trim(),
       sell_rate_cents: inputMoneyUnits('crs-sell', 'Цена продажи'),
       billing_cycle: document.getElementById('crs-cycle').value,
+      voice_node: document.getElementById('crs-voice-node').value,
       line_limit_enabled: document.getElementById('crs-line-limit-enabled').checked,
       line_limit: parseInt(document.getElementById('crs-line-limit').value || '0', 10)
     });
@@ -933,6 +949,9 @@ function openRateDlg() {
   const cur = (Object.values(clientMap)[0]||{}).currency || '';
   ts.innerHTML = termList.map(t => `<option value="${t.id}">${esc(termLabel(t, cur))}</option>`).join('');
   if (!ts.innerHTML) { alert('Сначала создайте терминатор'); return; }
+  document.getElementById('ra-voice-node').innerHTML = voiceNodeList.map(node =>
+    `<option value="${esc(node.id)}">${esc(node.name)} · ${esc(node.public_ip)}</option>`
+  ).join('');
   syncDirectionFromTerm('ra-term', 'ra-dest', 'ra-prefix', 'ra-billing-cycle');
   rateDlg.showModal();
 }
@@ -955,7 +974,8 @@ document.getElementById('rate-form').addEventListener('submit', async e => {
       destination_name: document.getElementById('ra-dest').value,
       prefix: document.getElementById('ra-prefix').value,
       sell_rate_cents: inputMoneyUnits('ra-sell', 'Продажа'),
-      billing_cycle: document.getElementById('ra-billing-cycle').value
+      billing_cycle: document.getElementById('ra-billing-cycle').value,
+      voice_node: document.getElementById('ra-voice-node').value
     });
     rateDlg.close(); load();
   } catch (err) { alert('Ошибка: ' + err.message); }
@@ -987,6 +1007,9 @@ function openDirectionDlg(clientId = null) {
   document.getElementById('di-client-tech').value = '';
   document.getElementById('di-sell').value = '';
   document.getElementById('di-test-number').value = '';
+  document.getElementById('di-voice-node').innerHTML = voiceNodeList.map(node =>
+    `<option value="${esc(node.id)}">${esc(node.name)} · ${esc(node.public_ip)}</option>`
+  ).join('');
   showDirectionPreview(null);
   directionDlg.showModal();
 }
@@ -999,7 +1022,8 @@ function directionPayload() {
     prefix: document.getElementById('di-prefix').value.trim(),
     client_tech_prefix: document.getElementById('di-client-tech').value.trim(),
     sell_rate_cents: inputMoneyUnits('di-sell', 'Продажа'),
-    billing_cycle: document.getElementById('di-billing-cycle').value
+    billing_cycle: document.getElementById('di-billing-cycle').value,
+    voice_node: document.getElementById('di-voice-node').value
   };
 }
 

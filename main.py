@@ -18,6 +18,7 @@ import db
 import caller_id
 import route_number_whitelist
 import route_line_limit
+import voice_nodes
 app = FastAPI(title='Lexico VoIP billing', docs_url=None, redoc_url=None, openapi_url=None)
 templates = Jinja2Templates(directory='.')
 basic_security = HTTPBasic(auto_error=False)
@@ -96,6 +97,7 @@ class ReserveIn(BaseModel):
     profile: str = ''
     context: str = ''
     sip_login: str = ''
+    voice_node: str = voice_nodes.PRIMARY_NODE
 
 class FinalizeIn(BaseModel):
     client_id: int
@@ -122,6 +124,7 @@ class FinalizeIn(BaseModel):
     hangup_cause: str = ''
     bridge_hangup_cause: str = ''
     result: str = ''
+    voice_node: str = voice_nodes.PRIMARY_NODE
 
 class ClientIn(BaseModel):
     name: str
@@ -183,6 +186,7 @@ class ClientRateIn(BaseModel):
     destination_name: str
     sell_rate_cents: int = Field(ge=0)
     billing_cycle: str = db.DEFAULT_BILLING_CYCLE
+    voice_node: str = voice_nodes.PRIMARY_NODE
 
 class ClientRateUpdateIn(BaseModel):
     client_tech_prefix: Optional[str] = None
@@ -192,6 +196,7 @@ class ClientRateUpdateIn(BaseModel):
     billing_cycle: Optional[str] = None
     line_limit_enabled: Optional[bool] = None
     line_limit: Optional[int] = None
+    voice_node: Optional[str] = None
 
 class OpsClientRouteIn(BaseModel):
     client_ip: str
@@ -212,6 +217,7 @@ class DirectionIn(BaseModel):
     sell_rate_cents: int = Field(gt=0)
     billing_cycle: str = db.DEFAULT_BILLING_CYCLE
     update_existing: bool = True
+    voice_node: str = voice_nodes.PRIMARY_NODE
 
 class RouteCheckIn(BaseModel):
     client_id: int
@@ -277,7 +283,7 @@ def _row_value(row, key, default=None):
 
 def _safe_record_sip_hit(data: ReserveIn, *, status_text: str, stage: str, reason: str='', client=None, rate=None, route=None, gateway_name: str='', route_ip: str='', dial_destination: str='', provider_number: str='', client_tech_prefix: str='', outbound_caller_id: str='', max_seconds: Optional[int]=None, sell_billing_cycle: str=db.DEFAULT_BILLING_CYCLE, cost_billing_cycle: str=db.DEFAULT_BILLING_CYCLE):
     try:
-        db.record_sip_hit({'call_uuid': data.call_uuid or '', 'sip_ip': data.sip_ip, 'sip_port': data.sip_port, 'clid': data.clid, 'outbound_caller_id': outbound_caller_id, 'destination': data.destination, 'client_id': _row_value(client, 'id'), 'client_name': _row_value(client, 'name', ''), 'client_tech_prefix': client_tech_prefix, 'dial_destination': dial_destination, 'provider_number': provider_number, 'gateway_name': gateway_name, 'route_ip': route_ip, 'terminator_id': _row_value(route, 'id'), 'terminator_name': _row_value(route, 'name', ''), 'terminator_destination_name': _row_value(route, 'destination_name', ''), 'terminator_prefix': _row_value(route, 'prefix', ''), 'status': status_text, 'stage': stage, 'reason': reason, 'max_seconds': max_seconds, 'sell_rate_cents': _row_value(rate, 'sell_rate_cents', 0) or 0, 'cost_rate_cents': _row_value(route, 'cost_rate_cents', 0) or 0, 'sell_billing_cycle': db.normalize_billing_cycle(sell_billing_cycle), 'cost_billing_cycle': db.normalize_billing_cycle(cost_billing_cycle), 'user_agent': data.user_agent, 'sip_call_id': data.sip_call_id, 'profile': data.profile, 'context': data.context})
+        db.record_sip_hit({'call_uuid': data.call_uuid or '', 'sip_ip': data.sip_ip, 'sip_port': data.sip_port, 'clid': data.clid, 'outbound_caller_id': outbound_caller_id, 'destination': data.destination, 'client_id': _row_value(client, 'id'), 'client_name': _row_value(client, 'name', ''), 'client_tech_prefix': client_tech_prefix, 'dial_destination': dial_destination, 'provider_number': provider_number, 'gateway_name': gateway_name, 'route_ip': route_ip, 'terminator_id': _row_value(route, 'id'), 'terminator_name': _row_value(route, 'name', ''), 'terminator_destination_name': _row_value(route, 'destination_name', ''), 'terminator_prefix': _row_value(route, 'prefix', ''), 'status': status_text, 'stage': stage, 'reason': reason, 'max_seconds': max_seconds, 'sell_rate_cents': _row_value(rate, 'sell_rate_cents', 0) or 0, 'cost_rate_cents': _row_value(route, 'cost_rate_cents', 0) or 0, 'sell_billing_cycle': db.normalize_billing_cycle(sell_billing_cycle), 'cost_billing_cycle': db.normalize_billing_cycle(cost_billing_cycle), 'user_agent': data.user_agent, 'sip_call_id': data.sip_call_id, 'profile': data.profile, 'context': data.context, 'voice_node': voice_nodes.normalize(data.voice_node)})
     except Exception as exc:
         print(f'[SIP HIT WARN] failed to record hit call={data.call_uuid}: {exc}')
 
@@ -327,8 +333,21 @@ def reserve(data: ReserveIn):
             raise HTTPException(403, 'Клиент неактивен')
         stage = 'client_rate'
         route_seed = data.call_uuid or data.sip_call_id or f"{data.sip_ip}:{data.sip_port}:{data.clid}:{data.destination}:{now_ts}"
-        rate_match = db.match_client_rate_for_destination(conn, client['id'], data.destination, route_seed)
+        incoming_node = voice_nodes.normalize(data.voice_node)
+        rate_match = db.match_client_rate_for_destination(
+            conn, client['id'], data.destination, route_seed, incoming_node
+        )
         if rate_match is None:
+            other_node_match = db.match_client_rate_for_destination(
+                conn, client['id'], data.destination, route_seed
+            )
+            if other_node_match is not None:
+                stage = 'voice_node'
+                assigned_node = voice_nodes.normalize(other_node_match[0]['voice_node'])
+                raise HTTPException(
+                    503,
+                    f'Роут назначен серверу {assigned_node}, звонок пришёл на {incoming_node}',
+                )
             raise HTTPException(403, f'Нет тарифа клиента для {data.destination}')
         rate, dial_destination, client_tech_prefix = rate_match
         denied_kind = route_number_whitelist.denied_kind(rate, data.clid, dial_destination)
@@ -385,7 +404,7 @@ def reserve(data: ReserveIn):
         conn.commit()
         stage = 'reserved'
         _safe_record_sip_hit(data, status_text='allowed', stage=stage, reason='Холд поставлен, звонок можно отправлять дальше', client=client, rate=rate, route=route, gateway_name=gateway_name, route_ip=route_ip, dial_destination=dial_destination, provider_number=provider_number, client_tech_prefix=client_tech_prefix, max_seconds=max_seconds, sell_billing_cycle=sell_billing_cycle, cost_billing_cycle=cost_billing_cycle)
-        return {'allowed': True, 'max_seconds': max_seconds, 'sell_rate_cents': rate['sell_rate_cents'], 'cost_rate_cents': route['cost_rate_cents'], 'sell_billing_cycle': sell_billing_cycle, 'cost_billing_cycle': cost_billing_cycle, 'gateway_name': gateway_name, 'route_ip': route_ip, 'tech_prefix': route['tech_prefix'], 'client_tech_prefix': client_tech_prefix, 'dial_destination': dial_destination, 'provider_number': provider_number, 'terminator_id': route['id'], 'terminator_name': route['name'], 'terminator_destination_name': route['destination_name'], 'terminator_prefix': route['prefix'], 'terminator_tech_prefix': route['tech_prefix'], 'client_id': client['id'], 'call_uuid': call_uuid}
+        return {'allowed': True, 'max_seconds': max_seconds, 'sell_rate_cents': rate['sell_rate_cents'], 'cost_rate_cents': route['cost_rate_cents'], 'sell_billing_cycle': sell_billing_cycle, 'cost_billing_cycle': cost_billing_cycle, 'gateway_name': gateway_name, 'route_ip': route_ip, 'tech_prefix': route['tech_prefix'], 'client_tech_prefix': client_tech_prefix, 'dial_destination': dial_destination, 'provider_number': provider_number, 'terminator_id': route['id'], 'terminator_name': route['name'], 'terminator_destination_name': route['destination_name'], 'terminator_prefix': route['prefix'], 'terminator_tech_prefix': route['tech_prefix'], 'voice_node': incoming_node, 'client_id': client['id'], 'call_uuid': call_uuid}
     except HTTPException as exc:
         conn.rollback()
         _safe_record_sip_hit(data, status_text='rejected', stage=stage, reason=str(exc.detail), client=client, rate=rate, route=route, gateway_name=gateway_name, route_ip=route_ip, dial_destination=dial_destination, provider_number=provider_number, client_tech_prefix=client_tech_prefix, max_seconds=max_seconds, sell_billing_cycle=sell_billing_cycle, cost_billing_cycle=cost_billing_cycle)
@@ -924,6 +943,7 @@ def dashboard_data(request: Request):
     if not _uses_current_money_scale(request):
         return {
             'money_scale': 100,
+            'voice_nodes': voice_nodes.list_nodes(),
             'clients': _legacy_dashboard_rows(clients, ('balance_cents',)),
             'termination_groups': _dashboard_rows(groups),
             'terminators': _legacy_dashboard_rows(terminators, ('cost_rate_cents',)),
@@ -937,7 +957,7 @@ def dashboard_data(request: Request):
                 'margin_month_cents': _legacy_dashboard_value(margin_month),
             },
         }
-    return {'money_scale': db.MONEY_SCALE, 'clients': _dashboard_rows(clients), 'termination_groups': _dashboard_rows(groups), 'terminators': _dashboard_rows(terminators), 'client_rates': _dashboard_rows(client_rates), 'cdr': _dashboard_rows(cdr), 'sip_hits': _dashboard_rows(sip_hits), 'e164_directions': e164_directions, 'summary': {'total_balance_cents': total_balance, 'margin_today_cents': margin_today, 'margin_month_cents': margin_month}}
+    return {'money_scale': db.MONEY_SCALE, 'voice_nodes': voice_nodes.list_nodes(), 'clients': _dashboard_rows(clients), 'termination_groups': _dashboard_rows(groups), 'terminators': _dashboard_rows(terminators), 'client_rates': _dashboard_rows(client_rates), 'cdr': _dashboard_rows(cdr), 'sip_hits': _dashboard_rows(sip_hits), 'e164_directions': e164_directions, 'summary': {'total_balance_cents': total_balance, 'margin_today_cents': margin_today, 'margin_month_cents': margin_month}}
 
 @app.get('/', response_class=HTMLResponse, dependencies=ADMIN_AUTH)
 def dashboard(request: Request):

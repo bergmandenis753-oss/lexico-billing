@@ -31,6 +31,7 @@ from pathlib import Path
 import caller_id
 import route_number_whitelist
 import route_line_limit
+import voice_nodes
 
 DEFAULT_DB_PATH = Path(__file__).with_name("billing.db")
 E164_DATA_PATH = Path(__file__).with_name("data") / "e164_prefixes.json"
@@ -179,7 +180,8 @@ def init_db() -> None:
             a_number_whitelist_enabled INTEGER NOT NULL DEFAULT 0,
             a_number_whitelist TEXT NOT NULL DEFAULT '',
             b_number_whitelist_enabled INTEGER NOT NULL DEFAULT 0,
-            b_number_whitelist TEXT NOT NULL DEFAULT ''
+            b_number_whitelist TEXT NOT NULL DEFAULT '',
+            voice_node TEXT NOT NULL DEFAULT 'primary'
         );
         CREATE INDEX IF NOT EXISTS idx_crates_client ON client_rates(client_id, prefix);
 
@@ -211,6 +213,7 @@ def init_db() -> None:
             cost_billing_cycle TEXT NOT NULL DEFAULT '1/1',
             charged_cents   INTEGER NOT NULL,
             margin_cents    INTEGER NOT NULL,
+            voice_node      TEXT    NOT NULL DEFAULT 'primary',
             started_at      TEXT    NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_cdr_started ON cdr(started_at);
@@ -246,6 +249,7 @@ def init_db() -> None:
             sip_call_id     TEXT    NOT NULL DEFAULT '',
             profile         TEXT    NOT NULL DEFAULT '',
             context         TEXT    NOT NULL DEFAULT '',
+            voice_node      TEXT    NOT NULL DEFAULT 'primary',
             created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_sip_hits_created ON sip_hits(created_at);
@@ -253,6 +257,7 @@ def init_db() -> None:
 
         CREATE TABLE IF NOT EXISTS pcap_events (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            source          TEXT    NOT NULL DEFAULT '',
             observed_at     TEXT    NOT NULL DEFAULT (datetime('now')),
             direction       TEXT    NOT NULL DEFAULT '',
             src_ip          TEXT    NOT NULL DEFAULT '',
@@ -308,6 +313,7 @@ def init_db() -> None:
     caller_id.init_schema(conn)
     route_number_whitelist.init_schema(conn)
     route_line_limit.init_schema(conn)
+    voice_nodes.init_schema(conn)
     # Мягкая миграция: добавляем terminator_id в старую таблицу client_rates.
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(client_rates)").fetchall()]
     if "terminator_id" not in cols:
@@ -357,6 +363,9 @@ def init_db() -> None:
     for col, sql in sip_migrations.items():
         if col not in sip_cols:
             conn.execute(sql)
+    pcap_cols = [r["name"] for r in conn.execute("PRAGMA table_info(pcap_events)").fetchall()]
+    if "source" not in pcap_cols:
+        conn.execute("ALTER TABLE pcap_events ADD COLUMN source TEXT NOT NULL DEFAULT ''")
     scale_row = conn.execute("SELECT value FROM app_meta WHERE key = 'money_scale'").fetchone()
     if scale_row is None:
         for table, col in (
@@ -598,7 +607,7 @@ def _pick_client_rate_candidate(candidates, seed):
     return candidates[idx]
 
 
-def match_client_rate_for_destination(conn, client_id, destination, seed=""):
+def match_client_rate_for_destination(conn, client_id, destination, seed="", voice_node=None):
     """Тариф клиента + номер без входящего клиентского техпрефикса."""
     destination = normalize_phone_number(destination)
     rows = conn.execute(
@@ -609,6 +618,10 @@ def match_client_rate_for_destination(conn, client_id, destination, seed=""):
     candidates = []
     best_key = None
     for r in rows:
+        if voice_node is not None:
+            row_node = r["voice_node"] if "voice_node" in r.keys() else voice_nodes.PRIMARY_NODE
+            if voice_nodes.normalize(row_node) != voice_nodes.normalize(voice_node):
+                continue
         client_tech_prefix = (r["client_tech_prefix"] or "") if "client_tech_prefix" in r.keys() else ""
         routed_destination = destination
         if client_tech_prefix:
@@ -699,6 +712,7 @@ SIP_HIT_COLUMNS = (
     "sip_call_id",
     "profile",
     "context",
+    "voice_node",
 )
 
 
@@ -723,6 +737,7 @@ def record_sip_hit(fields):
 
 
 PCAP_EVENT_COLUMNS = (
+    "source",
     "observed_at",
     "direction",
     "src_ip",

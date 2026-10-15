@@ -1,5 +1,7 @@
 import hashlib
 
+import voice_nodes
+
 
 def _route_pick(candidates, seed):
     if not candidates:
@@ -11,7 +13,7 @@ def _route_pick(candidates, seed):
 
 
 def install(db):
-    def match_client_rate_for_destination(conn, client_id, destination, seed=""):
+    def match_client_rate_for_destination(conn, client_id, destination, seed="", voice_node=None):
         destination_norm = db.normalize_phone_number(destination)
         rows = conn.execute(
             "SELECT * FROM client_rates WHERE client_id = ? "
@@ -22,6 +24,10 @@ def install(db):
         best_key = None
         candidates = []
         for row in rows:
+            if voice_node is not None:
+                row_node = row["voice_node"] if "voice_node" in row.keys() else voice_nodes.PRIMARY_NODE
+                if voice_nodes.normalize(row_node) != voice_nodes.normalize(voice_node):
+                    continue
             client_tech_prefix = (row["client_tech_prefix"] or "") if "client_tech_prefix" in row.keys() else ""
             dial_destination = destination_norm
             if client_tech_prefix:
