@@ -102,6 +102,7 @@ class FinalizeIn(BaseModel):
     call_uuid: str
     sip_ip: str = ''
     clid: str = ''
+    outbound_caller_id: str = ''
     destination: str
     client_tech_prefix: str = ''
     dial_destination: str = ''
@@ -274,9 +275,9 @@ def _row_value(row, key, default=None):
         return default
     return row[key] if key in row.keys() else default
 
-def _safe_record_sip_hit(data: ReserveIn, *, status_text: str, stage: str, reason: str='', client=None, rate=None, route=None, gateway_name: str='', route_ip: str='', dial_destination: str='', provider_number: str='', client_tech_prefix: str='', max_seconds: Optional[int]=None, sell_billing_cycle: str=db.DEFAULT_BILLING_CYCLE, cost_billing_cycle: str=db.DEFAULT_BILLING_CYCLE):
+def _safe_record_sip_hit(data: ReserveIn, *, status_text: str, stage: str, reason: str='', client=None, rate=None, route=None, gateway_name: str='', route_ip: str='', dial_destination: str='', provider_number: str='', client_tech_prefix: str='', outbound_caller_id: str='', max_seconds: Optional[int]=None, sell_billing_cycle: str=db.DEFAULT_BILLING_CYCLE, cost_billing_cycle: str=db.DEFAULT_BILLING_CYCLE):
     try:
-        db.record_sip_hit({'call_uuid': data.call_uuid or '', 'sip_ip': data.sip_ip, 'sip_port': data.sip_port, 'clid': data.clid, 'destination': data.destination, 'client_id': _row_value(client, 'id'), 'client_name': _row_value(client, 'name', ''), 'client_tech_prefix': client_tech_prefix, 'dial_destination': dial_destination, 'provider_number': provider_number, 'gateway_name': gateway_name, 'route_ip': route_ip, 'terminator_id': _row_value(route, 'id'), 'terminator_name': _row_value(route, 'name', ''), 'terminator_destination_name': _row_value(route, 'destination_name', ''), 'terminator_prefix': _row_value(route, 'prefix', ''), 'status': status_text, 'stage': stage, 'reason': reason, 'max_seconds': max_seconds, 'sell_rate_cents': _row_value(rate, 'sell_rate_cents', 0) or 0, 'cost_rate_cents': _row_value(route, 'cost_rate_cents', 0) or 0, 'sell_billing_cycle': db.normalize_billing_cycle(sell_billing_cycle), 'cost_billing_cycle': db.normalize_billing_cycle(cost_billing_cycle), 'user_agent': data.user_agent, 'sip_call_id': data.sip_call_id, 'profile': data.profile, 'context': data.context})
+        db.record_sip_hit({'call_uuid': data.call_uuid or '', 'sip_ip': data.sip_ip, 'sip_port': data.sip_port, 'clid': data.clid, 'outbound_caller_id': outbound_caller_id or data.clid, 'destination': data.destination, 'client_id': _row_value(client, 'id'), 'client_name': _row_value(client, 'name', ''), 'client_tech_prefix': client_tech_prefix, 'dial_destination': dial_destination, 'provider_number': provider_number, 'gateway_name': gateway_name, 'route_ip': route_ip, 'terminator_id': _row_value(route, 'id'), 'terminator_name': _row_value(route, 'name', ''), 'terminator_destination_name': _row_value(route, 'destination_name', ''), 'terminator_prefix': _row_value(route, 'prefix', ''), 'status': status_text, 'stage': stage, 'reason': reason, 'max_seconds': max_seconds, 'sell_rate_cents': _row_value(rate, 'sell_rate_cents', 0) or 0, 'cost_rate_cents': _row_value(route, 'cost_rate_cents', 0) or 0, 'sell_billing_cycle': db.normalize_billing_cycle(sell_billing_cycle), 'cost_billing_cycle': db.normalize_billing_cycle(cost_billing_cycle), 'user_agent': data.user_agent, 'sip_call_id': data.sip_call_id, 'profile': data.profile, 'context': data.context})
     except Exception as exc:
         print(f'[SIP HIT WARN] failed to record hit call={data.call_uuid}: {exc}')
 

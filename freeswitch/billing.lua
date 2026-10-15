@@ -265,12 +265,14 @@ if billsec <= 0 then
   if result == "" then result = "Rejected" end
 end
 
+local sent_caller_id = outbound_caller_id ~= "" and outbound_caller_id or clid
 local fjson = string.format(
-  '{"client_id":%d,"call_uuid":"%s","sip_ip":"%s","clid":"%s","destination":"%s","client_tech_prefix":"%s","dial_destination":"%s","provider_number":"%s","billsec":%d,"sell_rate_cents":%d,"cost_rate_cents":%d,"sell_billing_cycle":"%s","cost_billing_cycle":"%s","gateway_name":"%s","route_ip":"%s","terminator_id":%d,"terminator_name":"%s","terminator_destination_name":"%s","terminator_prefix":"%s","terminator_tech_prefix":"%s","hangup_cause":"%s","bridge_hangup_cause":"%s","result":"%s"}',
+  '{"client_id":%d,"call_uuid":"%s","sip_ip":"%s","clid":"%s","outbound_caller_id":"%s","destination":"%s","client_tech_prefix":"%s","dial_destination":"%s","provider_number":"%s","billsec":%d,"sell_rate_cents":%d,"cost_rate_cents":%d,"sell_billing_cycle":"%s","cost_billing_cycle":"%s","gateway_name":"%s","route_ip":"%s","terminator_id":%d,"terminator_name":"%s","terminator_destination_name":"%s","terminator_prefix":"%s","terminator_tech_prefix":"%s","hangup_cause":"%s","bridge_hangup_cause":"%s","result":"%s"}',
   client_id,
   json_escape(uuid),
   json_escape(client_ip),
   json_escape(clid),
+  json_escape(sent_caller_id),
   json_escape(dest),
   json_escape(client_tech_prefix),
   json_escape(dial_destination),

@@ -265,18 +265,33 @@ def _format_client(client, data):
     )
 
 
-def _format_hit(hit):
+def _outbound_a_number(row, pcap_events=None):
+    stored = str(row.get("outbound_caller_id") or "").strip()
+    if stored:
+        return stored
+    for event in pcap_events or []:
+        if (
+            str(event.get("direction") or "").lower() == "out"
+            and str(event.get("method") or "").upper() == "INVITE"
+            and str(event.get("from_user") or "").strip()
+        ):
+            return str(event["from_user"]).strip()
+    return str(row.get("clid") or "").strip() or "-"
+
+
+def _format_hit(hit, pcap_events=None):
     ip_port = f"{hit.get('sip_ip') or '-'}:{hit.get('sip_port') or '-'}"
     route = hit.get("gateway_name") or hit.get("route_ip") or "-"
     reason = " · ".join(str(x) for x in (hit.get("stage"), hit.get("reason")) if str(x or "").strip())
     return "\n".join(
         [
-            f"{hit.get('created_at') or '-'}",
+            f"Время: {hit.get('created_at') or '-'}",
             f"IP: {ip_port}",
-            f"CLID: {hit.get('clid') or '-'}",
-            f"Номер: {hit.get('destination') or '-'}",
+            f"B-номер получен: {hit.get('destination') or '-'}",
+            f"B-номер поставщику: {hit.get('provider_number') or hit.get('dial_destination') or '-'}",
+            f"A-номер получен: {hit.get('clid') or '-'}",
+            f"A-номер поставщику: {_outbound_a_number(hit, pcap_events)}",
             f"Клиент: {hit.get('client_name') or '-'}",
-            f"Дальше: {hit.get('dial_destination') or hit.get('provider_number') or '-'}",
             f"Статус: {hit.get('status') or '-'}",
             f"Причина: {reason or '-'}",
             f"Терминатор: {hit.get('terminator_name') or '-'}",
@@ -291,11 +306,13 @@ def _format_cdr(row, data):
     cur = row.get("client_currency") or "USD"
     return "\n".join(
         [
-            f"{row.get('started_at') or '-'}",
+            f"Время: {row.get('started_at') or '-'}",
             f"Клиент: {row.get('client_name') or row.get('client_id')}",
             f"Вх. IP: {row.get('sip_ip') or row.get('client_sip_ip') or '-'}",
-            f"CLID: {row.get('clid') or '-'}",
-            f"Номер: {row.get('destination') or '-'}",
+            f"B-номер получен: {row.get('destination') or '-'}",
+            f"B-номер поставщику: {row.get('provider_number') or row.get('dial_destination') or '-'}",
+            f"A-номер получен: {row.get('clid') or '-'}",
+            f"A-номер поставщику: {_outbound_a_number(row)}",
             f"Терминатор: {row.get('terminator_name') or row.get('gateway_name') or '-'}",
             f"Billsec: {row.get('billsec')}",
             f"Списано: {_money(row.get('charged_cents'), scale, cur)}",
@@ -459,7 +476,8 @@ def _local_analysis(data, title="Разбор последнего SIP хита:
     if not hits:
         return "Последних SIP хитов нет."
     hit = hits[0]
-    lines = [title, _format_hit(hit), ""]
+    pcap = _pcap_for_hit(data, hit)
+    lines = [title, _format_hit(hit, pcap), ""]
     stage = str(hit.get("stage") or "")
     status_value = str(hit.get("status") or "")
     reason = str(hit.get("reason") or "")
@@ -492,7 +510,6 @@ def _local_analysis(data, title="Разбор последнего SIP хита:
     else:
         lines.append("CDR записей пока нет.")
 
-    pcap = _pcap_for_hit(data, hit)
     if pcap:
         lines.append("")
         lines.append("SIP пакеты рядом с хитом:")
