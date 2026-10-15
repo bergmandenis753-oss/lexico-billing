@@ -20,11 +20,11 @@ class CallCheckTests(unittest.TestCase):
         ).lastrowid
         self.conn.execute(
             """INSERT INTO sip_hits
-                   (call_uuid, sip_ip, destination, client_id, client_name,
+                   (call_uuid, sip_ip, destination, outbound_caller_id, client_id, client_name,
                     client_tech_prefix, dial_destination, provider_number,
                     gateway_name, terminator_name, terminator_destination_name,
                     status, stage, reason, sip_call_id)
-               VALUES ('wanted-uuid', '195.26.237.168', '103998955601166', ?,
+               VALUES ('wanted-uuid', '195.26.237.168', '103998955601166', '49111222333', ?,
                        'Metavoip', '103', '998955601166', '6489998955601166',
                        'idt', 'IDT UZ', 'Uzbekistan', 'allowed', 'reserved',
                        'Холд поставлен', 'wanted-call-id')""",
@@ -83,8 +83,23 @@ class CallCheckTests(unittest.TestCase):
         self.assertIn("998955601166", text)
         self.assertIn("IDT UZ", text)
         self.assertIn("Uzbekistan", text)
+        self.assertIn("B-номер получен: 103998955601166", text)
+        self.assertIn("A-номер поставщику: 49111222333", text)
         self.assertNotIn("996502874006", text)
         self.assertNotIn("Leixo", text)
+
+    def test_telegram_check_uses_outbound_invite_for_legacy_hit(self):
+        report = ops_entry.call_check_context(self.conn, "998955601166")
+        report["sip_hits"][0]["outbound_caller_id"] = ""
+        report["pcap_events"] = [{
+            "call_id": "wanted-call-id", "direction": "out", "method": "INVITE",
+            "from_user": "49333444555",
+        }]
+        data = {"money_scale": db.MONEY_SCALE, "sip_hits": [], "cdr": [], "pcap_events": []}
+        with mock.patch.object(bot, "_load_call_check", return_value=report):
+            text, _ = bot._answer_for_text(data, "/check 998955601166")
+
+        self.assertIn("A-номер поставщику: 49333444555", text)
 
     def test_telegram_check_reports_missing_number_without_unrelated_hit(self):
         report = {"sip_hits": [], "cdr": [], "pcap_events": []}

@@ -32,6 +32,7 @@ def install_call_routes(app, main, db):
         client = rate = route = None
         stage = "received"
         client_tech_prefix = dial_destination = gateway_name = route_ip = provider_number = ""
+        outbound_caller_id = ""
         max_seconds = None
         try:
             now_ts = db.now()
@@ -130,6 +131,7 @@ def install_call_routes(app, main, db):
                 dial_destination=dial_destination,
                 provider_number=provider_number,
                 client_tech_prefix=client_tech_prefix,
+                outbound_caller_id=outbound_caller_id,
                 max_seconds=max_seconds,
             )
             return {
@@ -226,10 +228,10 @@ def install_call_routes(app, main, db):
             conn.execute("UPDATE clients SET balance_cents = ? WHERE id = ?", (new_balance, data.client_id))
             cdr_cursor = conn.execute(
                 "INSERT INTO cdr (client_id, call_uuid, sip_ip, clid, destination, client_tech_prefix, "
-                "dial_destination, provider_number, gateway_name, route_ip, terminator_id, terminator_name, "
+                "dial_destination, provider_number, outbound_caller_id, gateway_name, route_ip, terminator_id, terminator_name, "
                 "terminator_destination_name, terminator_prefix, terminator_tech_prefix, hangup_cause, "
                 "bridge_hangup_cause, result, billsec, sell_rate_cents, cost_rate_cents, sell_billing_cycle, "
-                "cost_billing_cycle, charged_cents, margin_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "cost_billing_cycle, charged_cents, margin_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     data.client_id,
                     data.call_uuid,
@@ -239,6 +241,7 @@ def install_call_routes(app, main, db):
                     data.client_tech_prefix,
                     data.dial_destination,
                     data.provider_number,
+                    data.outbound_caller_id or data.clid,
                     data.gateway_name,
                     data.route_ip,
                     data.terminator_id,
@@ -270,7 +273,7 @@ def install_call_routes(app, main, db):
                 reason_parts.append(f"margin={margin}")
             conn.execute(
                 "UPDATE sip_hits SET status = ?, stage = ?, reason = ?, client_id = ?, client_name = ?, "
-                "client_tech_prefix = ?, dial_destination = ?, provider_number = ?, gateway_name = ?, "
+                "client_tech_prefix = ?, dial_destination = ?, provider_number = ?, outbound_caller_id = ?, gateway_name = ?, "
                 "route_ip = ?, terminator_id = ?, terminator_name = ?, terminator_destination_name = ?, "
                 "terminator_prefix = ?, sell_rate_cents = ?, cost_rate_cents = ?, sell_billing_cycle = ?, "
                 "cost_billing_cycle = ? WHERE call_uuid = ?",
@@ -283,6 +286,7 @@ def install_call_routes(app, main, db):
                     data.client_tech_prefix,
                     data.dial_destination,
                     data.provider_number,
+                    data.outbound_caller_id or data.clid,
                     data.gateway_name or "",
                     data.route_ip,
                     data.terminator_id,

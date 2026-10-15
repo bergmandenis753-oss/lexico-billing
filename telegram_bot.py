@@ -123,7 +123,21 @@ def _latest_context(db, limit=50):
         conn.close()
 
 
-def _format_hit(hit):
+def _outbound_a_number(hit, events=None):
+    stored = str(hit.get("outbound_caller_id") or "").strip()
+    if stored:
+        return stored
+    for event in events or []:
+        if (
+            str(event.get("direction") or "").lower() == "out"
+            and str(event.get("method") or "").upper() == "INVITE"
+            and str(event.get("from_user") or "").strip()
+        ):
+            return str(event["from_user"]).strip()
+    return str(hit.get("clid") or "").strip() or "-"
+
+
+def _format_hit(hit, events=None):
     if not hit:
         return "SIP хитов пока нет."
     ip_port = f"{hit.get('sip_ip') or '-'}:{hit.get('sip_port') or '-'}"
@@ -135,10 +149,11 @@ def _format_hit(hit):
         [
             f"Время: {hit.get('created_at') or '-'}",
             f"IP:порт: {ip_port}",
-            f"CLID: {hit.get('clid') or '-'}",
-            f"Входящий номер: {hit.get('destination') or '-'}",
+            f"B-номер получен: {hit.get('destination') or '-'}",
+            f"B-номер поставщику: {hit.get('provider_number') or hit.get('dial_destination') or '-'}",
+            f"A-номер получен: {hit.get('clid') or '-'}",
+            f"A-номер поставщику: {_outbound_a_number(hit, events)}",
             f"Клиент: {hit.get('client_name') or '-'}",
-            f"Номер дальше: {hit.get('dial_destination') or hit.get('provider_number') or '-'}",
             f"Статус: {hit.get('status') or '-'}",
             f"Причина: {reason or '-'}",
             f"Терминатор: {hit.get('terminator_name') or '-'}",
@@ -205,7 +220,7 @@ def _local_analysis(context, question=""):
 
     hit = context["sip_hits"][0]
     events = _pcap_for_hit(context, hit)
-    lines = ["Разбор последнего хита:", _format_hit(hit), ""]
+    lines = ["Разбор последнего хита:", _format_hit(hit, events), ""]
 
     stage = str(hit.get("stage") or "")
     status_value = str(hit.get("status") or "")

@@ -189,6 +189,7 @@ def init_db() -> None:
             call_uuid       TEXT,
             sip_ip          TEXT    NOT NULL DEFAULT '',
             clid            TEXT    NOT NULL DEFAULT '',
+            outbound_caller_id TEXT NOT NULL DEFAULT '',
             destination     TEXT,
             client_tech_prefix TEXT NOT NULL DEFAULT '',
             dial_destination TEXT   NOT NULL DEFAULT '',
@@ -220,6 +221,7 @@ def init_db() -> None:
             sip_ip          TEXT    NOT NULL DEFAULT '',
             sip_port        TEXT    NOT NULL DEFAULT '',
             clid            TEXT    NOT NULL DEFAULT '',
+            outbound_caller_id TEXT NOT NULL DEFAULT '',
             destination     TEXT    NOT NULL DEFAULT '',
             client_id       INTEGER,
             client_name     TEXT    NOT NULL DEFAULT '',
@@ -327,6 +329,7 @@ def init_db() -> None:
     cdr_migrations = {
         "sip_ip": "ALTER TABLE cdr ADD COLUMN sip_ip TEXT NOT NULL DEFAULT ''",
         "clid": "ALTER TABLE cdr ADD COLUMN clid TEXT NOT NULL DEFAULT ''",
+        "outbound_caller_id": "ALTER TABLE cdr ADD COLUMN outbound_caller_id TEXT NOT NULL DEFAULT ''",
         "client_tech_prefix": "ALTER TABLE cdr ADD COLUMN client_tech_prefix TEXT NOT NULL DEFAULT ''",
         "dial_destination": "ALTER TABLE cdr ADD COLUMN dial_destination TEXT NOT NULL DEFAULT ''",
         "provider_number": "ALTER TABLE cdr ADD COLUMN provider_number TEXT NOT NULL DEFAULT ''",
@@ -347,6 +350,7 @@ def init_db() -> None:
             conn.execute(sql)
     sip_cols = [r["name"] for r in conn.execute("PRAGMA table_info(sip_hits)").fetchall()]
     sip_migrations = {
+        "outbound_caller_id": "ALTER TABLE sip_hits ADD COLUMN outbound_caller_id TEXT NOT NULL DEFAULT ''",
         "sell_billing_cycle": "ALTER TABLE sip_hits ADD COLUMN sell_billing_cycle TEXT NOT NULL DEFAULT '1/1'",
         "cost_billing_cycle": "ALTER TABLE sip_hits ADD COLUMN cost_billing_cycle TEXT NOT NULL DEFAULT '1/1'",
     }
@@ -670,6 +674,7 @@ SIP_HIT_COLUMNS = (
     "sip_ip",
     "sip_port",
     "clid",
+    "outbound_caller_id",
     "destination",
     "client_id",
     "client_name",

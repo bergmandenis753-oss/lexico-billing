@@ -12,6 +12,7 @@ import caller_id
 import db
 import main
 import credit_limit_calls
+import terminator_balance_patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -31,6 +32,7 @@ class CallerIdTests(unittest.TestCase):
         database.start()
         self.addCleanup(database.stop)
         db.init_db()
+        terminator_balance_patch.ensure_schema(db)
         with db.get_conn() as conn:
             conn.execute("INSERT INTO clients (id, name, sip_ip, balance_cents) VALUES (1, 'Test', '192.0.2.1', 100000)")
             conn.execute("INSERT INTO terminators (id, name, destination_name, prefix, gateway_name, cost_rate_cents) VALUES (1, 'Test provider', 'Poland', '48', 'test-gateway', 1000)")
@@ -118,8 +120,41 @@ class CallerIdTests(unittest.TestCase):
         with db.get_conn() as conn:
             self.assertEqual(conn.execute('SELECT balance_cents FROM clients').fetchone()[0], 100000)
             self.assertEqual(conn.execute("SELECT clid FROM sip_hits WHERE call_uuid = 'override'").fetchone()[0], '12025550109')
+            self.assertEqual(conn.execute("SELECT outbound_caller_id FROM sip_hits WHERE call_uuid = 'override'").fetchone()[0], '12025550101')
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM cdr').fetchone()[0], 0)
         self.assertEqual(self.choose('next'), '12025550102')
+
+    def test_finalize_persists_caller_id_sent_to_vendor(self):
+        self.save('12025550101')
+        reserved = self.http.post('/api/reserve', headers={'X-Api-Key': 'test-api-key'}, json={
+            'sip_ip': '192.0.2.1', 'destination': '48123456789',
+            'call_uuid': 'finalized-caller-id', 'clid': '12025550109',
+        })
+        self.assertEqual(reserved.status_code, 200, reserved.text)
+        payload = reserved.json()
+        finalized = self.http.post('/api/finalize', headers={'X-Api-Key': 'test-api-key'}, json={
+            'client_id': payload['client_id'], 'call_uuid': payload['call_uuid'],
+            'sip_ip': '192.0.2.1', 'clid': '12025550109',
+            'outbound_caller_id': payload['outbound_caller_id'],
+            'destination': '48123456789', 'dial_destination': payload['dial_destination'],
+            'provider_number': payload['provider_number'], 'billsec': 10,
+            'sell_rate_cents': payload['sell_rate_cents'], 'cost_rate_cents': payload['cost_rate_cents'],
+            'gateway_name': payload['gateway_name'], 'route_ip': payload['route_ip'],
+            'terminator_id': payload['terminator_id'], 'terminator_name': payload['terminator_name'],
+            'terminator_destination_name': payload['terminator_destination_name'],
+            'terminator_prefix': payload['terminator_prefix'],
+            'terminator_tech_prefix': payload['terminator_tech_prefix'],
+        })
+        self.assertEqual(finalized.status_code, 200, finalized.text)
+        with db.get_conn() as conn:
+            self.assertEqual(
+                conn.execute("SELECT outbound_caller_id FROM cdr WHERE call_uuid = 'finalized-caller-id'").fetchone()[0],
+                '12025550101',
+            )
+            self.assertEqual(
+                conn.execute("SELECT outbound_caller_id FROM sip_hits WHERE call_uuid = 'finalized-caller-id'").fetchone()[0],
+                '12025550101',
+            )
 
     def test_migration_preserves_existing_rows_and_is_repeatable(self):
         conn = sqlite3.connect(':memory:')
