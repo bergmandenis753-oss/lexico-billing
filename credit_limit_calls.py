@@ -131,7 +131,7 @@ def install_call_routes(app, main, db):
                 dial_destination=dial_destination,
                 provider_number=provider_number,
                 client_tech_prefix=client_tech_prefix,
-                outbound_caller_id=outbound_caller_id,
+                outbound_caller_id=outbound_caller_id or data.clid,
                 max_seconds=max_seconds,
             )
             return {

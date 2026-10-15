@@ -276,7 +276,7 @@ def _outbound_a_number(row, pcap_events=None):
             and str(event.get("from_user") or "").strip()
         ):
             return str(event["from_user"]).strip()
-    return str(row.get("clid") or "").strip() or "-"
+    return "нет данных (старый звонок)"
 
 
 def _format_hit(hit, pcap_events=None):
