@@ -1,5 +1,6 @@
 local API = "https://web-production-d5e1c.up.railway.app"
 local KEY_FILE = "/etc/freeswitch/billing_api_key"
+local NODE_FILE = "/etc/freeswitch/voice_node"
 local DIRECT_PROFILE = "internal"
 
 local client_ip = session:getVariable("network_addr") or session:getVariable("sip_received_ip") or ""
@@ -35,6 +36,15 @@ local function looks_like_direct_sip_host(s)
   return false
 end
 
+local function read_value_file(path, default_value)
+  local f = io.open(path, "r")
+  if not f then return default_value or "" end
+  local value = trim(f:read("*a"))
+  f:close()
+  if value == "" then return default_value or "" end
+  return value
+end
+
 local function read_api_key()
   local f = io.open(KEY_FILE, "r")
   if not f then return "" end
@@ -44,6 +54,7 @@ local function read_api_key()
 end
 
 local API_KEY = read_api_key()
+local VOICE_NODE = read_value_file(NODE_FILE, "primary")
 
 local function url_encode(s)
   return (tostring(s or ""):gsub("([^%w%-_%.~])", function(char)
@@ -131,7 +142,7 @@ local function reject_call(message, sip_code)
 end
 
 local rjson = string.format(
-  '{"sip_ip":"%s","sip_port":"%s","destination":"%s","call_uuid":"%s","clid":"%s","user_agent":"%s","sip_call_id":"%s","profile":"%s","context":"%s","sip_login":"%s"}',
+  '{"sip_ip":"%s","sip_port":"%s","destination":"%s","call_uuid":"%s","clid":"%s","user_agent":"%s","sip_call_id":"%s","profile":"%s","context":"%s","sip_login":"%s","voice_node":"%s"}',
   json_escape(client_ip),
   json_escape(client_port),
   json_escape(dest),
@@ -141,7 +152,8 @@ local rjson = string.format(
   json_escape(sip_call_id),
   json_escape(profile),
   json_escape(context),
-  json_escape(sip_login)
+  json_escape(sip_login),
+  json_escape(VOICE_NODE)
 )
 
 local guard_code, guard_body = http_post("/api/sip-guard", rjson)
@@ -267,7 +279,7 @@ end
 
 local sent_caller_id = outbound_caller_id ~= "" and outbound_caller_id or clid
 local fjson = string.format(
-  '{"client_id":%d,"call_uuid":"%s","sip_ip":"%s","clid":"%s","outbound_caller_id":"%s","destination":"%s","client_tech_prefix":"%s","dial_destination":"%s","provider_number":"%s","billsec":%d,"sell_rate_cents":%d,"cost_rate_cents":%d,"sell_billing_cycle":"%s","cost_billing_cycle":"%s","gateway_name":"%s","route_ip":"%s","terminator_id":%d,"terminator_name":"%s","terminator_destination_name":"%s","terminator_prefix":"%s","terminator_tech_prefix":"%s","hangup_cause":"%s","bridge_hangup_cause":"%s","result":"%s"}',
+  '{"client_id":%d,"call_uuid":"%s","sip_ip":"%s","clid":"%s","outbound_caller_id":"%s","destination":"%s","client_tech_prefix":"%s","dial_destination":"%s","provider_number":"%s","billsec":%d,"sell_rate_cents":%d,"cost_rate_cents":%d,"sell_billing_cycle":"%s","cost_billing_cycle":"%s","gateway_name":"%s","route_ip":"%s","terminator_id":%d,"terminator_name":"%s","terminator_destination_name":"%s","terminator_prefix":"%s","terminator_tech_prefix":"%s","hangup_cause":"%s","bridge_hangup_cause":"%s","result":"%s","voice_node":"%s"}',
   client_id,
   json_escape(uuid),
   json_escape(client_ip),
@@ -291,7 +303,8 @@ local fjson = string.format(
   json_escape(terminator_tech_prefix),
   json_escape(hangup_cause),
   json_escape(bridge_hangup_cause),
-  json_escape(result)
+  json_escape(result),
+  json_escape(VOICE_NODE)
 )
 local fcode, fbody = http_post("/api/finalize", fjson)
 if fcode ~= 200 then

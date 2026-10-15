@@ -32,6 +32,7 @@ FILTER = os.getenv("LEXICO_PCAP_FILTER", "udp port 5060 or udp port 5080")
 BATCH_SIZE = int(os.getenv("LEXICO_PCAP_BATCH_SIZE", "12"))
 FLUSH_INTERVAL = float(os.getenv("LEXICO_PCAP_FLUSH_INTERVAL", "1.5"))
 MAX_SUMMARY = int(os.getenv("LEXICO_PCAP_MAX_SUMMARY", "5000"))
+SOURCE = os.getenv("LEXICO_SOURCE", os.uname().nodename).strip()
 
 PACKET_RE = re.compile(
     r"^(?P<ts>\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+"
@@ -119,6 +120,7 @@ def parse_packet(meta, lines):
         request_uri = match.group("uri") or ""
 
     return {
+        "source": SOURCE,
         "observed_at": meta["ts"],
         "direction": packet_direction(src_ip, dst_ip),
         "src_ip": src_ip,
