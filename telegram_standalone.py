@@ -14,6 +14,7 @@ from fastapi import FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel
 
 import rate_notification
+import voice_nodes
 
 
 app = FastAPI(title="Lexico Telegram diagnostics bot", docs_url=None, redoc_url=None, openapi_url=None)
@@ -279,6 +280,14 @@ def _outbound_a_number(row, pcap_events=None):
     return "нет данных (старый звонок)"
 
 
+def _voice_server(value):
+    node_id = voice_nodes.normalize(value)
+    node = next((item for item in voice_nodes.list_nodes() if item["id"] == node_id), None)
+    if node is None:
+        return node_id or "-"
+    return f"{node['name']} · {node['public_ip']}"
+
+
 def _format_hit(hit, pcap_events=None):
     ip_port = f"{hit.get('sip_ip') or '-'}:{hit.get('sip_port') or '-'}"
     route = hit.get("gateway_name") or hit.get("route_ip") or "-"
@@ -287,6 +296,7 @@ def _format_hit(hit, pcap_events=None):
         [
             f"Время: {hit.get('created_at') or '-'}",
             f"IP: {ip_port}",
+            f"Наш сервер: {_voice_server(hit.get('voice_node'))}",
             f"B-номер получен: {hit.get('destination') or '-'}",
             f"B-номер поставщику: {hit.get('provider_number') or hit.get('dial_destination') or '-'}",
             f"A-номер получен: {hit.get('clid') or '-'}",
@@ -309,6 +319,7 @@ def _format_cdr(row, data):
             f"Время: {row.get('started_at') or '-'}",
             f"Клиент: {row.get('client_name') or row.get('client_id')}",
             f"Вх. IP: {row.get('sip_ip') or row.get('client_sip_ip') or '-'}",
+            f"Наш сервер: {_voice_server(row.get('voice_node'))}",
             f"B-номер получен: {row.get('destination') or '-'}",
             f"B-номер поставщику: {row.get('provider_number') or row.get('dial_destination') or '-'}",
             f"A-номер получен: {row.get('clid') or '-'}",
