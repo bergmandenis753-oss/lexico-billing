@@ -89,8 +89,15 @@ class VoiceNodeRoutingTests(unittest.TestCase):
             ).fetchall()
         self.assertEqual(
             [(row["voice_node"], row["stage"]) for row in rows],
-            [("primary", "voice_node"), ("secondary", "reserved")],
+            [("secondary", "reserved")],
         )
+
+    def test_wrong_node_retry_does_not_write_a_sip_hit(self):
+        blocked = self.reserve("primary")
+        self.assertEqual(blocked.status_code, 503, blocked.text)
+        with db.get_conn() as conn:
+            count = conn.execute("SELECT COUNT(*) AS c FROM sip_hits").fetchone()["c"]
+        self.assertEqual(count, 0)
 
     def test_migration_defaults_existing_routes_to_primary(self):
         with db.get_conn() as conn:
@@ -98,6 +105,20 @@ class VoiceNodeRoutingTests(unittest.TestCase):
             voice_nodes.init_schema(conn)
             row = conn.execute("SELECT voice_node FROM client_rates WHERE id = 1").fetchone()
         self.assertEqual(row["voice_node"], "primary")
+
+    def test_reserve_hot_path_does_not_reinitialize_schema(self):
+        with patch.object(
+            credit_limit_calls,
+            "ensure_schema",
+            side_effect=AssertionError("schema initialization must stay out of the call hot path"),
+        ):
+            response = self.reserve("secondary")
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def test_freeswitch_uses_one_authoritative_billing_request(self):
+        script = (Path(__file__).parents[1] / "freeswitch" / "billing.lua").read_text()
+        self.assertNotIn('http_post("/api/sip-guard"', script)
+        self.assertEqual(script.count('http_post("/api/reserve"'), 1)
 
 
 if __name__ == "__main__":
