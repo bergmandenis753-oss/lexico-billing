@@ -9,12 +9,14 @@ CREDIT_DASHBOARD_INJECTION = r"""
 <style>
   .money-neg { color: var(--bad); }
   .client-actions { display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; }
+  .balance-debit { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 55%, transparent); }
 </style>
 <script>
 (function () {
   if (window.__creditLimitPatch) return;
   window.__creditLimitPatch = true;
   let creditClientId = null;
+  let debitClientId = null;
   const safeMoney = (units, cur) => {
     try { return money(units, cur); }
     catch (_) { return ((Number(units) || 0) / 10000).toFixed(4) + (cur ? ' ' + cur : ''); }
@@ -51,6 +53,32 @@ CREDIT_DASHBOARD_INJECTION = r"""
       balanceInput.insertAdjacentHTML('afterend',
         '<label>Кредитный лимит (в валюте)</label><input id="cl-credit" type="number" step="0.0001" min="0" value="0">');
     }
+  }
+
+  function ensureDebitDialog() {
+    if (document.getElementById('balance-debit-dlg')) return;
+    document.body.insertAdjacentHTML('beforeend', `
+      <dialog id="balance-debit-dlg">
+        <h3>Списать с баланса</h3>
+        <form id="balance-debit-form">
+          <label>Клиент</label><input id="bd-client" disabled>
+          <label>Текущий баланс</label><input id="bd-balance" disabled>
+          <label>Сумма списания (в валюте)</label><input id="bd-amount" type="number" step="0.0001" min="0.0001" required autofocus>
+          <div class="row"><button type="button" class="ghost" onclick="document.getElementById('balance-debit-dlg').close()">Отмена</button><button type="submit" class="balance-debit">Списать</button></div>
+        </form>
+      </dialog>`);
+    document.getElementById('balance-debit-form').addEventListener('submit', async e => {
+      e.preventDefault();
+      try {
+        const amount = inputMoneyUnits('bd-amount', 'Сумма списания');
+        if (amount <= 0) throw new Error('Укажите сумму больше нуля');
+        const client = getClients().find(c => Number(c.id) === Number(debitClientId)) || {};
+        if (!confirm(`Списать ${safeMoney(amount, client.currency || '')} у клиента ${client.name || ('#' + debitClientId)}?`)) return;
+        await api(`/api/clients/${debitClientId}/balance-adjust`, 'POST', {amount_cents: -amount});
+        document.getElementById('balance-debit-dlg').close();
+        await load(true);
+      } catch (err) { alert('Ошибка: ' + err.message); }
+    });
   }
 
   function hookClientCreate() {
@@ -109,7 +137,7 @@ CREDIT_DASHBOARD_INJECTION = r"""
           <td class="right">${safeMoney(limit, c.currency)}</td>
           <td class="right ${moneyClass(available)}">${safeMoney(available, c.currency)}</td>
           <td>${c.active ? '<span class="badge on">активен</span>' : '<span class="badge off">выкл</span>'}</td>
-          <td class="right"><span class="client-actions"><button class="small ghost" onclick="openCredit(${c.id})">Кредит</button><button class="small" onclick="openTopup(${c.id})">+ Пополнить</button></span></td>
+          <td class="right"><span class="client-actions"><button class="small ghost" onclick="openCredit(${c.id})">Кредит</button><button class="small" onclick="openTopup(${c.id})">+ Пополнить</button><button class="small ghost balance-debit" onclick="openDebit(${c.id})">− Списать</button></span></td>
         </tr>`;
     }).join('') || `<tr><td class="empty" colspan="7">Нет данных</td></tr>`;
   }
@@ -122,6 +150,16 @@ CREDIT_DASHBOARD_INJECTION = r"""
     document.getElementById('cr-balance').value = safeMoney(client.balance_cents, client.currency || '');
     document.getElementById('cr-limit').value = moneyInputValue(client.credit_limit_cents || 0);
     document.getElementById('credit-dlg').showModal();
+  };
+
+  window.openDebit = function (id) {
+    ensureDebitDialog();
+    debitClientId = id;
+    const client = getClients().find(c => Number(c.id) === Number(id)) || {};
+    document.getElementById('bd-client').value = client.name || ('#' + id);
+    document.getElementById('bd-balance').value = safeMoney(client.balance_cents, client.currency || '');
+    document.getElementById('bd-amount').value = '';
+    document.getElementById('balance-debit-dlg').showModal();
   };
 
   function installLoadHook() {
@@ -140,6 +178,7 @@ CREDIT_DASHBOARD_INJECTION = r"""
   }
   function boot() {
     ensureCreditDialog();
+    ensureDebitDialog();
     hookClientCreate();
     installLoadHook();
     renderCreditClients();
