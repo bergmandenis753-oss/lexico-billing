@@ -120,6 +120,48 @@ class VoiceNodeRoutingTests(unittest.TestCase):
         self.assertNotIn('http_post("/api/sip-guard"', script)
         self.assertEqual(script.count('http_post("/api/reserve"'), 1)
 
+    def test_admin_can_add_and_subtract_client_balance(self):
+        auth = ("test", "test-password")
+        headers = {"X-Money-Scale": str(db.MONEY_SCALE)}
+        debit = self.http.post(
+            "/api/clients/1/balance-adjust",
+            auth=auth,
+            headers=headers,
+            json={"amount_cents": -2500},
+        )
+        self.assertEqual(debit.status_code, 200, debit.text)
+        self.assertEqual(debit.json()["balance_cents"], 9997500)
+
+        credit = self.http.post(
+            "/api/clients/1/balance-adjust",
+            auth=auth,
+            headers=headers,
+            json={"amount_cents": 500},
+        )
+        self.assertEqual(credit.status_code, 200, credit.text)
+        self.assertEqual(credit.json()["balance_cents"], 9998000)
+
+    def test_admin_debit_respects_credit_limit(self):
+        auth = ("test", "test-password")
+        headers = {"X-Money-Scale": str(db.MONEY_SCALE)}
+        with db.get_conn() as conn:
+            conn.execute(
+                "UPDATE clients SET balance_cents = 1000, credit_limit_cents = 500 WHERE id = 1"
+            )
+            conn.commit()
+        response = self.http.post(
+            "/api/clients/1/balance-adjust",
+            auth=auth,
+            headers=headers,
+            json={"amount_cents": -1600},
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        with db.get_conn() as conn:
+            balance = conn.execute(
+                "SELECT balance_cents FROM clients WHERE id = 1"
+            ).fetchone()["balance_cents"]
+        self.assertEqual(balance, 1000)
+
 
 if __name__ == "__main__":
     unittest.main()
