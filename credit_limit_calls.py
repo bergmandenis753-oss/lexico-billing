@@ -28,7 +28,6 @@ class OpsBalanceAdjustIn(BaseModel):
 def install_call_routes(app, main, db):
     @app.post("/api/reserve", dependencies=main.API_AUTH)
     def reserve(data: main.ReserveIn):
-        ensure_schema(db)
         conn = db.get_conn()
         client = rate = route = None
         stage = "received"
@@ -192,7 +191,6 @@ def install_call_routes(app, main, db):
 
     @app.post("/api/finalize", dependencies=main.API_AUTH)
     def finalize(data: main.FinalizeIn):
-        ensure_schema(db)
         if not data.call_uuid.strip():
             raise HTTPException(422, "call_uuid must not be empty")
         conn = db.get_conn()
