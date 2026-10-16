@@ -156,19 +156,9 @@ local rjson = string.format(
   json_escape(VOICE_NODE)
 )
 
-local guard_code, guard_body = http_post("/api/sip-guard", rjson)
-if guard_code == 404 or guard_code == 405 then
-  freeswitch.consoleLog("warning", "[billing] sip guard unavailable (" .. guard_code .. "), falling back to reserve\n")
-elseif guard_code ~= 200 then
-  reject_call("[billing] sip guard blocked (" .. guard_code .. "): " .. guard_body)
-  return
-end
-
-if not session:ready() then
-  freeswitch.consoleLog("notice", "[billing] caller disconnected after sip guard call_uuid=" .. uuid .. "\n")
-  return
-end
-
+-- /api/reserve is the authoritative gate and repeats the client/IP checks.
+-- Keeping a separate sip-guard request here doubled the API load and could
+-- consume the whole call-setup timeout before the reservation was returned.
 local code, body = http_post("/api/reserve", rjson)
 if code ~= 200 then
   reject_call("[billing] reserve rejected (" .. code .. "): " .. body, code)
