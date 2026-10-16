@@ -36,8 +36,6 @@ def install_call_routes(app, main, db):
         max_seconds = None
         try:
             now_ts = db.now()
-            conn.execute("BEGIN IMMEDIATE")
-            db.cleanup_expired(conn, now_ts)
             stage = "client_lookup"
             resolver = getattr(db, "get_client_for_sip_request", None)
             client = resolver(conn, data) if resolver else db.get_client_by_ip(conn, data.sip_ip)
@@ -75,16 +73,6 @@ def install_call_routes(app, main, db):
             if denied_kind:
                 stage = f"{denied_kind}_number_whitelist"
                 raise HTTPException(503, f"{denied_kind.upper()}-номер отсутствует в whitelist роута")
-            call_uuid = data.call_uuid or f"nouuid-{now_ts}-{client['id']}"
-            line_allowed, route_active_calls, route_line_limit_value = route_line_limit.check(
-                conn, rate, now_ts, call_uuid
-            )
-            if not line_allowed:
-                stage = "route_line_limit"
-                raise HTTPException(
-                    503,
-                    f"Лимит линий роута исчерпан: {route_active_calls}/{route_line_limit_value}",
-                )
             if rate["sell_rate_cents"] <= 0:
                 raise HTTPException(403, "Некорректный тариф продажи (<= 0)")
             stage = "terminator"
@@ -105,6 +93,29 @@ def install_call_routes(app, main, db):
                 raise HTTPException(403, "У терминатора не указан ни gateway, ни IP")
 
             provider_number = f"{route['tech_prefix'] or ''}{dial_destination}"
+            call_uuid = data.call_uuid or f"nouuid-{now_ts}-{client['id']}"
+
+            # Only calls that belong to this voice node acquire the SQLite write
+            # lock. Wrong-node retries are common and must stay read-only.
+            conn.execute("BEGIN IMMEDIATE")
+            db.cleanup_expired(conn, now_ts)
+            client = conn.execute("SELECT * FROM clients WHERE id = ?", (client["id"],)).fetchone()
+            rate = conn.execute("SELECT * FROM client_rates WHERE id = ?", (rate["id"],)).fetchone()
+            if client is None or not client["active"]:
+                stage = "client_status"
+                raise HTTPException(403, "Клиент неактивен")
+            if rate is None:
+                stage = "client_rate"
+                raise HTTPException(403, "Тариф клиента был удалён")
+            line_allowed, route_active_calls, route_line_limit_value = route_line_limit.check(
+                conn, rate, now_ts, call_uuid
+            )
+            if not line_allowed:
+                stage = "route_line_limit"
+                raise HTTPException(
+                    503,
+                    f"Лимит линий роута исчерпан: {route_active_calls}/{route_line_limit_value}",
+                )
             stage = "balance"
             active_calls = active_call_count(conn, client["id"], now_ts)
             spendable_balance = available_client_units(client, 0)
@@ -128,7 +139,6 @@ def install_call_routes(app, main, db):
                     "UPDATE reservations SET outbound_caller_id = ?, caller_id_rate_id = ? WHERE call_uuid = ?",
                     (outbound_caller_id, rate['id'], call_uuid),
                 )
-            conn.commit()
             stage = "reserved"
             reason = f"Пропущен; активных звонков={active_calls}; лимит={max_seconds} сек"
             main._safe_record_sip_hit(
@@ -146,7 +156,9 @@ def install_call_routes(app, main, db):
                 client_tech_prefix=client_tech_prefix,
                 outbound_caller_id=outbound_caller_id or data.clid,
                 max_seconds=max_seconds,
+                conn=conn,
             )
+            conn.commit()
             return {
                 "allowed": True,
                 "outbound_caller_id": outbound_caller_id,
@@ -170,21 +182,24 @@ def install_call_routes(app, main, db):
             }
         except HTTPException as exc:
             conn.rollback()
-            main._safe_record_sip_hit(
-                data,
-                status_text="rejected",
-                stage=stage,
-                reason=str(exc.detail),
-                client=client,
-                rate=rate,
-                route=route,
-                gateway_name=gateway_name,
-                route_ip=route_ip,
-                dial_destination=dial_destination,
-                provider_number=provider_number,
-                client_tech_prefix=client_tech_prefix,
-                max_seconds=max_seconds,
-            )
+            # The same customer may send a call to both public IPs. Recording
+            # every expected wrong-node retry would create another write storm.
+            if stage != "voice_node":
+                main._safe_record_sip_hit(
+                    data,
+                    status_text="rejected",
+                    stage=stage,
+                    reason=str(exc.detail),
+                    client=client,
+                    rate=rate,
+                    route=route,
+                    gateway_name=gateway_name,
+                    route_ip=route_ip,
+                    dial_destination=dial_destination,
+                    provider_number=provider_number,
+                    client_tech_prefix=client_tech_prefix,
+                    max_seconds=max_seconds,
+                )
             raise
         finally:
             conn.close()

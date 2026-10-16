@@ -120,13 +120,13 @@ def get_conn() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
 def init_db() -> None:
     conn = get_conn()
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS clients (
@@ -716,21 +716,26 @@ SIP_HIT_COLUMNS = (
 )
 
 
+def insert_sip_hit(conn, fields):
+    """Insert a SIP hit using an existing transaction."""
+    values = []
+    for col in SIP_HIT_COLUMNS:
+        value = fields.get(col)
+        if value is None and col not in {"client_id", "terminator_id", "max_seconds"}:
+            value = ""
+        values.append(value)
+    placeholders = ", ".join("?" for _ in SIP_HIT_COLUMNS)
+    conn.execute(
+        f"INSERT INTO sip_hits ({', '.join(SIP_HIT_COLUMNS)}) VALUES ({placeholders})",
+        values,
+    )
+
+
 def record_sip_hit(fields):
     """Write one incoming SIP attempt as seen by the billing gate."""
     conn = get_conn()
     try:
-        values = []
-        for col in SIP_HIT_COLUMNS:
-            value = fields.get(col)
-            if value is None and col not in {"client_id", "terminator_id", "max_seconds"}:
-                value = ""
-            values.append(value)
-        placeholders = ", ".join("?" for _ in SIP_HIT_COLUMNS)
-        conn.execute(
-            f"INSERT INTO sip_hits ({', '.join(SIP_HIT_COLUMNS)}) VALUES ({placeholders})",
-            values,
-        )
+        insert_sip_hit(conn, fields)
         conn.commit()
     finally:
         conn.close()
