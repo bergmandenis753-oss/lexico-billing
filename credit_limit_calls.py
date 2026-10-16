@@ -25,6 +25,10 @@ class OpsBalanceAdjustIn(BaseModel):
     reason: str = ""
 
 
+class ClientBalanceAdjustIn(BaseModel):
+    amount_cents: int
+
+
 def install_call_routes(app, main, db):
     @app.post("/api/reserve", dependencies=main.API_AUTH)
     def reserve(data: main.ReserveIn):
@@ -376,5 +380,50 @@ def install_call_routes(app, main, db):
                 "balance_cents": new_balance,
                 "credit_limit_cents": client_credit_limit_units(client),
             }
+        finally:
+            conn.close()
+
+    @app.post(
+        "/api/clients/{client_id}/balance-adjust",
+        dependencies=main.ADMIN_WRITE_AUTH,
+    )
+    def admin_client_balance_adjust(client_id: int, data: ClientBalanceAdjustIn):
+        amount = int(data.amount_cents)
+        if amount == 0:
+            raise HTTPException(400, "Сумма корректировки не может быть нулевой")
+        conn = db.get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            client = conn.execute("SELECT * FROM clients WHERE id = ?", (client_id,)).fetchone()
+            if client is None:
+                conn.rollback()
+                raise HTTPException(404, "Клиент не найден")
+            old_balance = int(client["balance_cents"] or 0)
+            new_balance = old_balance + amount
+            minimum_balance = minimum_client_balance_units(client)
+            if new_balance < minimum_balance:
+                conn.rollback()
+                raise HTTPException(
+                    409,
+                    "Списание превысит доступный баланс с учётом кредитного лимита",
+                )
+            conn.execute(
+                "UPDATE clients SET balance_cents = ? WHERE id = ?",
+                (new_balance, client_id),
+            )
+            conn.commit()
+            return {
+                "ok": True,
+                "client_id": client_id,
+                "old_balance_cents": old_balance,
+                "adjustment_cents": amount,
+                "balance_cents": new_balance,
+                "credit_limit_cents": client_credit_limit_units(client),
+            }
+        except HTTPException:
+            raise
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
