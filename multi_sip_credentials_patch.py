@@ -300,7 +300,7 @@ SIP_DASHBOARD_INJECTION = r"""
         <td class="right">${safeMoney(limit, c.currency)}</td>
         <td class="right ${moneyClass(available)}">${safeMoney(available, c.currency)}</td>
         <td>${c.active ? '<span class="badge on">активен</span>' : '<span class="badge off">выкл</span>'}</td>
-        <td class="right"><span class="sip-actions">${ipEditButton(c)}<button class="small ghost" onclick="openSipCredentials(${c.id})">SIP доступы</button><button class="small ghost" onclick="openCredit(${c.id})">Кредит</button><button class="small" onclick="openTopup(${c.id})">+ Пополнить</button></span></td>
+        <td class="right"><span class="sip-actions">${ipEditButton(c)}<button class="small ghost" onclick="openSipCredentials(${c.id})">SIP доступы</button><button class="small ghost" onclick="openCredit(${c.id})">Кредит</button><button class="small" onclick="openTopup(${c.id})">+ Пополнить</button><button class="small ghost balance-debit" onclick="openDebit(${c.id})">− Списать</button></span></td>
       </tr>`;
     }).join('') || '<tr><td class="empty" colspan="7">Нет данных</td></tr>';
   }
