@@ -23,11 +23,11 @@ class CallCheckTests(unittest.TestCase):
                    (call_uuid, sip_ip, destination, outbound_caller_id, client_id, client_name,
                     client_tech_prefix, dial_destination, provider_number,
                     gateway_name, terminator_name, terminator_destination_name,
-                    status, stage, reason, sip_call_id)
+                    status, stage, reason, sip_call_id, voice_node)
                VALUES ('wanted-uuid', '195.26.237.168', '103998955601166', '49111222333', ?,
                        'Metavoip', '103', '998955601166', '6489998955601166',
                        'idt', 'IDT UZ', 'Uzbekistan', 'allowed', 'reserved',
-                       'Холд поставлен', 'wanted-call-id')""",
+                       'Холд поставлен', 'wanted-call-id', 'secondary')""",
             (client_id,),
         )
         self.conn.execute(
@@ -44,10 +44,10 @@ class CallCheckTests(unittest.TestCase):
                    (client_id, call_uuid, sip_ip, destination, client_tech_prefix,
                     dial_destination, provider_number, gateway_name, terminator_name,
                     terminator_destination_name, billsec, sell_rate_cents,
-                    cost_rate_cents, charged_cents, margin_cents)
+                    cost_rate_cents, charged_cents, margin_cents, voice_node)
                VALUES (?, 'wanted-uuid', '195.26.237.168', '103998955601166',
                        '103', '998955601166', '6489998955601166', 'idt',
-                       'IDT UZ', 'Uzbekistan', 0, 0, 0, 0, 0)""",
+                       'IDT UZ', 'Uzbekistan', 0, 0, 0, 0, 0, 'secondary')""",
             (client_id,),
         )
         self.conn.execute(
@@ -85,8 +85,18 @@ class CallCheckTests(unittest.TestCase):
         self.assertIn("Uzbekistan", text)
         self.assertIn("B-номер получен: 103998955601166", text)
         self.assertIn("A-номер поставщику: 49111222333", text)
+        self.assertIn("Наш сервер: Новый · 207.154.219.145", text)
         self.assertNotIn("996502874006", text)
         self.assertNotIn("Leixo", text)
+
+    def test_telegram_check_reports_voice_server_for_cdr_fallback(self):
+        report = ops_entry.call_check_context(self.conn, "998955601166")
+        report["sip_hits"] = []
+        data = {"money_scale": db.MONEY_SCALE, "sip_hits": [], "cdr": [], "pcap_events": []}
+        with mock.patch.object(bot, "_load_call_check", return_value=report):
+            text, _ = bot._answer_for_text(data, "/check 998955601166")
+
+        self.assertIn("Наш сервер: Новый · 207.154.219.145", text)
 
     def test_telegram_check_uses_outbound_invite_for_legacy_hit(self):
         report = ops_entry.call_check_context(self.conn, "998955601166")
