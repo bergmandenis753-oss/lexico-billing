@@ -129,6 +129,39 @@ class SystemMonitoringTests(unittest.TestCase):
         self.assertEqual(row["voice_node"], "primary")
         self.assertEqual(row["active_calls"], 3)
 
+    def test_incident_bundle_lifecycle_and_notifications(self):
+        created = system_monitoring_module.create_incident(
+            db,
+            system_monitoring_module.SystemIncidentIn(
+                voice_node="secondary",
+                trigger_reason="RTP packet loss 8.50%",
+                suspected_cause="network path",
+                cpu_percent=44,
+                active_calls=31,
+                packet_loss_percent=8.5,
+                jitter_ms=22,
+                rtp_packets=1200,
+                rtp_legs=4,
+            ),
+        )
+        incident_id = created["incident_id"]
+
+        pending = system_monitoring_module.pending_incidents(db)
+        self.assertEqual(pending[0]["id"], incident_id)
+        self.assertNotIn("bundle_path", pending[0])
+
+        result = system_monitoring_module.store_incident_bundle(
+            db, incident_id, b"test diagnostic archive"
+        )
+        self.assertEqual(result["bundle_size"], 23)
+        row = system_monitoring_module._incident_row(db, incident_id)
+        self.assertEqual(row["status"], "ready")
+        self.assertTrue(Path(row["bundle_path"]).is_file())
+
+        system_monitoring_module.mark_incident_notified(db, incident_id, "alert")
+        system_monitoring_module.mark_incident_notified(db, incident_id, "bundle")
+        self.assertEqual(system_monitoring_module.pending_incidents(db), [])
+
 
 if __name__ == "__main__":
     unittest.main()
