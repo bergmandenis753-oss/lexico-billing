@@ -38,6 +38,45 @@ class SystemMonitorAgentTests(unittest.TestCase):
 
             self.assertEqual(agent.configured_voice_node(node_file), "secondary")
 
+    def test_incident_trigger_detects_bad_rtp_quality(self):
+        payload = {
+            "cpu_percent": 42,
+            "cpu_steal_percent": 1,
+            "packet_loss_percent": 6.25,
+            "jitter_ms": 55,
+            "rtp_packets": 1000,
+        }
+
+        reasons = agent.incident_reasons(payload)
+
+        self.assertEqual(len(reasons), 2)
+        self.assertIn("RTP packet loss", reasons[0])
+        self.assertIn("RTP jitter", reasons[1])
+        self.assertIn("сетевая перегрузка", agent.suspected_cause(payload, reasons))
+
+    def test_incident_trigger_ignores_quality_without_rtp_samples(self):
+        payload = {
+            "cpu_percent": 20,
+            "cpu_steal_percent": 0,
+            "packet_loss_percent": 99,
+            "jitter_ms": 500,
+            "rtp_packets": 0,
+        }
+
+        self.assertEqual(agent.incident_reasons(payload), [])
+
+    def test_incident_trigger_identifies_cpu_overload(self):
+        payload = {
+            "cpu_percent": 96,
+            "cpu_steal_percent": 2,
+            "rtp_packets": 0,
+        }
+
+        reasons = agent.incident_reasons(payload)
+
+        self.assertEqual(reasons, ["CPU 96.0%"])
+        self.assertIn("локальная перегрузка", agent.suspected_cause(payload, reasons))
+
 
 if __name__ == "__main__":
     unittest.main()
