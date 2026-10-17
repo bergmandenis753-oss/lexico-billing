@@ -1,6 +1,7 @@
 import os
 import threading
 import time
+import urllib.request
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 import telegram_standalone as bot
@@ -232,6 +233,14 @@ def _answer_for_callback(data, callback_data):
 _alert_lock = threading.Lock()
 _alert_started = False
 _last_balance_by_client = None
+_incident_alert_lock = threading.Lock()
+_incident_alert_started = False
+
+
+_VOICE_NODE_LABELS = {
+    "primary": "Основной · 207.154.192.34",
+    "secondary": "Новый · 207.154.219.145",
+}
 
 
 def _alert_interval_seconds(name, default_value, minimum):
@@ -287,6 +296,118 @@ def _low_balance_loop():
         time.sleep(_alert_interval_seconds("LOW_BALANCE_CHECK_SECONDS", 300, 60))
 
 
+def _load_pending_system_incidents():
+    base = bot._billing_base_url()
+    if not base:
+        raise RuntimeError("BILLING_API_BASE_URL не задан")
+    return bot._get_json(
+        f"{base}/api/ops/system-incidents/pending",
+        headers=bot._billing_headers(),
+        timeout=20,
+    ).get("incidents", [])
+
+
+def _mark_system_incident(incident_id, kind):
+    base = bot._billing_base_url()
+    return bot._post_json(
+        f"{base}/api/ops/system-incidents/{incident_id}/notified",
+        {"kind": kind},
+        headers=bot._billing_headers(),
+        timeout=20,
+    )
+
+
+def _download_system_incident_bundle(incident_id):
+    base = bot._billing_base_url()
+    request = urllib.request.Request(
+        f"{base}/api/ops/system-incidents/{incident_id}/bundle",
+        headers=bot._billing_headers(),
+        method="GET",
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return response.read()
+
+
+def _metric(value, suffix, digits=1):
+    if value is None:
+        return "нет данных"
+    return f"{float(value):.{digits}f}{suffix}"
+
+
+def _system_incident_alert_text(incident):
+    node = str(incident.get("voice_node") or "primary")
+    server = _VOICE_NODE_LABELS.get(node, node)
+    return (
+        "ALERT: проблема качества голоса\n"
+        f"Сервер: {server}\n"
+        f"Время UTC: {incident.get('triggered_at') or 'неизвестно'}\n"
+        f"Причина запуска: {incident.get('trigger_reason') or 'порог превышен'}\n"
+        f"CPU: {_metric(incident.get('cpu_percent'), '%')} "
+        f"(steal {_metric(incident.get('cpu_steal_percent'), '%')})\n"
+        f"RTP loss: {_metric(incident.get('packet_loss_percent'), '%', 2)}\n"
+        f"Jitter: {_metric(incident.get('jitter_ms'), ' ms')}\n"
+        f"Звонков в разговоре: {int(incident.get('active_calls') or 0)}\n"
+        f"Предварительный вывод: {incident.get('suspected_cause') or 'пока не определён'}\n\n"
+        "Автоматическая запись PCAP и системной диагностики запущена "
+        "(до 90 секунд или 8 MB)."
+    )
+
+
+def _check_system_incident_alerts():
+    incidents = _load_pending_system_incidents()
+    if not incidents:
+        return
+    chat_ids = bot._allowed_chat_ids()
+    if not chat_ids:
+        return
+
+    for incident in incidents:
+        incident_id = int(incident["id"])
+        if not incident.get("alert_sent_at"):
+            message = _system_incident_alert_text(incident)
+            for chat_id in chat_ids:
+                bot._send_message(chat_id, message, bot.MAIN_MENU)
+            _mark_system_incident(incident_id, "alert")
+
+        status = incident.get("status")
+        if status == "ready" and not incident.get("bundle_sent_at"):
+            content = _download_system_incident_bundle(incident_id)
+            file_name = incident.get("bundle_name") or f"incident-{incident_id}.tar.gz"
+            caption = (
+                f"Диагностика #{incident_id} готова. "
+                f"Сервер: {_VOICE_NODE_LABELS.get(incident.get('voice_node'), incident.get('voice_node'))}. "
+                "В архиве PCAP, нагрузка, UDP-счётчики и состояние FreeSWITCH."
+            )
+            for chat_id in chat_ids:
+                bot._send_document(
+                    chat_id,
+                    file_name,
+                    content,
+                    caption=caption,
+                    content_type="application/gzip",
+                    reply_markup=bot.MAIN_MENU,
+                )
+            _mark_system_incident(incident_id, "bundle")
+        elif status == "failed" and not incident.get("bundle_sent_at"):
+            message = (
+                f"Диагностика #{incident_id} не записалась. "
+                f"Ошибка: {incident.get('error') or 'неизвестная ошибка'}"
+            )
+            for chat_id in chat_ids:
+                bot._send_message(chat_id, message, bot.MAIN_MENU)
+            _mark_system_incident(incident_id, "bundle")
+
+
+def _system_incident_loop():
+    time.sleep(5)
+    while True:
+        try:
+            _check_system_incident_alerts()
+        except Exception as exc:
+            print(f"system incident alert error: {exc}", flush=True)
+        time.sleep(_alert_interval_seconds("SYSTEM_INCIDENT_CHECK_SECONDS", 15, 10))
+
+
 @app.on_event("startup")
 def _start_low_balance_monitor():
     global _alert_started
@@ -298,6 +419,18 @@ def _start_low_balance_monitor():
         _alert_started = True
     thread = threading.Thread(target=_low_balance_loop, daemon=True)
     thread.start()
+
+
+@app.on_event("startup")
+def _start_system_incident_monitor():
+    global _incident_alert_started
+    if os.getenv("SYSTEM_INCIDENT_ALERTS_ENABLED", "1").strip().lower() in {"0", "false", "no"}:
+        return
+    with _incident_alert_lock:
+        if _incident_alert_started:
+            return
+        _incident_alert_started = True
+    threading.Thread(target=_system_incident_loop, daemon=True).start()
 
 
 bot._client_keyboard = _client_keyboard
