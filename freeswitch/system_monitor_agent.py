@@ -15,11 +15,13 @@ from urllib.request import Request, urlopen
 
 API_BASE = os.getenv("BILLING_API", "https://web-production-d5e1c.up.railway.app").rstrip("/")
 API_KEY_FILE = Path(os.getenv("BILLING_API_KEY_FILE", "/etc/freeswitch/billing_api_key"))
+VOICE_NODE_FILE = Path(os.getenv("VOICE_NODE_FILE", "/etc/freeswitch/voice_node"))
 ESL_HOST = os.getenv("FREESWITCH_ESL_HOST", "127.0.0.1")
 ESL_PORT = int(os.getenv("FREESWITCH_ESL_PORT", "8021"))
 ESL_PASSWORD = os.getenv("FREESWITCH_ESL_PASSWORD", "ClueCon")
 INTERVAL_SECONDS = max(10, int(os.getenv("SYSTEM_MONITOR_INTERVAL", "15")))
 SOURCE = os.getenv("SYSTEM_MONITOR_SOURCE", socket.gethostname())[:64]
+VALID_VOICE_NODES = {"primary", "secondary"}
 
 
 class QualityAccumulator:
@@ -188,6 +190,17 @@ def _api_key():
     return API_KEY_FILE.read_text(encoding="utf-8").strip()
 
 
+def configured_voice_node(path=None):
+    configured = os.getenv("VOICE_NODE", "").strip().lower()
+    node_file = Path(path) if path is not None else VOICE_NODE_FILE
+    if not configured:
+        try:
+            configured = node_file.read_text(encoding="utf-8").strip().lower()
+        except OSError:
+            configured = "primary"
+    return configured if configured in VALID_VOICE_NODES else "primary"
+
+
 def post_sample(payload):
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     request = Request(
@@ -219,6 +232,7 @@ def main():
         payload = {
             "sampled_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "source": SOURCE,
+            "voice_node": configured_voice_node(),
             "cpu_percent": usage,
             "cpu_steal_percent": steal,
             "active_calls": active_calls(),
@@ -227,7 +241,7 @@ def main():
         try:
             post_sample(payload)
             print(
-                f"sent cpu={usage:.1f}% calls={payload['active_calls']} "
+                f"sent node={payload['voice_node']} cpu={usage:.1f}% calls={payload['active_calls']} "
                 f"rtp_legs={quality['rtp_legs']}",
                 flush=True,
             )
