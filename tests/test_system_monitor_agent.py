@@ -1,4 +1,5 @@
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -29,6 +30,13 @@ class SystemMonitorAgentTests(unittest.TestCase):
         self.assertEqual(result["jitter_ms"], 15.0)
         self.assertEqual(result["rtp_packets"], 400)
         self.assertEqual(result["rtp_legs"], 1)
+
+    def test_voice_node_is_read_from_freeswitch_node_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            node_file = Path(directory) / "voice_node"
+            node_file.write_text("secondary\n", encoding="utf-8")
+
+            self.assertEqual(agent.configured_voice_node(node_file), "secondary")
 
 
 if __name__ == "__main__":
