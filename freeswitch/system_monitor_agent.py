@@ -749,11 +749,15 @@ class ManualCaptureManager:
                 active_uuids.discard("")
 
                 for uuid, recording in list(recordings.items()):
-                    if uuid not in active_uuids:
+                    if uuid not in active_uuids or time.monotonic() >= recording["record_until"]:
                         _stop_capture_process(recording.get("process"))
                         recording["process"] = None
+                        recording["finished"] = True
 
-                if len(recordings) < max_recordings:
+                recording_in_progress = any(
+                    not recording.get("finished") for recording in recordings.values()
+                )
+                if len(recordings) < max_recordings and not recording_in_progress:
                     for row in rows:
                         if str(row.get("callstate") or "").upper() != "ACTIVE":
                             continue
@@ -791,6 +795,8 @@ class ManualCaptureManager:
                             "pcap": call_pcap,
                             "process": process,
                             "addresses": addresses,
+                            "record_until": time.monotonic() + record_limit,
+                            "finished": False,
                         }
                         if len(recordings) >= max_recordings:
                             break
@@ -804,7 +810,8 @@ class ManualCaptureManager:
                 time.sleep(2)
 
             for uuid, recording in recordings.items():
-                _fs_cli(f"uuid_record {uuid} stop {recording['wav']}")
+                if not recording.get("finished"):
+                    _fs_cli(f"uuid_record {uuid} stop {recording['wav']}")
             for process in processes:
                 _stop_capture_process(process)
 
