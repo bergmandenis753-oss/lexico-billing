@@ -77,6 +77,32 @@ class SystemMonitorAgentTests(unittest.TestCase):
         self.assertEqual(reasons, ["CPU 96.0%"])
         self.assertIn("локальная перегрузка", agent.suspected_cause(payload, reasons))
 
+    def test_vendor_leg_matching_uses_outbound_gateway_or_ip(self):
+        values = {
+            "Call-Direction": "outbound",
+            "variable_sip_network_ip": "91.22.4.250",
+            "variable_remote_media_ip": "91.22.4.251",
+            "variable_sip_gateway_name": "one-gw",
+        }
+
+        self.assertTrue(
+            agent._channel_matches_vendor(values, ["91.22.4.250"], ["one-gw"])
+        )
+        self.assertEqual(
+            agent._vendor_addresses(values, ["91.22.4.250"]),
+            ["91.22.4.250", "91.22.4.251"],
+        )
+        self.assertFalse(
+            agent._channel_matches_vendor(
+                {**values, "Call-Direction": "inbound"},
+                ["91.22.4.250"],
+                ["one-gw"],
+            )
+        )
+
+    def test_automatic_incident_capture_is_disabled_by_default(self):
+        self.assertFalse(agent.AUTOMATIC_INCIDENTS_ENABLED)
+
 
 if __name__ == "__main__":
     unittest.main()

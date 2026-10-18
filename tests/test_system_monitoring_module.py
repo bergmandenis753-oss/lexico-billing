@@ -162,6 +162,46 @@ class SystemMonitoringTests(unittest.TestCase):
         system_monitoring_module.mark_incident_notified(db, incident_id, "bundle")
         self.assertEqual(system_monitoring_module.pending_incidents(db), [])
 
+    def test_manual_vendor_capture_is_claimed_by_selected_node(self):
+        conn = db.get_conn()
+        try:
+            conn.execute(
+                """INSERT INTO termination_groups (name, ips, gateway_name, active)
+                   VALUES ('One', '91.22.4.250, 91.22.4.251', 'one-gw', 1)"""
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        created = system_monitoring_module.create_manual_capture(
+            db,
+            system_monitoring_module.ManualCaptureIn(
+                voice_node="secondary",
+                vendor_name="One",
+            ),
+        )
+        request_id = created["capture_request_id"]
+
+        self.assertIsNone(
+            system_monitoring_module.claim_manual_capture(db, "primary")["command"]
+        )
+        command = system_monitoring_module.claim_manual_capture(db, "secondary")["command"]
+        self.assertEqual(command["id"], request_id)
+        self.assertEqual(command["vendor_ips"], ["91.22.4.250", "91.22.4.251"])
+        self.assertEqual(command["gateway_names"], ["one-gw"])
+        self.assertEqual(command["duration_seconds"], 600)
+        self.assertEqual(command["max_recordings"], 2)
+
+        system_monitoring_module.finish_manual_capture(
+            db,
+            request_id,
+            system_monitoring_module.CaptureCommandResultIn(incident_id=42),
+        )
+        snapshot = system_monitoring_module.system_snapshot(db)
+        self.assertEqual(snapshot["captures"][0]["status"], "complete")
+        self.assertEqual(snapshot["captures"][0]["incident_id"], 42)
+        self.assertEqual(snapshot["vendors"][0]["name"], "One")
+
 
 if __name__ == "__main__":
     unittest.main()

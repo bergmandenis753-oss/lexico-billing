@@ -1,6 +1,7 @@
 """System and RTP quality monitoring supplied by the voice server agent."""
 
 from datetime import datetime, timezone
+import ipaddress
 from pathlib import Path
 from typing import Optional
 
@@ -14,7 +15,7 @@ import voice_nodes
 HISTORY_HOURS = 6
 QUALITY_WINDOW_MINUTES = 5
 STALE_AFTER_SECONDS = 60
-MAX_INCIDENT_BUNDLE_BYTES = 12 * 1024 * 1024
+MAX_INCIDENT_BUNDLE_BYTES = 48 * 1024 * 1024
 INCIDENT_FILES_TO_KEEP = 20
 
 
@@ -52,6 +53,16 @@ class IncidentFailureIn(BaseModel):
 
 class IncidentNotificationIn(BaseModel):
     kind: str
+
+
+class ManualCaptureIn(BaseModel):
+    voice_node: str
+    vendor_name: str
+
+
+class CaptureCommandResultIn(BaseModel):
+    incident_id: Optional[int] = None
+    error: str = ""
 
 
 def init_schema(db):
@@ -99,6 +110,23 @@ def init_schema(db):
             );
             CREATE INDEX IF NOT EXISTS idx_system_incidents_created
                 ON system_incidents(created_at DESC);
+            CREATE TABLE IF NOT EXISTS system_capture_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                voice_node TEXT NOT NULL,
+                vendor_name TEXT NOT NULL,
+                vendor_ips TEXT NOT NULL DEFAULT '',
+                gateway_names TEXT NOT NULL DEFAULT '',
+                duration_seconds INTEGER NOT NULL DEFAULT 600,
+                max_recordings INTEGER NOT NULL DEFAULT 2,
+                status TEXT NOT NULL DEFAULT 'pending',
+                incident_id INTEGER,
+                error TEXT NOT NULL DEFAULT '',
+                requested_at TEXT NOT NULL DEFAULT (datetime('now')),
+                claimed_at TEXT,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_system_capture_requests_status
+                ON system_capture_requests(voice_node, status, id);
             """
         )
         columns = {
@@ -331,6 +359,144 @@ def mark_incident_notified(db, incident_id, kind):
         conn.close()
 
 
+def _valid_ips(raw):
+    values = []
+    for item in str(raw or "").replace(",", " ").replace(";", " ").split():
+        try:
+            value = str(ipaddress.ip_address(item.strip()))
+        except ValueError:
+            continue
+        if value not in values:
+            values.append(value)
+    return values
+
+
+def _vendor_catalog(conn):
+    vendors = {}
+    rows = conn.execute(
+        """SELECT name, ips, gateway_name FROM termination_groups WHERE active = 1
+           UNION ALL
+           SELECT name, ips, gateway_name FROM terminators WHERE active = 1"""
+    ).fetchall()
+    for row in rows:
+        name = str(row["name"] or "").strip()
+        if not name:
+            continue
+        key = name.casefold()
+        vendor = vendors.setdefault(
+            key,
+            {"name": name, "ips": [], "gateway_names": []},
+        )
+        for ip in _valid_ips(row["ips"]):
+            if ip not in vendor["ips"]:
+                vendor["ips"].append(ip)
+        gateway = str(row["gateway_name"] or "").strip()
+        if gateway and gateway not in vendor["gateway_names"]:
+            vendor["gateway_names"].append(gateway)
+    return sorted(
+        (vendor for vendor in vendors.values() if vendor["ips"] or vendor["gateway_names"]),
+        key=lambda item: item["name"].casefold(),
+    )
+
+
+def create_manual_capture(db, request: ManualCaptureIn):
+    try:
+        node = voice_nodes.validate(request.voice_node)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    conn = db.get_conn()
+    try:
+        vendors = _vendor_catalog(conn)
+        vendor = next(
+            (item for item in vendors if item["name"].casefold() == request.vendor_name.strip().casefold()),
+            None,
+        )
+        if vendor is None:
+            raise HTTPException(404, "Vendor not found")
+        running = conn.execute(
+            "SELECT id FROM system_capture_requests "
+            "WHERE voice_node = ? AND status IN ('pending', 'running') LIMIT 1",
+            (node,),
+        ).fetchone()
+        if running is not None:
+            raise HTTPException(409, "На этом сервере диагностика уже запущена")
+        cursor = conn.execute(
+            """INSERT INTO system_capture_requests
+                   (voice_node, vendor_name, vendor_ips, gateway_names)
+               VALUES (?, ?, ?, ?)""",
+            (
+                node,
+                vendor["name"],
+                ",".join(vendor["ips"]),
+                ",".join(vendor["gateway_names"]),
+            ),
+        )
+        conn.commit()
+        return {"ok": True, "capture_request_id": cursor.lastrowid}
+    finally:
+        conn.close()
+
+
+def claim_manual_capture(db, voice_node):
+    node = voice_nodes.normalize(voice_node)
+    conn = db.get_conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            """UPDATE system_capture_requests
+               SET status = 'failed', error = 'agent did not finish capture',
+                   completed_at = datetime('now')
+               WHERE voice_node = ? AND status = 'running'
+                 AND claimed_at < datetime('now', '-20 minutes')""",
+            (node,),
+        )
+        row = conn.execute(
+            """SELECT * FROM system_capture_requests
+               WHERE voice_node = ? AND status = 'pending'
+               ORDER BY id ASC LIMIT 1""",
+            (node,),
+        ).fetchone()
+        if row is None:
+            conn.commit()
+            return {"command": None}
+        conn.execute(
+            "UPDATE system_capture_requests SET status = 'running', "
+            "claimed_at = datetime('now') WHERE id = ?",
+            (row["id"],),
+        )
+        conn.commit()
+        command = dict(row)
+        command["status"] = "running"
+        command["vendor_ips"] = _valid_ips(command["vendor_ips"])
+        command["gateway_names"] = [
+            value.strip() for value in str(command["gateway_names"] or "").split(",") if value.strip()
+        ]
+        return {"command": command}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def finish_manual_capture(db, request_id, result: CaptureCommandResultIn, failed=False):
+    conn = db.get_conn()
+    try:
+        status = "failed" if failed else "complete"
+        cursor = conn.execute(
+            """UPDATE system_capture_requests
+               SET status = ?, incident_id = ?, error = ?, completed_at = datetime('now')
+               WHERE id = ? AND status = 'running'""",
+            (status, result.incident_id, (result.error or "")[:1000], int(request_id)),
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "Capture request not found")
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
 def _weighted_quality(rows, field):
     available = [row for row in rows if row[field] is not None and int(row["rtp_packets"] or 0) > 0]
     packets = sum(int(row["rtp_packets"] or 0) for row in available)
@@ -403,6 +569,13 @@ def system_snapshot(db):
     conn = db.get_conn()
     try:
         nodes = [_node_snapshot(conn, node) for node in voice_nodes.list_nodes()]
+        vendors = _vendor_catalog(conn)
+        capture_rows = conn.execute(
+            """SELECT id, voice_node, vendor_name, duration_seconds, max_recordings,
+                      status, incident_id, error, requested_at, claimed_at, completed_at
+               FROM system_capture_requests
+               ORDER BY id DESC LIMIT 10"""
+        ).fetchall()
         incident_rows = conn.execute(
             """SELECT id, triggered_at, voice_node, trigger_reason, suspected_cause,
                       cpu_percent, cpu_steal_percent, active_calls,
@@ -418,6 +591,8 @@ def system_snapshot(db):
         "all_online": all(node["online"] for node in nodes),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "nodes": nodes,
+        "vendors": vendors,
+        "captures": [dict(row) for row in capture_rows],
         "incidents": [dict(row) for row in incident_rows],
         "history_hours": HISTORY_HOURS,
         "quality_window_minutes": QUALITY_WINDOW_MINUTES,
@@ -481,6 +656,22 @@ def install(app, main, db, base_path: Path):
             filename=incident["bundle_name"] or path.name,
             media_type="application/gzip",
         )
+
+    @app.post("/api/system-monitoring/manual-capture", dependencies=main.ADMIN_AUTH)
+    def system_monitoring_manual_capture(request: ManualCaptureIn):
+        return create_manual_capture(db, request)
+
+    @app.get("/api/system-monitoring/capture-commands/next", dependencies=main.API_AUTH)
+    def system_monitoring_next_capture_command(voice_node: str):
+        return claim_manual_capture(db, voice_node)
+
+    @app.post("/api/system-monitoring/capture-commands/{request_id}/complete", dependencies=main.API_AUTH)
+    def system_monitoring_complete_capture(request_id: int, result: CaptureCommandResultIn):
+        return finish_manual_capture(db, request_id, result)
+
+    @app.post("/api/system-monitoring/capture-commands/{request_id}/failed", dependencies=main.API_AUTH)
+    def system_monitoring_fail_capture(request_id: int, result: CaptureCommandResultIn):
+        return finish_manual_capture(db, request_id, result, failed=True)
 
     @app.get("/api/system-monitoring", dependencies=main.ADMIN_AUTH)
     def system_monitoring_data():

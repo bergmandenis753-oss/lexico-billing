@@ -1,4 +1,6 @@
+import io
 import os
+import tarfile
 import threading
 import time
 import urllib.request
@@ -337,6 +339,16 @@ def _metric(value, suffix, digits=1):
 def _system_incident_alert_text(incident):
     node = str(incident.get("voice_node") or "primary")
     server = _VOICE_NODE_LABELS.get(node, node)
+    manual = str(incident.get("trigger_reason") or "").startswith("Manual ")
+    if manual:
+        return (
+            "Ручная диагностика запущена\n"
+            f"Сервер: {server}\n"
+            f"Время UTC: {incident.get('triggered_at') or 'неизвестно'}\n"
+            f"Режим: {incident.get('trigger_reason')}\n\n"
+            "В течение 10 минут собирается только вендорская нога. "
+            "После завершения бот пришлёт PCAP без клиентского IP и до двух WAV-записей."
+        )
     return (
         "ALERT: проблема качества голоса\n"
         f"Сервер: {server}\n"
@@ -351,6 +363,23 @@ def _system_incident_alert_text(incident):
         "Автоматическая запись PCAP и системной диагностики запущена "
         "(до 90 секунд или 8 MB)."
     )
+
+
+def _manual_capture_files(content):
+    files = []
+    with tarfile.open(fileobj=io.BytesIO(content), mode="r:gz") as archive:
+        for member in archive.getmembers():
+            if not member.isfile() or member.size <= 0:
+                continue
+            name = os.path.basename(member.name)
+            suffix = os.path.splitext(name)[1].lower()
+            if suffix not in {".pcap", ".wav"}:
+                continue
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                continue
+            files.append((name, extracted.read(), suffix))
+    return sorted(files, key=lambda item: (item[2] != ".pcap", item[0]))
 
 
 def _check_system_incident_alerts():
@@ -373,20 +402,47 @@ def _check_system_incident_alerts():
         if status == "ready" and not incident.get("bundle_sent_at"):
             content = _download_system_incident_bundle(incident_id)
             file_name = incident.get("bundle_name") or f"incident-{incident_id}.tar.gz"
-            caption = (
-                f"Диагностика #{incident_id} готова. "
-                f"Сервер: {_VOICE_NODE_LABELS.get(incident.get('voice_node'), incident.get('voice_node'))}. "
-                "В архиве PCAP, нагрузка, UDP-счётчики и состояние FreeSWITCH."
-            )
-            for chat_id in chat_ids:
-                bot._send_document(
-                    chat_id,
-                    file_name,
-                    content,
-                    caption=caption,
-                    content_type="application/gzip",
-                    reply_markup=bot.MAIN_MENU,
+            manual = str(incident.get("trigger_reason") or "").startswith("Manual ")
+            if manual:
+                files = _manual_capture_files(content)
+                if not files:
+                    for chat_id in chat_ids:
+                        bot._send_message(
+                            chat_id,
+                            f"Диагностика #{incident_id} завершена, но подходящих звонков для записи не было.",
+                            bot.MAIN_MENU,
+                        )
+                for index, (name, file_content, suffix) in enumerate(files):
+                    caption = (
+                        f"Диагностика #{incident_id}: PCAP вендорской ноги, клиентский IP исключён."
+                        if suffix == ".pcap"
+                        else f"Диагностика #{incident_id}: запись разговора WAV."
+                    )
+                    content_type = "application/vnd.tcpdump.pcap" if suffix == ".pcap" else "audio/wav"
+                    for chat_id in chat_ids:
+                        bot._send_document(
+                            chat_id,
+                            name,
+                            file_content,
+                            caption=caption,
+                            content_type=content_type,
+                            reply_markup=bot.MAIN_MENU if index == len(files) - 1 else None,
+                        )
+            else:
+                caption = (
+                    f"Диагностика #{incident_id} готова. "
+                    f"Сервер: {_VOICE_NODE_LABELS.get(incident.get('voice_node'), incident.get('voice_node'))}. "
+                    "В архиве PCAP, нагрузка, UDP-счётчики и состояние FreeSWITCH."
                 )
+                for chat_id in chat_ids:
+                    bot._send_document(
+                        chat_id,
+                        file_name,
+                        content,
+                        caption=caption,
+                        content_type="application/gzip",
+                        reply_markup=bot.MAIN_MENU,
+                    )
             _mark_system_incident(incident_id, "bundle")
         elif status == "failed" and not incident.get("bundle_sent_at"):
             message = (

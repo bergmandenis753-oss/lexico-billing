@@ -22,6 +22,12 @@
   .server-head h2 { margin:0; font-size:17px; font-weight:650; }
   .server-ip { color:var(--mut); font-size:13px; }
   .server-state { margin-left:auto; }
+  .capture-controls { display:flex; align-items:center; gap:8px; margin:0 0 12px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--card); }
+  .capture-controls .capture-title { font-weight:600; margin-right:4px; }
+  .capture-controls select { min-width:180px; height:34px; padding:0 30px 0 10px; color:var(--txt); background:#111827; border:1px solid var(--line); border-radius:7px; font:inherit; }
+  .capture-controls button { color:#fff; background:var(--accent); border-color:var(--accent); }
+  .capture-controls button:disabled { opacity:.45; cursor:not-allowed; }
+  .capture-note { color:var(--mut); font-size:12px; }
   .summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-bottom:12px; }
   .metric { min-height:150px; padding:16px; background:var(--card); border:1px solid var(--line); border-radius:8px; }
   .metric-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
@@ -64,6 +70,8 @@
     .header-actions { margin-left:auto; }
     main { padding:16px; }
     .summary { grid-template-columns:1fr; }
+    .capture-controls { align-items:stretch; flex-direction:column; }
+    .capture-controls select,.capture-controls button { width:100%; }
     .charts { grid-template-columns:1fr; }
     .chart { border-right:0; border-bottom:1px solid var(--line); }
     .chart:last-child { border-bottom:0; }
@@ -120,6 +128,17 @@ function chart(label,values,suffix) {
   const line=spark(values,suffix);
   return `<div class="chart"><div class="chart-title"><span>${esc(label)}</span><span>${esc(line.range)}</span></div><svg viewBox="0 0 300 92" preserveAspectRatio="none"><line class="grid-line" x1="0" y1="91" x2="300" y2="91"/><polyline class="spark" points="${line.points}"/></svg></div>`;
 }
+function captureControls(node,data) {
+  const captures=data.captures||[];
+  const active=captures.find(item=>item.voice_node===node.id && ['pending','running'].includes(item.status));
+  const vendors=data.vendors||[];
+  const options=vendors.map(vendor=>`<option value="${esc(vendor.name)}">${esc(vendor.name)}</option>`).join('');
+  const disabled=!node.online || !!active || !vendors.length;
+  const state=active
+    ? `<span class="badge warn">${active.status==='pending'?'ожидает агента':'идёт запись'} · ${esc(active.vendor_name)}</span>`
+    : `<span class="capture-note">PCAP вендорской ноги + до 2 WAV</span>`;
+  return `<div class="capture-controls"><span class="capture-title">Ручная диагностика</span><select id="capture-vendor-${esc(node.id)}" ${disabled?'disabled':''}>${options}</select><button type="button" ${disabled?'disabled':''} onclick="startManualCapture('${esc(node.id)}')">Записать 10 минут</button>${state}</div>`;
+}
 function renderNode(node,data) {
   const latest=node.latest;
   const quality=node.quality||{};
@@ -127,7 +146,7 @@ function renderNode(node,data) {
   const state=node.online?['good','онлайн']:latest?['warn','данные устарели']:['neutral','нет данных'];
   const calls=latest?latest.active_calls:null;
   const last=latest?`Последнее измерение: ${esc(latest.sampled_at)} UTC · ${Number(node.age_seconds||0)} сек. назад`:'Агент мониторинга ещё не передал данные этого сервера.';
-  return `<section class="server"><div class="server-head"><h2>${esc(node.name)}</h2><span class="server-ip">${esc(node.public_ip)}</span><span class="badge ${state[0]} server-state">${state[1]}</span></div><div class="summary">${metric('CPU Usage','cpu',latest?.cpu_percent??null,'%',100,latest?`Нагрузка сервера · steal ${Number(latest.cpu_steal_percent||0).toFixed(1)}%`:'Нет данных от агента')}${metric('Packet Loss','loss',quality.packet_loss_percent??null,'%',5,quality.rtp_legs?`Потеря голосовых пакетов · ${quality.rtp_legs} RTP legs`:'За 5 минут завершённых RTP-потоков нет')}${metric('Jitter','jitter',quality.jitter_ms??null,' ms',50,quality.rtp_packets?`Взвешено по ${Number(quality.rtp_packets).toLocaleString('ru-RU')} пакетам`:'За 5 минут завершённых RTP-потоков нет')}${metric('В разговоре','calls',calls,'',500,'Количество соединённых звонков сейчас',node.online?['good','live']:['neutral','offline'])}</div><div class="panel"><div class="panel-head"><h2>История за последние ${Number(data.history_hours||6)} часов</h2><span class="mut">качество: последние ${Number(data.quality_window_minutes||5)} минут</span></div><div class="charts">${chart('CPU',history.map(x=>x.cpu_percent),'%')}${chart('Packet Loss',history.map(x=>x.packet_loss_percent),'%')}${chart('Jitter',history.map(x=>x.jitter_ms),' ms')}${chart('Звонки',history.map(x=>x.active_calls),'')}</div></div><div class="status">${last}</div></section>`;
+  return `<section class="server"><div class="server-head"><h2>${esc(node.name)}</h2><span class="server-ip">${esc(node.public_ip)}</span><span class="badge ${state[0]} server-state">${state[1]}</span></div>${captureControls(node,data)}<div class="summary">${metric('CPU Usage','cpu',latest?.cpu_percent??null,'%',100,latest?`Нагрузка сервера · steal ${Number(latest.cpu_steal_percent||0).toFixed(1)}%`:'Нет данных от агента')}${metric('Packet Loss','loss',quality.packet_loss_percent??null,'%',5,quality.rtp_legs?`Потеря голосовых пакетов · ${quality.rtp_legs} RTP legs`:'За 5 минут завершённых RTP-потоков нет')}${metric('Jitter','jitter',quality.jitter_ms??null,' ms',50,quality.rtp_packets?`Взвешено по ${Number(quality.rtp_packets).toLocaleString('ru-RU')} пакетам`:'За 5 минут завершённых RTP-потоков нет')}${metric('В разговоре','calls',calls,'',500,'Количество соединённых звонков сейчас',node.online?['good','live']:['neutral','offline'])}</div><div class="panel"><div class="panel-head"><h2>История за последние ${Number(data.history_hours||6)} часов</h2><span class="mut">качество: последние ${Number(data.quality_window_minutes||5)} минут</span></div><div class="charts">${chart('CPU',history.map(x=>x.cpu_percent),'%')}${chart('Packet Loss',history.map(x=>x.packet_loss_percent),'%')}${chart('Jitter',history.map(x=>x.jitter_ms),' ms')}${chart('Звонки',history.map(x=>x.active_calls),'')}</div></div><div class="status">${last}</div></section>`;
 }
 function render(data) {
   const nodes=data.nodes||[];
@@ -147,6 +166,28 @@ async function load() {
     document.getElementById('header-state').textContent='ошибка';
     document.getElementById('status').textContent=error.message;
   } finally { loading=false; }
+}
+async function startManualCapture(nodeId) {
+  const select=document.getElementById(`capture-vendor-${nodeId}`);
+  const vendorName=select?.value;
+  if(!vendorName) return;
+  if(!confirm(`Запустить запись на 10 минут для ${vendorName}?`)) return;
+  const button=select.nextElementSibling;
+  button.disabled=true;
+  document.getElementById('status').textContent='Передаю команду голосовому серверу...';
+  try {
+    const response=await fetch('/api/system-monitoring/manual-capture',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({voice_node:nodeId,vendor_name:vendorName})
+    });
+    if(!response.ok) throw new Error(await response.text());
+    document.getElementById('status').textContent='Команда принята. Агент начнёт запись в течение 15 секунд.';
+    await load();
+  } catch(error) {
+    button.disabled=false;
+    document.getElementById('status').textContent=error.message;
+  }
 }
 load(); setInterval(load,15000);
 </script>
