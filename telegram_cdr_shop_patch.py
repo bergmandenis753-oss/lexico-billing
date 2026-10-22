@@ -19,7 +19,7 @@ def _load_country_cdr_duration(bot, country_code, min_billsec):
     base = bot._billing_base_url()
     if not base:
         raise RuntimeError("BILLING_API_BASE_URL не задан")
-    query = urllib.parse.urlencode({"min_billsec": int(min_billsec or 0), "limit": 10000})
+    query = urllib.parse.urlencode({"min_billsec": int(min_billsec or 0)})
     return bot._get_json(
         f"{base}/api/ops/cdr-duration-country/{country_code.upper()}?{query}",
         headers=bot._billing_headers(),
