@@ -139,6 +139,11 @@ class CallCheckTests(unittest.TestCase):
         diagnostics.assert_not_called()
         self.assertIn("IDT UZ", send_response.call_args.args[1])
 
+    def test_country_cdrshop_uses_focused_api(self):
+        self.assertTrue(bot._uses_focused_api("/cdrshop DE 0.01"))
+        self.assertTrue(bot._uses_focused_api("/cdrshop BE 0.01"))
+        self.assertFalse(bot._uses_focused_api("/cdrcheck 17 0.01"))
+
 
 if __name__ == "__main__":
     unittest.main()
