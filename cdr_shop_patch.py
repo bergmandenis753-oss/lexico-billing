@@ -135,9 +135,8 @@ def install(app, main, db):
 
     if not _route_exists(app, "/api/ops/cdr-duration-country/{country_code}", "GET"):
         @app.get("/api/ops/cdr-duration-country/{country_code}", dependencies=main.API_AUTH)
-        def ops_country_cdr_duration(country_code: str, min_billsec: int = 0, limit: int = 5000):
+        def ops_country_cdr_duration(country_code: str, min_billsec: int = 0):
             min_billsec = max(0, int(min_billsec or 0))
-            limit = min(10000, max(1, int(limit or 5000)))
             conn = db.get_conn()
             try:
                 code, country = _country_for_iso(db, conn, country_code)
@@ -146,7 +145,6 @@ def install(app, main, db):
                 country_prefix = str(country["primary_prefix"] or "").strip()
                 if not country_prefix:
                     raise HTTPException(404, f"Для страны {code} не найден телефонный префикс")
-                candidate_limit = min(30000, max(2000, limit * 3))
                 rows = conn.execute(
                     """
                     SELECT
@@ -159,11 +157,14 @@ def install(app, main, db):
                     WHERE COALESCE(cdr.billsec, 0) > ?
                       AND cdr.started_at >= datetime('now', 'start of day')
                       AND cdr.started_at < datetime('now', 'start of day', '+1 day')
-                      AND (cdr.dial_destination GLOB ? OR cdr.dial_destination GLOB ?)
+                      AND (
+                          cdr.dial_destination GLOB ?
+                          OR cdr.dial_destination GLOB ?
+                          OR COALESCE(cdr.dial_destination, '') = ''
+                      )
                     ORDER BY cdr.started_at DESC, cdr.id DESC
-                    LIMIT ?
                     """,
-                    (min_billsec, f"{country_prefix}*", f"00{country_prefix}*", candidate_limit),
+                    (min_billsec, f"{country_prefix}*", f"00{country_prefix}*"),
                 )
                 for row in rows:
                     number = _cdr_number(db, row)
@@ -173,42 +174,12 @@ def install(app, main, db):
                     item = dict(row)
                     item["dial_destination"] = number
                     matches.append(item)
-                    if len(matches) >= limit:
-                        break
-
-                # Old CDR rows can lack dial_destination. Keep a bounded
-                # compatibility pass without making the normal query heavy.
-                if len(matches) < limit:
-                    legacy_rows = conn.execute(
-                        """
-                        SELECT id, destination, client_tech_prefix,
-                               dial_destination, started_at
-                        FROM cdr
-                        WHERE COALESCE(billsec, 0) > ?
-                          AND started_at >= datetime('now', 'start of day')
-                          AND started_at < datetime('now', 'start of day', '+1 day')
-                          AND COALESCE(dial_destination, '') = ''
-                        ORDER BY started_at DESC, id DESC
-                        LIMIT 2000
-                        """,
-                        (min_billsec,),
-                    )
-                    for row in legacy_rows:
-                        number = _cdr_number(db, row)
-                        resolved_country = _country_for_number(number, prefix_index, max_prefix_length) if number else ""
-                        if not db.direction_matches(resolved_country, country["country"]):
-                            continue
-                        item = dict(row)
-                        item["dial_destination"] = number
-                        matches.append(item)
-                        if len(matches) >= limit:
-                            break
                 return {
                     "ok": True,
                     "country_code": code,
                     "country_name": country["country"],
                     "min_billsec": min_billsec,
-                    "limit": limit,
+                    "count": len(matches),
                     "money_scale": db.MONEY_SCALE,
                     "cdr": matches,
                 }
