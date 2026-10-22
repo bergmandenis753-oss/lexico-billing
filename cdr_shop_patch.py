@@ -95,7 +95,6 @@ def install(app, main, db):
     if not _route_exists(app, "/api/ops/client-cdr-duration/{client_id}", "GET"):
         @app.get("/api/ops/client-cdr-duration/{client_id}", dependencies=main.API_AUTH)
         def ops_client_cdr_duration(client_id: int, min_billsec: int = 0, limit: int = 5000):
-            db.init_db()
             min_billsec = max(0, int(min_billsec or 0))
             limit = min(10000, max(1, int(limit or 5000)))
             conn = db.get_conn()
@@ -114,7 +113,8 @@ def install(app, main, db):
                     LEFT JOIN clients ON clients.id = cdr.client_id
                     WHERE cdr.client_id = ?
                       AND COALESCE(cdr.billsec, 0) > ?
-                      AND date(cdr.started_at) = date('now')
+                      AND cdr.started_at >= datetime('now', 'start of day')
+                      AND cdr.started_at < datetime('now', 'start of day', '+1 day')
                     ORDER BY cdr.started_at DESC, cdr.id DESC
                     LIMIT ?
                     """,
@@ -136,7 +136,6 @@ def install(app, main, db):
     if not _route_exists(app, "/api/ops/cdr-duration-country/{country_code}", "GET"):
         @app.get("/api/ops/cdr-duration-country/{country_code}", dependencies=main.API_AUTH)
         def ops_country_cdr_duration(country_code: str, min_billsec: int = 0, limit: int = 5000):
-            db.init_db()
             min_billsec = max(0, int(min_billsec or 0))
             limit = min(10000, max(1, int(limit or 5000)))
             conn = db.get_conn()
@@ -144,20 +143,27 @@ def install(app, main, db):
                 code, country = _country_for_iso(db, conn, country_code)
                 matches = []
                 prefix_index, max_prefix_length = _prefix_country_index(conn)
+                country_prefix = str(country["primary_prefix"] or "").strip()
+                if not country_prefix:
+                    raise HTTPException(404, f"Для страны {code} не найден телефонный префикс")
+                candidate_limit = min(30000, max(2000, limit * 3))
                 rows = conn.execute(
                     """
                     SELECT
-                        cdr.*,
-                        clients.name AS client_name,
-                        clients.sip_ip AS client_sip_ip,
-                        clients.currency AS client_currency
+                        cdr.id,
+                        cdr.destination,
+                        cdr.client_tech_prefix,
+                        cdr.dial_destination,
+                        cdr.started_at
                     FROM cdr
-                    LEFT JOIN clients ON clients.id = cdr.client_id
                     WHERE COALESCE(cdr.billsec, 0) > ?
-                      AND date(cdr.started_at) = date('now')
+                      AND cdr.started_at >= datetime('now', 'start of day')
+                      AND cdr.started_at < datetime('now', 'start of day', '+1 day')
+                      AND (cdr.dial_destination GLOB ? OR cdr.dial_destination GLOB ?)
                     ORDER BY cdr.started_at DESC, cdr.id DESC
+                    LIMIT ?
                     """,
-                    (min_billsec,),
+                    (min_billsec, f"{country_prefix}*", f"00{country_prefix}*", candidate_limit),
                 )
                 for row in rows:
                     number = _cdr_number(db, row)
@@ -169,6 +175,34 @@ def install(app, main, db):
                     matches.append(item)
                     if len(matches) >= limit:
                         break
+
+                # Old CDR rows can lack dial_destination. Keep a bounded
+                # compatibility pass without making the normal query heavy.
+                if len(matches) < limit:
+                    legacy_rows = conn.execute(
+                        """
+                        SELECT id, destination, client_tech_prefix,
+                               dial_destination, started_at
+                        FROM cdr
+                        WHERE COALESCE(billsec, 0) > ?
+                          AND started_at >= datetime('now', 'start of day')
+                          AND started_at < datetime('now', 'start of day', '+1 day')
+                          AND COALESCE(dial_destination, '') = ''
+                        ORDER BY started_at DESC, id DESC
+                        LIMIT 2000
+                        """,
+                        (min_billsec,),
+                    )
+                    for row in legacy_rows:
+                        number = _cdr_number(db, row)
+                        resolved_country = _country_for_number(number, prefix_index, max_prefix_length) if number else ""
+                        if not db.direction_matches(resolved_country, country["country"]):
+                            continue
+                        item = dict(row)
+                        item["dial_destination"] = number
+                        matches.append(item)
+                        if len(matches) >= limit:
+                            break
                 return {
                     "ok": True,
                     "country_code": code,
