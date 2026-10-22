@@ -250,6 +250,8 @@ def evaluate_traffic_drop_alerts(db, now_ts=None, threshold_calls=None, silence_
             active = int(route["active_calls"] or 0)
             tracker = trackers.get(route_key)
             if tracker is None:
+                if active < threshold_calls:
+                    continue
                 conn.execute(
                     """
                     INSERT INTO traffic_drop_trackers
@@ -267,6 +269,9 @@ def evaluate_traffic_drop_alerts(db, now_ts=None, threshold_calls=None, silence_
                         active, now_text if active >= threshold_calls else None, None, now_text,
                     ),
                 )
+                continue
+
+            if not bool(tracker["armed"]) and active < threshold_calls:
                 continue
 
             armed = bool(tracker["armed"])

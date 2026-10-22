@@ -98,8 +98,27 @@ class MonitoringTests(unittest.TestCase):
                    VALUES (?, ?, ?, 1000, ?)""",
                 [
                     (self.client_id, rate_id, f"call-{index}", start + 3600)
-                    for index in range(10)
+                    for index in range(9)
                 ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        monitoring_module.evaluate_traffic_drop_alerts(
+            db, start, threshold_calls=10, silence_seconds=300
+        )
+        conn = db.get_conn()
+        try:
+            tracker_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM traffic_drop_trackers"
+            ).fetchone()["c"]
+            self.assertEqual(tracker_count, 0)
+            conn.execute(
+                """INSERT INTO reservations
+                   (client_id, client_rate_id, call_uuid, reserved_cents, expires_at)
+                   VALUES (?, ?, 'call-9', 1000, ?)""",
+                (self.client_id, rate_id, start + 3600),
             )
             conn.commit()
         finally:
