@@ -70,6 +70,21 @@ def _chat_allowed(chat_id):
     return bool(allowed) and str(chat_id) in allowed
 
 
+def _uses_focused_api(text):
+    parts = str(text or "").strip().split()
+    if not parts:
+        return False
+    command = parts[0].lower().split("@", 1)[0]
+    if command in {"/check", "check"}:
+        return True
+    country_commands = {
+        "/cdrshop", "cdrshop", "/cdr_shop", "cdr_shop",
+        "/cdrdur", "cdrdur", "/cdrcheck", "cdrcheck",
+        "/cdr_check", "cdr_check",
+    }
+    return command in country_commands and len(parts) >= 2 and bool(re.fullmatch(r"[A-Za-z]{2}", parts[1]))
+
+
 def _post_json(url, payload, headers=None, timeout=25):
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
@@ -710,17 +725,17 @@ async def telegram_webhook(
         if not callback and rate_notification.is_rate_command(message_text):
             _send_rate_notification(chat_id, message_text)
             return {"ok": True, "rate_notification": True}
-        command = message_text.strip().lower().split(maxsplit=1)[0].split("@", 1)[0]
-        if not callback and command in {"/check", "check"}:
-            # /check has its own focused endpoint. Avoid downloading the large
-            # diagnostics payload first, especially while calls are busy.
+        focused_api = not callback and _uses_focused_api(message_text)
+        if focused_api:
+            # /check and country /cdrshop have focused endpoints. Avoid
+            # downloading the large diagnostics payload first.
             text, keyboard = _answer_for_text({"money_scale": 10000}, message_text)
         else:
             data = _load_diagnostics()
         if callback:
             _answer_callback(callback.get("id"))
             text, keyboard = _answer_for_callback(data, callback.get("data") or "menu")
-        elif command not in {"/check", "check"}:
+        elif not focused_api:
             text, keyboard = _answer_for_text(data, message_text)
     except Exception as exc:
         text, keyboard = f"Ошибка бота: {_trim(exc, 900)}", MAIN_MENU
