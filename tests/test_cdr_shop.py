@@ -1,5 +1,6 @@
 import unittest
 import tempfile
+from datetime import datetime, timezone
 from unittest import mock
 from pathlib import Path
 
@@ -147,6 +148,35 @@ class CountryCdrApiTests(unittest.TestCase):
         self.assertEqual(
             [row["dial_destination"] for row in payload["cdr"]],
             ["48500333444", "48500111222"],
+        )
+
+    def test_country_export_is_not_truncated_by_a_limit_parameter(self):
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        conn = db.get_conn()
+        try:
+            client_id = conn.execute("SELECT id FROM clients ORDER BY id LIMIT 1").fetchone()["id"]
+            for number in ("491111111111", "492222222222"):
+                conn.execute(
+                    """INSERT INTO cdr
+                           (client_id, destination, dial_destination, billsec, started_at,
+                            sell_rate_cents, cost_rate_cents, charged_cents, margin_cents)
+                       VALUES (?, ?, ?, 10, ?, 0, 0, 0, 0)""",
+                    (client_id, number, number, now),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        response = self.client.get(
+            "/api/ops/cdr-duration-country/DE?min_billsec=0&limit=1"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["count"], 2)
+        self.assertEqual(
+            {row["dial_destination"] for row in payload["cdr"]},
+            {"491111111111", "492222222222"},
         )
 
     def test_unknown_country_code_is_rejected_cleanly(self):
