@@ -237,6 +237,8 @@ _alert_started = False
 _last_balance_by_client = None
 _incident_alert_lock = threading.Lock()
 _incident_alert_started = False
+_traffic_drop_alert_lock = threading.Lock()
+_traffic_drop_alert_started = False
 
 
 _VOICE_NODE_LABELS = {
@@ -464,6 +466,69 @@ def _system_incident_loop():
         time.sleep(_alert_interval_seconds("SYSTEM_INCIDENT_CHECK_SECONDS", 15, 10))
 
 
+def _load_pending_traffic_drop_alerts():
+    base = bot._billing_base_url()
+    if not base:
+        raise RuntimeError("BILLING_API_BASE_URL не задан")
+    return bot._get_json(
+        f"{base}/api/ops/traffic-drop-alerts/pending",
+        headers=bot._billing_headers(),
+        timeout=20,
+    ).get("alerts", [])
+
+
+def _mark_traffic_drop_alert(alert_id):
+    base = bot._billing_base_url()
+    return bot._post_json(
+        f"{base}/api/ops/traffic-drop-alerts/{alert_id}/notified",
+        {"kind": "alert"},
+        headers=bot._billing_headers(),
+        timeout=20,
+    )
+
+
+def _traffic_drop_alert_text(alert):
+    node = str(alert.get("voice_node") or "primary")
+    server = _VOICE_NODE_LABELS.get(node, node)
+    tech_prefix = str(alert.get("client_tech_prefix") or "").strip() or "без техпрефикса"
+    silence_minutes = max(1, int(alert.get("silence_seconds") or 0) // 60)
+    return (
+        "DROP TRAFFIC ALERT\n"
+        f"Клиент: {alert.get('client_name') or 'неизвестно'}\n"
+        f"Направление: {alert.get('direction_name') or 'неизвестно'}\n"
+        f"Клиентский техпрефикс: {tech_prefix}\n"
+        f"Префикс направления: {alert.get('route_prefix') or '—'}\n"
+        f"Сервер: {server}\n"
+        f"Пик перед падением: {int(alert.get('peak_calls') or 0)} одновременных звонков\n"
+        f"После этого звонков нет уже {silence_minutes} мин.\n"
+        f"Трафик пропал с: {alert.get('zero_started_at') or 'неизвестно'} UTC"
+    )
+
+
+def _check_traffic_drop_alerts():
+    alerts = _load_pending_traffic_drop_alerts()
+    if not alerts:
+        return
+    chat_ids = bot._allowed_chat_ids()
+    if not chat_ids:
+        return
+    for alert in alerts:
+        message = _traffic_drop_alert_text(alert)
+        for chat_id in chat_ids:
+            bot._send_message(chat_id, message, bot.MAIN_MENU)
+        _mark_traffic_drop_alert(int(alert["id"]))
+
+
+def _traffic_drop_alert_loop():
+    time.sleep(15)
+    while True:
+        try:
+            _check_traffic_drop_alerts()
+        except Exception as exc:
+            print(f"traffic drop alert error: {exc}", flush=True)
+        time.sleep(_alert_interval_seconds("TRAFFIC_DROP_CHECK_SECONDS", 30, 15))
+
+
 @app.on_event("startup")
 def _start_low_balance_monitor():
     global _alert_started
@@ -487,6 +552,18 @@ def _start_system_incident_monitor():
             return
         _incident_alert_started = True
     threading.Thread(target=_system_incident_loop, daemon=True).start()
+
+
+@app.on_event("startup")
+def _start_traffic_drop_monitor():
+    global _traffic_drop_alert_started
+    if os.getenv("TRAFFIC_DROP_ALERTS_ENABLED", "1").strip().lower() in {"0", "false", "no"}:
+        return
+    with _traffic_drop_alert_lock:
+        if _traffic_drop_alert_started:
+            return
+        _traffic_drop_alert_started = True
+    threading.Thread(target=_traffic_drop_alert_loop, daemon=True).start()
 
 
 bot._client_keyboard = _client_keyboard

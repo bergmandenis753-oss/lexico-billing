@@ -23,6 +23,13 @@
   .metric .value { margin-top:10px; font-size:22px; font-weight:600; }
   .metric .value.good { color:var(--good); }
   .metric .value.bad { color:var(--bad); }
+  .period-bar { display:flex; align-items:end; gap:10px; margin-bottom:12px; }
+  .date-field { display:grid; gap:5px; }
+  .date-field label { color:var(--mut); font-size:11px; text-transform:uppercase; }
+  .date-field input { width:155px; }
+  .presets { display:flex; gap:6px; }
+  .presets button { color:var(--txt); background:transparent; border:1px solid var(--line); }
+  .presets button.active { color:#fff; background:var(--accent); border-color:var(--accent); }
   .toolbar { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
   input,select { height:36px; padding:0 10px; color:var(--txt); background:var(--card); border:1px solid var(--line); border-radius:7px; font:inherit; }
   input { width:min(360px,45vw); }
@@ -48,13 +55,15 @@
   @media (max-width:900px) {
     header { flex-wrap:wrap; padding:12px 16px; }
     header .sub { display:none; }
-    .mode-nav { order:3; width:100%; margin:0; }
-    .mode-nav a { flex:1; text-align:center; }
+    .mode-nav { order:3; width:100%; max-width:100%; margin:0; overflow-x:auto; }
+    .mode-nav a { flex:1; min-width:0; padding:5px 6px; text-align:center; font-size:12px; }
     .header-actions { margin-left:auto; }
     main { padding:16px; }
     .summary { grid-template-columns:repeat(2,minmax(0,1fr)); }
     .metric:last-child { grid-column:span 2; }
-    .toolbar { align-items:stretch; flex-direction:column; }
+    .period-bar,.toolbar { align-items:stretch; flex-direction:column; }
+    .date-field input { width:100%; }
+    .presets { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
     input,select { width:100%; }
   }
 </style>
@@ -62,18 +71,30 @@
 <body>
 <header>
   <h1>Lexico VoIP</h1>
-  <span class="sub">прибыльность · сегодня</span>
+  <span class="sub" id="period-title">прибыльность · сегодня</span>
   <nav class="mode-nav" aria-label="Режим биллинга"><a href="/">Исходящие</a><a href="/dids">DIDs</a><a class="active" href="/monitoring">Мониторинг</a><a href="/invoice">Invoice</a><a href="/system">Система</a></nav>
   <div class="header-actions"><span class="mut" id="header-state">обновляю...</span><button class="ghost" onclick="load(true)">Обновить</button></div>
 </header>
 
 <main>
   <div class="summary">
-    <div class="metric"><div class="label">Маржа сегодня</div><div class="value" id="sum-margin">—</div></div>
+    <div class="metric"><div class="label" id="margin-label">Маржа за период</div><div class="value" id="sum-margin">—</div></div>
     <div class="metric"><div class="label">Оборот</div><div class="value" id="sum-revenue">—</div></div>
     <div class="metric"><div class="label">Расход поставщикам</div><div class="value" id="sum-cost">—</div></div>
     <div class="metric"><div class="label">Разговор</div><div class="value" id="sum-minutes">—</div></div>
     <div class="metric"><div class="label">Успешные звонки</div><div class="value" id="sum-calls">—</div></div>
+  </div>
+
+  <div class="period-bar">
+    <div class="date-field"><label for="date-from">Дата с</label><input id="date-from" type="date"></div>
+    <div class="date-field"><label for="date-to">Дата по</label><input id="date-to" type="date"></div>
+    <button type="button" onclick="applyPeriod()">Показать</button>
+    <div class="presets" id="presets">
+      <button type="button" data-preset="today" onclick="setPreset('today')">Сегодня</button>
+      <button type="button" data-preset="yesterday" onclick="setPreset('yesterday')">Вчера</button>
+      <button type="button" data-preset="7" onclick="setPreset('7')">7 дней</button>
+      <button type="button" data-preset="30" onclick="setPreset('30')">30 дней</button>
+    </div>
   </div>
 
   <div class="toolbar">
@@ -107,6 +128,33 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;',
 const units = value => Number(value || 0) / Number(state.money_scale || 10000);
 const money = (value,currency='USD') => `${units(value).toFixed(4)} ${esc(currency)}`;
 const minutes = seconds => (Number(seconds || 0) / 60).toFixed(1);
+const isoDate = date => date.toISOString().slice(0,10);
+const shiftUtcDays = (date,days) => { const copy=new Date(date); copy.setUTCDate(copy.getUTCDate()+days); return copy; };
+const formatDate = value => new Intl.DateTimeFormat('ru-RU',{day:'2-digit',month:'2-digit',year:'numeric',timeZone:'UTC'}).format(new Date(`${value}T00:00:00Z`));
+
+function selectedPeriod() {
+  return {
+    from: document.getElementById('date-from').value,
+    to: document.getElementById('date-to').value,
+  };
+}
+
+function setPreset(preset,shouldLoad=true) {
+  const today = new Date();
+  let from = today;
+  let to = today;
+  if (preset === 'yesterday') from = to = shiftUtcDays(today,-1);
+  if (preset === '7' || preset === '30') from = shiftUtcDays(today,-Number(preset)+1);
+  document.getElementById('date-from').value = isoDate(from);
+  document.getElementById('date-to').value = isoDate(to);
+  document.querySelectorAll('#presets button').forEach(button => button.classList.toggle('active',button.dataset.preset===preset));
+  if (shouldLoad) load(true);
+}
+
+function applyPeriod() {
+  document.querySelectorAll('#presets button').forEach(button => button.classList.remove('active'));
+  load(true);
+}
 
 function render() {
   const summary = state.summary || {};
@@ -118,6 +166,13 @@ function render() {
   document.getElementById('sum-cost').textContent = money(summary.cost_units,defaultCurrency);
   document.getElementById('sum-minutes').textContent = `${minutes(summary.billsec)} мин`;
   document.getElementById('sum-calls').textContent = Number(summary.connected_calls || 0).toLocaleString('ru-RU');
+  if (state.date_from && state.date_to) {
+    const period = state.date_from === state.date_to
+      ? formatDate(state.date_from)
+      : `${formatDate(state.date_from)} — ${formatDate(state.date_to)}`;
+    document.getElementById('period-title').textContent = `прибыльность · ${period}`;
+    document.getElementById('margin-label').textContent = state.date_from === state.date_to ? 'Маржа за день' : 'Маржа за период';
+  }
 
   const query = document.getElementById('search').value.trim().toLowerCase();
   const sort = document.getElementById('sort').value;
@@ -144,7 +199,7 @@ function render() {
       <td class="right">${money(row.cost_units,row.currency)}</td>
       <td class="margin-cell"><div class="margin-line ${margin < 0 ? 'bad' : 'good'}"><span>${money(margin,row.currency)}</span><span>${marginPercent.toFixed(1)}%</span></div><div class="bar"><span class="${margin < 0 ? 'negative' : ''}" style="width:${width}%"></span></div></td>
     </tr>`;
-  }).join('') || `<tr><td colspan="10" class="empty">За сегодня прибыльных CDR пока нет</td></tr>`;
+  }).join('') || `<tr><td colspan="10" class="empty">За выбранный период CDR пока нет</td></tr>`;
 }
 
 async function load(force=false) {
@@ -152,11 +207,14 @@ async function load(force=false) {
   loading = true;
   document.getElementById('header-state').textContent = 'обновляю...';
   try {
-    const response = await fetch(`/api/monitoring/daily${force?'?refresh=true':''}`,{cache:'no-store'});
+    const period = selectedPeriod();
+    const params = new URLSearchParams({date_from:period.from,date_to:period.to});
+    if (force) params.set('refresh','true');
+    const response = await fetch(`/api/monitoring/daily?${params}`,{cache:'no-store'});
     if (!response.ok) throw new Error(await response.text());
     state = await response.json();
     render();
-    document.getElementById('header-state').textContent = 'сегодня UTC';
+    document.getElementById('header-state').textContent = 'UTC';
     document.getElementById('status').textContent = `Данные: ${state.generated_at} · обновление раз в ${state.cache_ttl_seconds} сек.`;
   } catch (error) {
     document.getElementById('header-state').textContent = 'ошибка';
@@ -164,6 +222,7 @@ async function load(force=false) {
   } finally { loading = false; }
 }
 
+setPreset('today',false);
 load();
 setInterval(() => load(false),60000);
 </script>
