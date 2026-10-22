@@ -52,7 +52,7 @@ def parse_rate_command(text):
         raise ValueError("Цена должна быть больше 0 и меньше 100 USD.")
     match = re.fullmatch(r"(\d{1,5})/(\d{1,5})", tarification)
     if not match or int(match.group(1)) <= 0 or int(match.group(2)) <= 0:
-        raise ValueError("Тарификация должна быть в формате 1/1 или 60/60.")
+        raise ValueError("Тарификация должна быть в формате 1/1, 6/6 или 60/60.")
     if not re.fullmatch(r"\d{1,20}", tech_prefix):
         raise ValueError("Техпрефикс должен состоять из цифр, например 103.")
 

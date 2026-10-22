@@ -4,6 +4,7 @@ from pathlib import Path
 
 import admin_management_patch
 import client_route_isolation_patch
+import db
 
 
 class ClientRoutingTests(unittest.TestCase):
@@ -46,8 +47,13 @@ class ClientRoutingTests(unittest.TestCase):
         self.assertEqual(row["billing_cycle"], "1/1")
 
     def test_route_patch_accepts_billing_cycle(self):
-        data = admin_management_patch.ClientRatePatchIn(billing_cycle="60/1")
-        self.assertEqual(data.billing_cycle, "60/1")
+        data = admin_management_patch.ClientRatePatchIn(billing_cycle="6/6")
+        self.assertEqual(data.billing_cycle, "6/6")
+
+    def test_six_second_billing_cycle_rounds_in_six_second_steps(self):
+        self.assertEqual(db.billed_seconds(1, "6/6"), 6)
+        self.assertEqual(db.billed_seconds(6, "6/6"), 6)
+        self.assertEqual(db.billed_seconds(7, "6/6"), 12)
 
     def test_dashboard_has_client_filter_and_terminator_autofill(self):
         html = (Path(__file__).parents[1] / "dashboard.html").read_text(encoding="utf-8")
@@ -63,6 +69,10 @@ class ClientRoutingTests(unittest.TestCase):
         self.assertIn("function openTermEdit", html)
         self.assertIn("Редактировать терминатор", html)
         self.assertIn("`/api/terminators/${id}`", html)
+        self.assertGreaterEqual(html.count('<option value="6/6">6/6</option>'), 4)
+
+        dids = (Path(__file__).parents[1] / "dids.html").read_text(encoding="utf-8")
+        self.assertGreaterEqual(dids.count('<option value="6/6">6/6</option>'), 2)
 
     def test_terminator_patch_rejects_negative_cost(self):
         from pydantic import ValidationError

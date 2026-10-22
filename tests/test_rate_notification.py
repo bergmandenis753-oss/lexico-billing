@@ -25,6 +25,10 @@ class RateNotificationTests(unittest.TestCase):
         self.assertEqual(notice.destination, "United Kingdom")
         self.assertEqual(notice.rate_text, "0.12")
 
+    def test_accepts_six_second_tarification(self):
+        notice = rate_notification.parse_rate_command("/rate Germany 49 0.08 6/6 105")
+        self.assertEqual(notice.tarification, "6/6")
+
     def test_invalid_command_returns_help(self):
         with self.assertRaisesRegex(ValueError, "Пример"):
             rate_notification.parse_rate_command("/rate Poland")

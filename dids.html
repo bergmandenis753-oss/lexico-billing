@@ -163,7 +163,7 @@
     <label>Существующий терминатор / направление</label><select id="out-terminator" required></select>
     <div class="mut" style="margin:-6px 0 14px">Gateway, IP, техпрефикс и закупка берутся из основного биллинга.</div>
     <label>Цена клиенту за минуту</label><input id="out-sell" type="number" min="0" step="0.0001" required>
-    <label>Тарификация клиента</label><select id="out-cycle"><option value="1/1">1/1</option><option value="60/1">60/1</option><option value="60/60">60/60</option></select>
+    <label>Тарификация клиента</label><select id="out-cycle"><option value="1/1">1/1</option><option value="6/6">6/6</option><option value="60/1">60/1</option><option value="60/60">60/60</option></select>
     <label>Максимум одновременных линий</label><input id="out-channels" type="number" min="1" max="1000" value="10" required>
     <label class="check"><input id="out-active" type="checkbox" checked> Маршрут активен</label>
     <div class="dialog-actions"><button id="out-route-delete" type="button" class="danger push-left" hidden>Удалить</button><button type="button" class="ghost" onclick="outboundRouteDlg.close()">Отмена</button><button id="out-route-submit" type="submit">Создать</button></div>
@@ -187,7 +187,7 @@
     <label>NRC клиенту</label><input id="did-sell-nrc" type="number" min="0" step="0.0001" value="0">
     <label>MRC поставщика</label><input id="did-cost-mrc" type="number" min="0" step="0.0001" value="0">
     <label>NRC поставщика</label><input id="did-cost-nrc" type="number" min="0" step="0.0001" value="0">
-    <label>Тарификация</label><select id="did-cycle"><option value="1/1">1/1</option><option value="60/1">60/1</option><option value="60/60">60/60</option></select>
+    <label>Тарификация</label><select id="did-cycle"><option value="1/1">1/1</option><option value="6/6">6/6</option><option value="60/1">60/1</option><option value="60/60">60/60</option></select>
     <label>Максимум одновременных линий</label><input id="did-channels" type="number" min="1" max="1000" value="1" required>
     <label>Комментарий</label><textarea id="did-notes"></textarea>
     <label class="check"><input id="did-active" type="checkbox" checked> DID активен</label>

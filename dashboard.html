@@ -251,7 +251,7 @@
     <label>Префикс</label><input id="rt-prefix" value="61" required>
     <label>Техпрефикс поставщика (можно пусто)</label><input id="rt-tech" placeholder="999001">
     <label>Закупочная цена за минуту (в валюте)</label><input id="rt-cost" type="number" step="0.0001" min="0" required>
-    <label>Billing cycle</label><select id="rt-billing-cycle"><option value="1/1">1/1</option><option value="60/1">60/1</option></select>
+    <label>Billing cycle</label><select id="rt-billing-cycle"><option value="1/1">1/1</option><option value="6/6">6/6</option><option value="60/1">60/1</option></select>
     <label style="display:flex;align-items:center;gap:8px"><input id="rt-active" type="checkbox" checked style="width:auto;margin:0"> Сделать активным</label>
     <div class="row"><button type="button" class="ghost" onclick="routeDlg.close()">Отмена</button><button id="route-submit" type="submit">Создать</button></div>
   </form>
@@ -267,7 +267,7 @@
     <label>Клиентский техпрефикс (можно пусто)</label><input id="ra-client-tech" placeholder="101">
     <label>Префикс</label><input id="ra-prefix" value="61" required>
     <label>Цена продажи за минуту (в валюте)</label><input id="ra-sell" type="number" step="0.0001" min="0" required>
-    <label>Billing cycle</label><select id="ra-billing-cycle"><option value="1/1">1/1</option><option value="60/1">60/1</option></select>
+    <label>Billing cycle</label><select id="ra-billing-cycle"><option value="1/1">1/1</option><option value="6/6">6/6</option><option value="60/1">60/1</option></select>
     <label>Голосовой сервер</label><select id="ra-voice-node" required></select>
     <div class="row"><button type="button" class="ghost" onclick="rateDlg.close()">Отмена</button><button type="submit">Создать</button></div>
   </form>
@@ -283,7 +283,7 @@
     <label>Префикс страны/направления</label><input id="di-prefix" placeholder="420" required>
     <label>Клиентский техпрефикс (если клиент шлёт его нам)</label><input id="di-client-tech" placeholder="101">
     <label>Цена продажи за минуту (в валюте)</label><input id="di-sell" type="number" step="0.0001" min="0.0001" required>
-    <label>Billing cycle</label><select id="di-billing-cycle"><option value="1/1">1/1</option><option value="60/1">60/1</option></select>
+    <label>Billing cycle</label><select id="di-billing-cycle"><option value="1/1">1/1</option><option value="6/6">6/6</option><option value="60/1">60/1</option></select>
     <label>Голосовой сервер</label><select id="di-voice-node" required></select>
     <label>Тестовый номер (можно пусто)</label><input id="di-test-number" placeholder="101420777123456">
     <div id="di-preview" class="check" style="display:none"></div>
@@ -305,7 +305,7 @@
     <label>Префикс страны/направления</label><input id="crs-prefix" readonly>
     <label>Клиентский техпрефикс (если клиент шлёт его нам)</label><input id="crs-client-tech" placeholder="101">
     <label>Цена продажи за минуту (в валюте)</label><input id="crs-sell" type="number" step="0.0001" min="0" required>
-    <label>Billing cycle</label><select id="crs-cycle"><option value="1/1">1/1</option><option value="60/1">60/1</option></select>
+    <label>Billing cycle</label><select id="crs-cycle"><option value="1/1">1/1</option><option value="6/6">6/6</option><option value="60/1">60/1</option></select>
     <label>Голосовой сервер</label><select id="crs-voice-node" required></select>
     <div class="whitelist-actions">
       <button type="button" class="ghost" id="crs-a-whitelist" onclick="openRouteNumberWhitelist('a')">+ A whitelist</button>
