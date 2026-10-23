@@ -650,8 +650,8 @@ def dashboard_data(request: Request):
         ).fetchall()
         e164_directions = db.list_e164_countries(conn)
         total_balance = conn.execute("SELECT COALESCE(SUM(balance_cents),0) AS s FROM clients").fetchone()["s"]
-        margin_today = conn.execute("SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE date(started_at)=date('now')").fetchone()["s"]
-        margin_month = conn.execute("SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE strftime('%Y-%m', started_at)=strftime('%Y-%m','now')").fetchone()["s"]
+        margin_today = conn.execute("SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE started_at >= datetime('now','start of day') AND started_at < datetime('now','start of day','+1 day')").fetchone()["s"]
+        margin_month = conn.execute("SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE started_at >= datetime('now','start of month') AND started_at < datetime('now','start of month','+1 month')").fetchone()["s"]
     finally:
         conn.close()
 
@@ -766,10 +766,10 @@ def ops_diagnostics():
         )
         total_balance = conn.execute("SELECT COALESCE(SUM(balance_cents),0) AS s FROM clients").fetchone()["s"]
         margin_today = conn.execute(
-            "SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE date(started_at)=date('now')"
+            "SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE started_at >= datetime('now','start of day') AND started_at < datetime('now','start of day','+1 day')"
         ).fetchone()["s"]
         margin_month = conn.execute(
-            "SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE strftime('%Y-%m', started_at)=strftime('%Y-%m','now')"
+            "SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE started_at >= datetime('now','start of month') AND started_at < datetime('now','start of month','+1 month')"
         ).fetchone()["s"]
         return {
             "ok": True,
