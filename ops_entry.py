@@ -99,30 +99,65 @@ def _matches_b_number(row, number):
     )
 
 
+def _recent_number_rows(
+    conn,
+    table_name,
+    table_alias,
+    select_sql,
+    number,
+    limit=8,
+    scan_rows=20000,
+):
+    index_name = f"idx_{table_name}_dial_destination"
+    has_exact_index = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+        (index_name,),
+    ).fetchone()
+    if has_exact_index:
+        exact = _limited_rows(
+            conn,
+            f"{select_sql} WHERE {table_alias}.dial_destination = ? "
+            f"ORDER BY {table_alias}.id DESC LIMIT ?",
+            (number, limit),
+        )
+        if exact:
+            return exact
+
+    suffix = f"%{number}"
+    return _limited_rows(
+        conn,
+        f"{select_sql} WHERE {table_alias}.id >= "
+        f"(SELECT MAX(id) - ? FROM {table_name}) AND "
+        f"({table_alias}.destination LIKE ? OR {table_alias}.dial_destination LIKE ? "
+        f"OR {table_alias}.provider_number LIKE ?) "
+        f"ORDER BY {table_alias}.id DESC LIMIT ?",
+        (scan_rows, suffix, suffix, suffix, limit),
+    )
+
+
 def call_check_context(conn, raw_number):
     number = _phone_digits(raw_number)
     if len(number) < 5:
         raise HTTPException(422, "Укажите корректный B-номер")
 
-    suffix = f"%{number}"
-    sip_hits = _limited_rows(
+    sip_hits = _recent_number_rows(
         conn,
+        "sip_hits",
+        "sh",
         "SELECT sh.*, c.currency AS client_currency FROM sip_hits sh "
-        "LEFT JOIN clients c ON c.id = sh.client_id "
-        "WHERE sh.destination LIKE ? OR sh.dial_destination LIKE ? "
-        "OR sh.provider_number LIKE ? ORDER BY sh.id DESC LIMIT 50",
-        (suffix, suffix, suffix),
+        "LEFT JOIN clients c ON c.id = sh.client_id",
+        number,
     )
     sip_hits = [row for row in sip_hits if _matches_b_number(row, number)][:20]
 
-    cdr = _limited_rows(
+    cdr = _recent_number_rows(
         conn,
+        "cdr",
+        "cd",
         "SELECT cd.*, c.name AS client_name, c.sip_ip AS client_sip_ip, "
         "c.currency AS client_currency FROM cdr cd "
-        "LEFT JOIN clients c ON c.id = cd.client_id "
-        "WHERE cd.destination LIKE ? OR cd.dial_destination LIKE ? "
-        "OR cd.provider_number LIKE ? ORDER BY cd.id DESC LIMIT 50",
-        (suffix, suffix, suffix),
+        "LEFT JOIN clients c ON c.id = cd.client_id",
+        number,
     )
     cdr = [row for row in cdr if _matches_b_number(row, number)][:20]
 
