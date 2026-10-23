@@ -259,6 +259,8 @@ def _load_call_check(number):
     return _get_json(
         f"{base}/api/ops/call-check/{safe_number}",
         headers=_billing_headers(),
+        timeout=8,
+        attempts=2,
     )
 
 
