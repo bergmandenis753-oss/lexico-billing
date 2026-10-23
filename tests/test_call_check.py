@@ -70,6 +70,14 @@ class CallCheckTests(unittest.TestCase):
         self.assertEqual(result["cdr"][0]["dial_destination"], "998955601166")
         self.assertEqual(result["pcap_events"][0]["call_id"], "wanted-call-id")
 
+    def test_call_check_exact_dial_destination_uses_index(self):
+        plan = self.conn.execute(
+            "EXPLAIN QUERY PLAN SELECT * FROM sip_hits WHERE dial_destination = ?",
+            ("998955601166",),
+        ).fetchall()
+
+        self.assertTrue(any("idx_sip_hits_dial_destination" in row["detail"] for row in plan))
+
     def test_telegram_check_never_falls_back_to_unrelated_latest_hit(self):
         report = ops_entry.call_check_context(self.conn, "998955601166")
         data = {
