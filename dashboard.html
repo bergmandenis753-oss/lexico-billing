@@ -1097,7 +1097,7 @@ async function delRoute(id) { if(!confirm('Удалить терминатор?'
 async function delRate(id) { if(!confirm('Удалить тариф?'))return; try { await api(`/api/client-rates/${id}`,'DELETE'); load(); } catch(e){ alert(e.message);} }
 
 load();
-setInterval(() => load(), 5000);
+setInterval(() => load(), 15000);
 
 document.getElementById('ai-form').addEventListener('submit', e => {
   e.preventDefault();
