@@ -78,6 +78,13 @@ class CallCheckTests(unittest.TestCase):
 
         self.assertTrue(any("idx_sip_hits_dial_destination" in row["detail"] for row in plan))
 
+    def test_call_check_suffix_fallback_uses_real_table_with_alias(self):
+        result = ops_entry.call_check_context(self.conn, "955601166")
+
+        self.assertEqual(len(result["sip_hits"]), 1)
+        self.assertEqual(result["sip_hits"][0]["call_uuid"], "wanted-uuid")
+        self.assertEqual(result["cdr"][0]["call_uuid"], "wanted-uuid")
+
     def test_telegram_check_never_falls_back_to_unrelated_latest_hit(self):
         report = ops_entry.call_check_context(self.conn, "998955601166")
         data = {
