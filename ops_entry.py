@@ -99,30 +99,49 @@ def _matches_b_number(row, number):
     )
 
 
+def _recent_number_rows(conn, table, select_sql, number, limit=50, scan_rows=100000):
+    exact = _limited_rows(
+        conn,
+        f"{select_sql} WHERE {table}.dial_destination = ? "
+        f"ORDER BY {table}.id DESC LIMIT ?",
+        (number, limit),
+    )
+    if exact:
+        return exact
+
+    suffix = f"%{number}"
+    return _limited_rows(
+        conn,
+        f"{select_sql} WHERE {table}.id >= "
+        f"(SELECT MAX(id) - ? FROM {table}) AND "
+        f"({table}.destination LIKE ? OR {table}.dial_destination LIKE ? "
+        f"OR {table}.provider_number LIKE ?) "
+        f"ORDER BY {table}.id DESC LIMIT ?",
+        (scan_rows, suffix, suffix, suffix, limit),
+    )
+
+
 def call_check_context(conn, raw_number):
     number = _phone_digits(raw_number)
     if len(number) < 5:
         raise HTTPException(422, "Укажите корректный B-номер")
 
-    suffix = f"%{number}"
-    sip_hits = _limited_rows(
+    sip_hits = _recent_number_rows(
         conn,
+        "sh",
         "SELECT sh.*, c.currency AS client_currency FROM sip_hits sh "
-        "LEFT JOIN clients c ON c.id = sh.client_id "
-        "WHERE sh.destination LIKE ? OR sh.dial_destination LIKE ? "
-        "OR sh.provider_number LIKE ? ORDER BY sh.id DESC LIMIT 50",
-        (suffix, suffix, suffix),
+        "LEFT JOIN clients c ON c.id = sh.client_id",
+        number,
     )
     sip_hits = [row for row in sip_hits if _matches_b_number(row, number)][:20]
 
-    cdr = _limited_rows(
+    cdr = _recent_number_rows(
         conn,
+        "cd",
         "SELECT cd.*, c.name AS client_name, c.sip_ip AS client_sip_ip, "
         "c.currency AS client_currency FROM cdr cd "
-        "LEFT JOIN clients c ON c.id = cd.client_id "
-        "WHERE cd.destination LIKE ? OR cd.dial_destination LIKE ? "
-        "OR cd.provider_number LIKE ? ORDER BY cd.id DESC LIMIT 50",
-        (suffix, suffix, suffix),
+        "LEFT JOIN clients c ON c.id = cd.client_id",
+        number,
     )
     cdr = [row for row in cdr if _matches_b_number(row, number)][:20]
 
