@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -119,6 +120,28 @@ class CallCheckTests(unittest.TestCase):
 
         self.assertIn("не найдены", text)
         self.assertNotIn("996502874006", text)
+
+    def test_telegram_check_skips_large_diagnostics_request(self):
+        update = bot.TelegramUpdate(message={
+            "chat": {"id": 123},
+            "text": "/check 998955601166",
+        })
+        with (
+            mock.patch.object(bot, "_chat_allowed", return_value=True),
+            mock.patch.object(bot, "_load_diagnostics") as load_diagnostics,
+            mock.patch.object(bot, "_load_call_check", return_value={
+                "money_scale": db.MONEY_SCALE,
+                "sip_hits": [],
+                "cdr": [],
+                "pcap_events": [],
+            }),
+            mock.patch.object(bot, "_send_response") as send_response,
+        ):
+            result = asyncio.run(bot.telegram_webhook(update))
+
+        self.assertEqual(result, {"ok": True})
+        load_diagnostics.assert_not_called()
+        self.assertIn("не найдены", send_response.call_args.args[1])
 
 
 if __name__ == "__main__":
