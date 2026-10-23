@@ -105,8 +105,8 @@ def _recent_number_rows(
     table_alias,
     select_sql,
     number,
-    limit=50,
-    scan_rows=100000,
+    limit=8,
+    scan_rows=5000,
 ):
     exact = _limited_rows(
         conn,
@@ -155,20 +155,24 @@ def call_check_context(conn, raw_number):
     )
     cdr = [row for row in cdr if _matches_b_number(row, number)][:20]
 
-    call_ids = {
-        str(value)
-        for row in sip_hits
-        for value in (row.get("sip_call_id"), row.get("call_uuid"))
-        if value
-    }
-    call_ids.update(str(row.get("call_uuid")) for row in cdr if row.get("call_uuid"))
+    call_ids = []
+    for row in sip_hits:
+        for value in (row.get("sip_call_id"), row.get("call_uuid")):
+            value = str(value or "").strip()
+            if value and value not in call_ids:
+                call_ids.append(value)
+    for row in cdr:
+        value = str(row.get("call_uuid") or "").strip()
+        if value and value not in call_ids:
+            call_ids.append(value)
+    call_ids = call_ids[:8]
     pcap_events = []
     if call_ids:
         placeholders = ", ".join("?" for _ in call_ids)
         pcap_events = _limited_rows(
             conn,
             f"SELECT * FROM pcap_events WHERE call_id IN ({placeholders}) "
-            "ORDER BY id DESC LIMIT 200",
+            "ORDER BY id DESC LIMIT 50",
             tuple(call_ids),
         )
 
