@@ -174,7 +174,7 @@ def cpu_percent(previous, current):
     return max(0.0, min(100.0, usage)), max(0.0, min(100.0, steal))
 
 
-def active_calls():
+def active_call_snapshot():
     try:
         result = subprocess.run(
             ["fs_cli", "-x", "show channels as json"],
@@ -185,14 +185,25 @@ def active_calls():
         )
         rows = json.loads(result.stdout or "{}").get("rows") or []
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
-        return 0
+        return 0, []
     calls = {
         row.get("call_uuid") or row.get("uuid")
         for row in rows
         if str(row.get("callstate") or "").upper() == "ACTIVE"
     }
     calls.discard(None)
-    return len(calls)
+    reservation_uuids = {
+        row.get("call_uuid") or row.get("uuid")
+        for row in rows
+        if str(row.get("callstate") or "").upper() not in {"DOWN", "HANGUP"}
+    }
+    reservation_uuids.discard(None)
+    reservation_uuids.discard("")
+    return len(calls), sorted(reservation_uuids)
+
+
+def active_calls():
+    return active_call_snapshot()[0]
 
 
 def _read_frame(sock, buffer):
@@ -877,13 +888,15 @@ def main():
         usage, steal = cpu_percent(previous_cpu, current_cpu)
         previous_cpu = current_cpu
         quality = accumulator.take()
+        current_calls, current_call_uuids = active_call_snapshot()
         payload = {
             "sampled_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "source": SOURCE,
             "voice_node": configured_voice_node(),
             "cpu_percent": usage,
             "cpu_steal_percent": steal,
-            "active_calls": active_calls(),
+            "active_calls": current_calls,
+            "active_call_uuids": current_call_uuids,
             **quality,
         }
         sent = False
