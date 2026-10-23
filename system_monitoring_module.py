@@ -15,6 +15,9 @@ import voice_nodes
 HISTORY_HOURS = 6
 QUALITY_WINDOW_MINUTES = 5
 STALE_AFTER_SECONDS = 60
+RESERVATION_RECONCILE_GRACE_SECONDS = 90
+RESERVATION_SNAPSHOT_STALE_SECONDS = 45
+MAX_ACTIVE_CALL_UUIDS = 5000
 MAX_INCIDENT_BUNDLE_BYTES = 48 * 1024 * 1024
 INCIDENT_FILES_TO_KEEP = 20
 
@@ -30,6 +33,7 @@ class SystemMetricIn(BaseModel):
     jitter_ms: Optional[float] = Field(default=None, ge=0)
     rtp_packets: int = Field(default=0, ge=0)
     rtp_legs: int = Field(default=0, ge=0)
+    active_call_uuids: Optional[list[str]] = None
 
 
 class SystemIncidentIn(BaseModel):
@@ -127,6 +131,18 @@ def init_schema(db):
             );
             CREATE INDEX IF NOT EXISTS idx_system_capture_requests_status
                 ON system_capture_requests(voice_node, status, id);
+            CREATE TABLE IF NOT EXISTS system_node_active_calls (
+                voice_node TEXT NOT NULL,
+                call_uuid TEXT NOT NULL,
+                sampled_at TEXT NOT NULL,
+                PRIMARY KEY (voice_node, call_uuid)
+            );
+            CREATE TABLE IF NOT EXISTS system_node_call_heartbeats (
+                voice_node TEXT PRIMARY KEY,
+                sampled_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_system_node_active_call_uuid
+                ON system_node_active_calls(call_uuid);
             """
         )
         columns = {
@@ -171,6 +187,8 @@ def _normalized_timestamp(value: str) -> str:
 def record_sample(db, sample: SystemMetricIn):
     conn = db.get_conn()
     try:
+        node_id = voice_nodes.normalize(sample.voice_node)
+        sampled_at = _normalized_timestamp(sample.sampled_at)
         conn.execute(
             """
             INSERT INTO system_metric_samples
@@ -179,9 +197,9 @@ def record_sample(db, sample: SystemMetricIn):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                _normalized_timestamp(sample.sampled_at),
+                sampled_at,
                 (sample.source or "voip")[:64],
-                voice_nodes.normalize(sample.voice_node),
+                node_id,
                 round(float(sample.cpu_percent), 3),
                 round(float(sample.cpu_steal_percent), 3),
                 int(sample.active_calls),
@@ -194,8 +212,45 @@ def record_sample(db, sample: SystemMetricIn):
         conn.execute(
             "DELETE FROM system_metric_samples WHERE sampled_at < datetime('now', '-48 hours')"
         )
+        reconciled = 0
+        if sample.active_call_uuids is not None:
+            call_uuids = sorted({
+                str(value or "").strip()[:128]
+                for value in sample.active_call_uuids[:MAX_ACTIVE_CALL_UUIDS]
+                if str(value or "").strip()
+            })
+            conn.execute(
+                "DELETE FROM system_node_active_calls WHERE voice_node = ?",
+                (node_id,),
+            )
+            conn.executemany(
+                "INSERT INTO system_node_active_calls (voice_node, call_uuid, sampled_at) "
+                "VALUES (?, ?, ?)",
+                [(node_id, call_uuid, sampled_at) for call_uuid in call_uuids],
+            )
+            conn.execute(
+                "INSERT INTO system_node_call_heartbeats (voice_node, sampled_at) VALUES (?, ?) "
+                "ON CONFLICT(voice_node) DO UPDATE SET sampled_at = excluded.sampled_at",
+                (node_id, sampled_at),
+            )
+            fresh_nodes = conn.execute(
+                "SELECT COUNT(*) AS c FROM system_node_call_heartbeats "
+                "WHERE sampled_at >= datetime('now', ?)",
+                (f"-{RESERVATION_SNAPSHOT_STALE_SECONDS} seconds",),
+            ).fetchone()["c"]
+            if int(fresh_nodes or 0) == len(voice_nodes.list_nodes()):
+                cursor = conn.execute(
+                    "DELETE FROM reservations "
+                    "WHERE created_at <= datetime('now', ?) "
+                    "AND NOT EXISTS ("
+                    "SELECT 1 FROM system_node_active_calls live "
+                    "WHERE live.call_uuid = reservations.call_uuid"
+                    ")",
+                    (f"-{RESERVATION_RECONCILE_GRACE_SECONDS} seconds",),
+                )
+                reconciled = max(0, int(cursor.rowcount or 0))
         conn.commit()
-        return {"ok": True}
+        return {"ok": True, "reconciled_reservations": reconciled}
     finally:
         conn.close()
 
