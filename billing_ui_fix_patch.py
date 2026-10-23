@@ -109,10 +109,10 @@ def install(app, main, db):
                 "SELECT COALESCE(SUM(balance_cents),0) AS s FROM clients WHERE deleted_at IS NULL"
             ).fetchone()["s"]
             margin_today = conn.execute(
-                "SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE date(started_at)=date('now')"
+                "SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE started_at >= datetime('now','start of day') AND started_at < datetime('now','start of day','+1 day')"
             ).fetchone()["s"]
             margin_month = conn.execute(
-                "SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE strftime('%Y-%m', started_at)=strftime('%Y-%m','now')"
+                "SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE started_at >= datetime('now','start of month') AND started_at < datetime('now','start of month','+1 month')"
             ).fetchone()["s"]
             margin_today, margin_month = _apply_manual_margin_adjustment(conn, margin_today, margin_month)
             return {
