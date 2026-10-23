@@ -1,7 +1,9 @@
 import json
 import os
 import re
+import socket
 import textwrap
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -80,10 +82,22 @@ def _post_json(url, payload, headers=None, timeout=25):
         return json.loads(response.read().decode("utf-8"))
 
 
-def _get_json(url, headers=None, timeout=25):
-    req = urllib.request.Request(url, headers=headers or {}, method="GET")
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+def _get_json(url, headers=None, timeout=15, attempts=2):
+    last_error = None
+    for attempt in range(max(1, attempts)):
+        req = urllib.request.Request(url, headers=headers or {}, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code not in {408, 429, 500, 502, 503, 504}:
+                raise
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+            last_error = exc
+        if attempt + 1 < attempts:
+            time.sleep(0.25)
+    raise last_error
 
 
 def _telegram_api(method, payload):
@@ -696,11 +710,13 @@ async def telegram_webhook(
         if not callback and rate_notification.is_rate_command(message_text):
             _send_rate_notification(chat_id, message_text)
             return {"ok": True, "rate_notification": True}
-        data = _load_diagnostics()
         if callback:
+            data = _load_diagnostics()
             _answer_callback(callback.get("id"))
             text, keyboard = _answer_for_callback(data, callback.get("data") or "menu")
         else:
+            command = message_text.strip().lower().split(maxsplit=1)[0].split("@", 1)[0]
+            data = {"money_scale": 10000} if command in {"/check", "check"} else _load_diagnostics()
             text, keyboard = _answer_for_text(data, message_text)
     except Exception as exc:
         text, keyboard = f"Ошибка бота: {_trim(exc, 900)}", MAIN_MENU
