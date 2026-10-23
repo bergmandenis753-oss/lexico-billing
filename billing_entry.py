@@ -60,7 +60,9 @@ def _trim(value, limit=300):
 
 @app.on_event("startup")
 def _billing_entry_startup():
-    db.init_db()
+    # main.py owns the optional full database bootstrap. Running it a second
+    # time here delays readiness and can make every API endpoint return 502.
+    return None
 
 
 @app.post("/api/pcap-events", dependencies=main.API_AUTH)
