@@ -107,29 +107,39 @@ local function jnum(body, key)
   return tonumber(body:match('"' .. key .. '"%s*:%s*([%-0-9%.]+)'))
 end
 
-local function http_post(path, json)
+local function http_post(path, json, attempts)
   if API_KEY == "" then
     return 0, "missing API key file"
   end
-  local started_at = os.time()
-  local command = table.concat({
-    API .. path,
-    "json",
-    "connect-timeout", "2",
-    "timeout", "4",
-    "append_headers", "'Authorization: Bearer " .. API_KEY .. "'",
-    "content-type", "application/json",
-    "post", url_encode(json)
-  }, " ")
-  local response = freeswitch.API():execute("curl", command) or ""
-  local code = tonumber(response:match('"status_code":"(%d+)"')) or 0
-  local body = json_unescape(response:match('"body":"(.-)","version"')) or ""
-  local elapsed = os.time() - started_at
-  if elapsed >= 2 then
-    freeswitch.consoleLog("warning", string.format(
-      "[billing] slow HTTP path=%s call_uuid=%s elapsed=%ds status=%d\n",
-      path, uuid, elapsed, code
-    ))
+  attempts = tonumber(attempts) or 1
+  local code, body = 0, ""
+  for attempt = 1, attempts do
+    local started_at = os.time()
+    local command = table.concat({
+      API .. path,
+      "json",
+      "connect-timeout", "2",
+      "timeout", "4",
+      "append_headers", "'Authorization: Bearer " .. API_KEY .. "'",
+      "content-type", "application/json",
+      "post", url_encode(json)
+    }, " ")
+    local response = freeswitch.API():execute("curl", command) or ""
+    code = tonumber(response:match('"status_code":"(%d+)"')) or 0
+    body = json_unescape(response:match('"body":"(.-)","version"')) or ""
+    local elapsed = os.time() - started_at
+    if elapsed >= 2 then
+      freeswitch.consoleLog("warning", string.format(
+        "[billing] slow HTTP path=%s call_uuid=%s elapsed=%ds status=%d attempt=%d/%d\n",
+        path, uuid, elapsed, code, attempt, attempts
+      ))
+    end
+    if code == 200 then
+      return code, body
+    end
+    if attempt < attempts then
+      freeswitch.msleep(250 * attempt)
+    end
   end
   return code, body
 end
@@ -296,7 +306,7 @@ local fjson = string.format(
   json_escape(result),
   json_escape(VOICE_NODE)
 )
-local fcode, fbody = http_post("/api/finalize", fjson)
+local fcode, fbody = http_post("/api/finalize", fjson, 3)
 if fcode ~= 200 then
   freeswitch.consoleLog("error", "[billing] finalize error (" .. fcode .. "): " .. fbody .. "\n")
 else
