@@ -2,6 +2,7 @@ import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).parents[1] / "freeswitch" / "system_monitor_agent.py"
@@ -37,6 +38,19 @@ class SystemMonitorAgentTests(unittest.TestCase):
             node_file.write_text("secondary\n", encoding="utf-8")
 
             self.assertEqual(agent.configured_voice_node(node_file), "secondary")
+
+    def test_active_snapshot_keeps_live_reservation_uuids(self):
+        result = mock.Mock(stdout='{"rows": ['
+            '{"uuid":"in-a","call_uuid":"in-a","callstate":"ACTIVE"},'
+            '{"uuid":"out-a","call_uuid":"in-a","callstate":"ACTIVE"},'
+            '{"uuid":"ring-b","call_uuid":"","callstate":"RINGING"},'
+            '{"uuid":"down-c","call_uuid":"down-c","callstate":"DOWN"}'
+            ']}')
+        with mock.patch.object(agent.subprocess, "run", return_value=result):
+            count, uuids = agent.active_call_snapshot()
+
+        self.assertEqual(count, 1)
+        self.assertEqual(uuids, ["in-a", "ring-b"])
 
     def test_incident_trigger_detects_bad_rtp_quality(self):
         payload = {
