@@ -99,11 +99,19 @@ def _matches_b_number(row, number):
     )
 
 
-def _recent_number_rows(conn, table, select_sql, number, limit=50, scan_rows=100000):
+def _recent_number_rows(
+    conn,
+    table_name,
+    table_alias,
+    select_sql,
+    number,
+    limit=50,
+    scan_rows=100000,
+):
     exact = _limited_rows(
         conn,
-        f"{select_sql} WHERE {table}.dial_destination = ? "
-        f"ORDER BY {table}.id DESC LIMIT ?",
+        f"{select_sql} WHERE {table_alias}.dial_destination = ? "
+        f"ORDER BY {table_alias}.id DESC LIMIT ?",
         (number, limit),
     )
     if exact:
@@ -112,11 +120,11 @@ def _recent_number_rows(conn, table, select_sql, number, limit=50, scan_rows=100
     suffix = f"%{number}"
     return _limited_rows(
         conn,
-        f"{select_sql} WHERE {table}.id >= "
-        f"(SELECT MAX(id) - ? FROM {table}) AND "
-        f"({table}.destination LIKE ? OR {table}.dial_destination LIKE ? "
-        f"OR {table}.provider_number LIKE ?) "
-        f"ORDER BY {table}.id DESC LIMIT ?",
+        f"{select_sql} WHERE {table_alias}.id >= "
+        f"(SELECT MAX(id) - ? FROM {table_name}) AND "
+        f"({table_alias}.destination LIKE ? OR {table_alias}.dial_destination LIKE ? "
+        f"OR {table_alias}.provider_number LIKE ?) "
+        f"ORDER BY {table_alias}.id DESC LIMIT ?",
         (scan_rows, suffix, suffix, suffix, limit),
     )
 
@@ -128,6 +136,7 @@ def call_check_context(conn, raw_number):
 
     sip_hits = _recent_number_rows(
         conn,
+        "sip_hits",
         "sh",
         "SELECT sh.*, c.currency AS client_currency FROM sip_hits sh "
         "LEFT JOIN clients c ON c.id = sh.client_id",
@@ -137,6 +146,7 @@ def call_check_context(conn, raw_number):
 
     cdr = _recent_number_rows(
         conn,
+        "cdr",
         "cd",
         "SELECT cd.*, c.name AS client_name, c.sip_ip AS client_sip_ip, "
         "c.currency AS client_currency FROM cdr cd "
