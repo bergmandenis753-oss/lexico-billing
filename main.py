@@ -84,7 +84,11 @@ ADMIN_WRITE_AUTH = ADMIN_AUTH + [Depends(require_current_dashboard)]
 
 @app.on_event('startup')
 def _startup():
-    db.init_db()
+    # Schema setup already runs while the application modules are imported.
+    # Re-running the full migration here can block startup for minutes on the
+    # production SQLite volume while large CDR/SIP indexes are inspected.
+    if os.getenv('LEXICO_FORCE_STARTUP_DB_INIT', '').strip() == '1':
+        db.init_db()
 
 class ReserveIn(BaseModel):
     sip_ip: str
