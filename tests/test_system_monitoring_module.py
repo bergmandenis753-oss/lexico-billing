@@ -80,6 +80,56 @@ class SystemMonitoringTests(unittest.TestCase):
         self.assertEqual(snapshots["primary"]["quality"]["jitter_ms"], 8.0)
         self.assertEqual(snapshots["secondary"]["quality"]["jitter_ms"], 24.0)
 
+    def test_reconciles_only_old_reservations_after_both_nodes_report(self):
+        conn = db.get_conn()
+        try:
+            client_id = conn.execute(
+                "INSERT INTO clients (name, sip_ip) VALUES ('Test', '192.0.2.10')"
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO reservations (client_id, call_uuid, reserved_cents, expires_at, created_at) "
+                "VALUES (?, 'live-primary', 10, strftime('%s','now') + 3600, datetime('now','-5 minutes'))",
+                (client_id,),
+            )
+            conn.execute(
+                "INSERT INTO reservations (client_id, call_uuid, reserved_cents, expires_at, created_at) "
+                "VALUES (?, 'stale-call', 10, strftime('%s','now') + 3600, datetime('now','-5 minutes'))",
+                (client_id,),
+            )
+            conn.execute(
+                "INSERT INTO reservations (client_id, call_uuid, reserved_cents, expires_at, created_at) "
+                "VALUES (?, 'setup-call', 10, strftime('%s','now') + 3600, datetime('now'))",
+                (client_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        first = system_monitoring_module.record_sample(
+            db,
+            system_monitoring_module.SystemMetricIn(
+                voice_node="primary", cpu_percent=10, active_call_uuids=["live-primary"]
+            ),
+        )
+        self.assertEqual(first["reconciled_reservations"], 0)
+
+        second = system_monitoring_module.record_sample(
+            db,
+            system_monitoring_module.SystemMetricIn(
+                voice_node="secondary", cpu_percent=10, active_call_uuids=[]
+            ),
+        )
+        self.assertEqual(second["reconciled_reservations"], 1)
+        conn = db.get_conn()
+        try:
+            remaining = {
+                row["call_uuid"]
+                for row in conn.execute("SELECT call_uuid FROM reservations").fetchall()
+            }
+        finally:
+            conn.close()
+        self.assertEqual(remaining, {"live-primary", "setup-call"})
+
     def test_empty_database_reports_offline_without_fake_zero_quality(self):
         result = system_monitoring_module.system_snapshot(db)
 
