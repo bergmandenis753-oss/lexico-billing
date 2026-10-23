@@ -217,6 +217,8 @@ def init_db() -> None:
             started_at      TEXT    NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_cdr_started ON cdr(started_at);
+        CREATE INDEX IF NOT EXISTS idx_cdr_call_uuid ON cdr(call_uuid);
+        CREATE INDEX IF NOT EXISTS idx_cdr_dial_destination ON cdr(dial_destination);
 
         CREATE TABLE IF NOT EXISTS sip_hits (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -254,6 +256,8 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_sip_hits_created ON sip_hits(created_at);
         CREATE INDEX IF NOT EXISTS idx_sip_hits_ip ON sip_hits(sip_ip);
+        CREATE INDEX IF NOT EXISTS idx_sip_hits_call_uuid ON sip_hits(call_uuid);
+        CREATE INDEX IF NOT EXISTS idx_sip_hits_dial_destination ON sip_hits(dial_destination);
 
         CREATE TABLE IF NOT EXISTS pcap_events (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
