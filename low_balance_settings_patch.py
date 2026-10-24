@@ -47,7 +47,6 @@ def _default_threshold_cents(db):
 
 
 def get_low_balance_threshold_cents(db):
-    ensure_schema(db)
     conn = db.get_conn()
     try:
         row = conn.execute("SELECT value FROM ops_settings WHERE key = ?", (SETTING_KEY,)).fetchone()

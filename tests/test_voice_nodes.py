@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 import credit_limit_calls
 import credit_limit_common
 import db
+import low_balance_settings_patch
 import main
 import voice_nodes
 
@@ -114,6 +115,16 @@ class VoiceNodeRoutingTests(unittest.TestCase):
         ):
             response = self.reserve("secondary")
         self.assertEqual(response.status_code, 200, response.text)
+
+    def test_low_balance_read_does_not_reinitialize_schema(self):
+        low_balance_settings_patch.ensure_schema(db)
+        with patch.object(
+            low_balance_settings_patch,
+            "ensure_schema",
+            side_effect=AssertionError("schema initialization must stay out of read paths"),
+        ):
+            threshold = low_balance_settings_patch.get_low_balance_threshold_cents(db)
+        self.assertGreater(threshold, 0)
 
     def test_freeswitch_uses_one_authoritative_billing_request(self):
         script = (Path(__file__).parents[1] / "freeswitch" / "billing.lua").read_text()
