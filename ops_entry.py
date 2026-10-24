@@ -161,20 +161,24 @@ def call_check_context(conn, raw_number):
     )
     cdr = [row for row in cdr if _matches_b_number(row, number)][:20]
 
-    call_ids = {
-        str(value)
-        for row in sip_hits
-        for value in (row.get("sip_call_id"), row.get("call_uuid"))
-        if value
-    }
-    call_ids.update(str(row.get("call_uuid")) for row in cdr if row.get("call_uuid"))
+    call_ids = []
+    for row in sip_hits:
+        for value in (row.get("sip_call_id"), row.get("call_uuid")):
+            value = str(value or "").strip()
+            if value and value not in call_ids:
+                call_ids.append(value)
+    for row in cdr:
+        value = str(row.get("call_uuid") or "").strip()
+        if value and value not in call_ids:
+            call_ids.append(value)
+    call_ids = call_ids[:8]
     pcap_events = []
     if call_ids:
         placeholders = ", ".join("?" for _ in call_ids)
         pcap_events = _limited_rows(
             conn,
             f"SELECT * FROM pcap_events WHERE call_id IN ({placeholders}) "
-            "ORDER BY id DESC LIMIT 200",
+            "ORDER BY id DESC LIMIT 50",
             tuple(call_ids),
         )
 
@@ -218,6 +222,16 @@ def ingest_pcap_events(data: PcapEventsIn):
         conn.close()
 
 
+app.router.routes = [
+    route
+    for route in app.router.routes
+    if not (
+        getattr(route, "path", "") == "/api/ops/diagnostics"
+        and "GET" in (getattr(route, "methods", set()) or set())
+    )
+]
+
+
 @app.get("/api/ops/diagnostics", dependencies=main.API_AUTH)
 def ops_diagnostics(limit: int = 100, cdr_limit: int = 50, pcap_limit: int = 200):
     hit_limit = max(1, min(int(limit or 100), 1000))
@@ -258,10 +272,14 @@ def ops_diagnostics(limit: int = 100, cdr_limit: int = 50, pcap_limit: int = 200
         pcap_events = _limited_rows(conn, "SELECT * FROM pcap_events ORDER BY id DESC LIMIT ?", (pcap_limit,))
         total_balance = conn.execute("SELECT COALESCE(SUM(balance_cents),0) AS s FROM clients").fetchone()["s"]
         margin_today = conn.execute(
-            "SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE date(started_at)=date('now')"
+            "SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr "
+            "WHERE started_at >= datetime('now','start of day') "
+            "AND started_at < datetime('now','start of day','+1 day')"
         ).fetchone()["s"]
         margin_month = conn.execute(
-            "SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE strftime('%Y-%m', started_at)=strftime('%Y-%m','now')"
+            "SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr "
+            "WHERE started_at >= datetime('now','start of month') "
+            "AND started_at < datetime('now','start of month','+1 month')"
         ).fetchone()["s"]
         today = conn.execute("SELECT date('now') AS d").fetchone()["d"]
         month = conn.execute("SELECT strftime('%Y-%m','now') AS m").fetchone()["m"]
