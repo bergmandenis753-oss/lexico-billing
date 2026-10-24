@@ -1,7 +1,10 @@
 import json
 import os
 import re
+import socket
 import textwrap
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,6 +21,9 @@ import voice_nodes
 
 
 app = FastAPI(title="Lexico Telegram diagnostics bot", docs_url=None, redoc_url=None, openapi_url=None)
+
+_diagnostics_cache = {"value": None, "expires_at": 0.0}
+_diagnostics_lock = threading.Lock()
 
 
 class TelegramUpdate(BaseModel):
@@ -80,10 +86,22 @@ def _post_json(url, payload, headers=None, timeout=25):
         return json.loads(response.read().decode("utf-8"))
 
 
-def _get_json(url, headers=None, timeout=25):
-    req = urllib.request.Request(url, headers=headers or {}, method="GET")
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+def _get_json(url, headers=None, timeout=15, attempts=2):
+    last_error = None
+    for attempt in range(max(1, attempts)):
+        req = urllib.request.Request(url, headers=headers or {}, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code not in {408, 429, 500, 502, 503, 504}:
+                raise
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+            last_error = exc
+        if attempt + 1 < attempts:
+            time.sleep(0.25)
+    raise last_error
 
 
 def _telegram_api(method, payload):
@@ -234,7 +252,25 @@ def _load_diagnostics():
     base = _billing_base_url()
     if not base:
         raise RuntimeError("BILLING_API_BASE_URL не задан")
-    return _get_json(f"{base}/api/ops/diagnostics", headers=_billing_headers())
+    now = time.monotonic()
+    with _diagnostics_lock:
+        cached = _diagnostics_cache["value"]
+        if cached is not None and now < _diagnostics_cache["expires_at"]:
+            return cached
+        try:
+            value = _get_json(
+                f"{base}/api/ops/diagnostics",
+                headers=_billing_headers(),
+                timeout=6,
+                attempts=1,
+            )
+        except Exception:
+            if cached is not None:
+                return cached
+            raise
+        _diagnostics_cache["value"] = value
+        _diagnostics_cache["expires_at"] = time.monotonic() + 15
+        return value
 
 
 def _load_call_check(number):
@@ -245,6 +281,8 @@ def _load_call_check(number):
     return _get_json(
         f"{base}/api/ops/call-check/{safe_number}",
         headers=_billing_headers(),
+        timeout=5,
+        attempts=1,
     )
 
 
@@ -667,7 +705,7 @@ def healthz():
 
 
 @app.post("/telegram/webhook")
-async def telegram_webhook(
+def telegram_webhook(
     update: TelegramUpdate,
     x_telegram_bot_api_secret_token: Optional[str] = Header(None),
 ):
@@ -696,11 +734,13 @@ async def telegram_webhook(
         if not callback and rate_notification.is_rate_command(message_text):
             _send_rate_notification(chat_id, message_text)
             return {"ok": True, "rate_notification": True}
-        data = _load_diagnostics()
         if callback:
             _answer_callback(callback.get("id"))
+            data = _load_diagnostics()
             text, keyboard = _answer_for_callback(data, callback.get("data") or "menu")
         else:
+            command = message_text.strip().lower().split(maxsplit=1)[0].split("@", 1)[0]
+            data = {"money_scale": 10000} if command in {"/check", "check"} else _load_diagnostics()
             text, keyboard = _answer_for_text(data, message_text)
     except Exception as exc:
         text, keyboard = f"Ошибка бота: {_trim(exc, 900)}", MAIN_MENU

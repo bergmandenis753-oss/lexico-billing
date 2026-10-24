@@ -116,11 +116,13 @@ def max_seconds_for_balance(balance_units, rate_units, billing_cycle: str = DEFA
     return first + ((max_billable - first) // increment) * increment
 
 
-def get_conn() -> sqlite3.Connection:
+def get_conn(timeout: float = 2.0) -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = sqlite3.connect(DB_PATH, timeout=timeout)
     conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={max(1, int(timeout * 1000))}")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA synchronous=NORMAL")
     return conn
 
 
@@ -217,6 +219,8 @@ def init_db() -> None:
             started_at      TEXT    NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_cdr_started ON cdr(started_at);
+        CREATE INDEX IF NOT EXISTS idx_cdr_call_uuid ON cdr(call_uuid);
+        CREATE INDEX IF NOT EXISTS idx_cdr_dial_destination ON cdr(dial_destination);
 
         CREATE TABLE IF NOT EXISTS sip_hits (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -254,6 +258,8 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_sip_hits_created ON sip_hits(created_at);
         CREATE INDEX IF NOT EXISTS idx_sip_hits_ip ON sip_hits(sip_ip);
+        CREATE INDEX IF NOT EXISTS idx_sip_hits_call_uuid ON sip_hits(call_uuid);
+        CREATE INDEX IF NOT EXISTS idx_sip_hits_dial_destination ON sip_hits(dial_destination);
 
         CREATE TABLE IF NOT EXISTS pcap_events (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -665,12 +671,16 @@ def match_active_terminator(conn, destination):
     return None
 
 
-def active_hold_sum(conn, client_id, now_ts):
-    row = conn.execute(
+def active_hold_sum(conn, client_id, now_ts, exclude_call_uuid=""):
+    query = (
         "SELECT COALESCE(SUM(reserved_cents), 0) AS s FROM reservations "
-        "WHERE client_id = ? AND expires_at > ?",
-        (client_id, now_ts),
-    ).fetchone()
+        "WHERE client_id = ? AND expires_at > ?"
+    )
+    params = [client_id, now_ts]
+    if exclude_call_uuid:
+        query += " AND call_uuid <> ?"
+        params.append(exclude_call_uuid)
+    row = conn.execute(query, params).fetchone()
     return row["s"]
 
 
@@ -733,7 +743,7 @@ def insert_sip_hit(conn, fields):
 
 def record_sip_hit(fields):
     """Write one incoming SIP attempt as seen by the billing gate."""
-    conn = get_conn()
+    conn = get_conn(timeout=0.2)
     try:
         insert_sip_hit(conn, fields)
         conn.commit()

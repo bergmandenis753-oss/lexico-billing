@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -69,6 +70,21 @@ class CallCheckTests(unittest.TestCase):
         self.assertEqual(result["cdr"][0]["dial_destination"], "998955601166")
         self.assertEqual(result["pcap_events"][0]["call_id"], "wanted-call-id")
 
+    def test_call_check_exact_dial_destination_uses_index(self):
+        plan = self.conn.execute(
+            "EXPLAIN QUERY PLAN SELECT * FROM sip_hits WHERE dial_destination = ?",
+            ("998955601166",),
+        ).fetchall()
+
+        self.assertTrue(any("idx_sip_hits_dial_destination" in row["detail"] for row in plan))
+
+    def test_call_check_suffix_fallback_uses_real_table_with_alias(self):
+        result = ops_entry.call_check_context(self.conn, "955601166")
+
+        self.assertEqual(len(result["sip_hits"]), 1)
+        self.assertEqual(result["sip_hits"][0]["call_uuid"], "wanted-uuid")
+        self.assertEqual(result["cdr"][0]["call_uuid"], "wanted-uuid")
+
     def test_telegram_check_never_falls_back_to_unrelated_latest_hit(self):
         report = ops_entry.call_check_context(self.conn, "998955601166")
         data = {
@@ -119,6 +135,28 @@ class CallCheckTests(unittest.TestCase):
 
         self.assertIn("не найдены", text)
         self.assertNotIn("996502874006", text)
+
+    def test_telegram_check_skips_large_diagnostics_request(self):
+        update = bot.TelegramUpdate(message={
+            "chat": {"id": 123},
+            "text": "/check 998955601166",
+        })
+        with (
+            mock.patch.object(bot, "_chat_allowed", return_value=True),
+            mock.patch.object(bot, "_load_diagnostics") as load_diagnostics,
+            mock.patch.object(bot, "_load_call_check", return_value={
+                "money_scale": db.MONEY_SCALE,
+                "sip_hits": [],
+                "cdr": [],
+                "pcap_events": [],
+            }),
+            mock.patch.object(bot, "_send_response") as send_response,
+        ):
+            result = bot.telegram_webhook(update)
+
+        self.assertEqual(result, {"ok": True})
+        load_diagnostics.assert_not_called()
+        self.assertIn("не найдены", send_response.call_args.args[1])
 
 
 if __name__ == "__main__":

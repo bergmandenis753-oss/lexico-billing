@@ -68,12 +68,22 @@ def install(app, main, db):
     _remove_routes(app, "/", {"GET"})
     _remove_routes(app, "/api/dashboard-data", {"GET"})
 
-    @app.get("/api/dashboard-data", dependencies=main.ADMIN_AUTH)
-    def dashboard_data():
+    # These are migrations/repairs, not dashboard work. Running an UPDATE on
+    # every browser refresh turns the read-only dashboard into a frequent
+    # SQLite writer and competes with live call reservations.
+    @app.on_event("startup")
+    def _billing_ui_startup():
         conn = db.get_conn()
         try:
             _ensure_deleted_at(conn)
             _repair_originator_names(conn)
+        finally:
+            conn.close()
+
+    @app.get("/api/dashboard-data", dependencies=main.ADMIN_AUTH)
+    def dashboard_data():
+        conn = db.get_conn()
+        try:
             clients = conn.execute("SELECT * FROM clients WHERE deleted_at IS NULL ORDER BY id").fetchall()
             groups = conn.execute("SELECT * FROM termination_groups ORDER BY name").fetchall()
             terminators = conn.execute(
@@ -109,10 +119,14 @@ def install(app, main, db):
                 "SELECT COALESCE(SUM(balance_cents),0) AS s FROM clients WHERE deleted_at IS NULL"
             ).fetchone()["s"]
             margin_today = conn.execute(
-                "SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE started_at >= datetime('now','start of day') AND started_at < datetime('now','start of day','+1 day')"
+                "SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr "
+                "WHERE started_at >= datetime('now','start of day') "
+                "AND started_at < datetime('now','start of day','+1 day')"
             ).fetchone()["s"]
             margin_month = conn.execute(
-                "SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr WHERE started_at >= datetime('now','start of month') AND started_at < datetime('now','start of month','+1 month')"
+                "SELECT COALESCE(SUM(margin_cents),0) AS s FROM cdr "
+                "WHERE started_at >= datetime('now','start of month') "
+                "AND started_at < datetime('now','start of month','+1 month')"
             ).fetchone()["s"]
             margin_today, margin_month = _apply_manual_margin_adjustment(conn, margin_today, margin_month)
             return {
