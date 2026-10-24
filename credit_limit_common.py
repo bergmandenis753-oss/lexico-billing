@@ -86,9 +86,11 @@ def client_row(row):
     return item
 
 
-def active_call_count(conn, client_id, now_ts):
-    row = conn.execute(
-        "SELECT COUNT(*) AS c FROM reservations WHERE client_id = ? AND expires_at > ?",
-        (client_id, now_ts),
-    ).fetchone()
+def active_call_count(conn, client_id, now_ts, exclude_call_uuid=""):
+    query = "SELECT COUNT(*) AS c FROM reservations WHERE client_id = ? AND expires_at > ?"
+    params = [client_id, now_ts]
+    if exclude_call_uuid:
+        query += " AND call_uuid <> ?"
+        params.append(exclude_call_uuid)
+    row = conn.execute(query, params).fetchone()
     return int(row["c"] or 0)

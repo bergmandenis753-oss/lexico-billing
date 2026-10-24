@@ -1,4 +1,5 @@
 import math
+import sqlite3
 import caller_id
 import route_line_limit
 import route_number_whitelist
@@ -33,7 +34,9 @@ def install_call_routes(app, main, db):
     @app.post("/api/reserve", dependencies=main.API_AUTH)
     def reserve(data: main.ReserveIn):
         conn = db.get_conn()
+        conn.execute("PRAGMA busy_timeout=2500")
         client = rate = route = None
+        existing_reservation = None
         stage = "received"
         client_tech_prefix = dial_destination = gateway_name = route_ip = provider_number = ""
         outbound_caller_id = ""
@@ -103,6 +106,10 @@ def install_call_routes(app, main, db):
             # lock. Wrong-node retries are common and must stay read-only.
             conn.execute("BEGIN IMMEDIATE")
             db.cleanup_expired(conn, now_ts)
+            existing_reservation = conn.execute(
+                "SELECT 1 FROM reservations WHERE call_uuid = ?",
+                (call_uuid,),
+            ).fetchone()
             client = conn.execute("SELECT * FROM clients WHERE id = ?", (client["id"],)).fetchone()
             rate = conn.execute("SELECT * FROM client_rates WHERE id = ?", (rate["id"],)).fetchone()
             if client is None or not client["active"]:
@@ -121,7 +128,7 @@ def install_call_routes(app, main, db):
                     f"Лимит линий роута исчерпан: {route_active_calls}/{route_line_limit_value}",
                 )
             stage = "balance"
-            active_calls = active_call_count(conn, client["id"], now_ts)
+            active_calls = active_call_count(conn, client["id"], now_ts, call_uuid)
             spendable_balance = available_client_units(client, 0)
             if spendable_balance <= 0:
                 raise HTTPException(403, "Недостаточно средств")
@@ -145,23 +152,24 @@ def install_call_routes(app, main, db):
                 )
             stage = "reserved"
             reason = f"Пропущен; активных звонков={active_calls}; лимит={max_seconds} сек"
-            main._safe_record_sip_hit(
-                data,
-                status_text="allowed",
-                stage=stage,
-                reason=reason,
-                client=client,
-                rate=rate,
-                route=route,
-                gateway_name=gateway_name,
-                route_ip=route_ip,
-                dial_destination=dial_destination,
-                provider_number=provider_number,
-                client_tech_prefix=client_tech_prefix,
-                outbound_caller_id=outbound_caller_id or data.clid,
-                max_seconds=max_seconds,
-                conn=conn,
-            )
+            if existing_reservation is None:
+                main._safe_record_sip_hit(
+                    data,
+                    status_text="allowed",
+                    stage=stage,
+                    reason=reason,
+                    client=client,
+                    rate=rate,
+                    route=route,
+                    gateway_name=gateway_name,
+                    route_ip=route_ip,
+                    dial_destination=dial_destination,
+                    provider_number=provider_number,
+                    client_tech_prefix=client_tech_prefix,
+                    outbound_caller_id=outbound_caller_id or data.clid,
+                    max_seconds=max_seconds,
+                    conn=conn,
+                )
             conn.commit()
             return {
                 "allowed": True,
@@ -204,6 +212,11 @@ def install_call_routes(app, main, db):
                     client_tech_prefix=client_tech_prefix,
                     max_seconds=max_seconds,
                 )
+            raise
+        except sqlite3.OperationalError as exc:
+            conn.rollback()
+            if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                raise HTTPException(503, "База временно занята") from exc
             raise
         finally:
             conn.close()

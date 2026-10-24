@@ -107,29 +107,46 @@ local function jnum(body, key)
   return tonumber(body:match('"' .. key .. '"%s*:%s*([%-0-9%.]+)'))
 end
 
-local function http_post(path, json)
+local function http_post(path, json, attempts, transient_only)
   if API_KEY == "" then
     return 0, "missing API key file"
   end
-  local started_at = os.time()
-  local command = table.concat({
-    API .. path,
-    "json",
-    "connect-timeout", "2",
-    "timeout", "4",
-    "append_headers", "'Authorization: Bearer " .. API_KEY .. "'",
-    "content-type", "application/json",
-    "post", url_encode(json)
-  }, " ")
-  local response = freeswitch.API():execute("curl", command) or ""
-  local code = tonumber(response:match('"status_code":"(%d+)"')) or 0
-  local body = json_unescape(response:match('"body":"(.-)","version"')) or ""
-  local elapsed = os.time() - started_at
-  if elapsed >= 2 then
-    freeswitch.consoleLog("warning", string.format(
-      "[billing] slow HTTP path=%s call_uuid=%s elapsed=%ds status=%d\n",
-      path, uuid, elapsed, code
-    ))
+  attempts = tonumber(attempts) or 1
+  local code, body = 0, ""
+  for attempt = 1, attempts do
+    local started_at = os.time()
+    local command = table.concat({
+      API .. path,
+      "json",
+      "connect-timeout", "2",
+      "timeout", "4",
+      "append_headers", "'Authorization: Bearer " .. API_KEY .. "'",
+      "content-type", "application/json",
+      "post", url_encode(json)
+    }, " ")
+    local response = freeswitch.API():execute("curl", command) or ""
+    code = tonumber(response:match('"status_code":"(%d+)"')) or 0
+    body = json_unescape(response:match('"body":"(.-)","version"')) or ""
+    local elapsed = os.time() - started_at
+    if elapsed >= 2 then
+      freeswitch.consoleLog("warning", string.format(
+        "[billing] slow HTTP path=%s call_uuid=%s elapsed=%ds status=%d attempt=%d/%d\n",
+        path, uuid, elapsed, code, attempt, attempts
+      ))
+    end
+    if code == 200 then
+      return code, body
+    end
+    local should_retry = attempt < attempts
+    if should_retry and transient_only then
+      should_retry = code == 0 or code == 500 or code == 502 or
+        (code == 503 and body:find("временно занята", 1, true) ~= nil)
+    end
+    if should_retry then
+      freeswitch.msleep(250 * attempt)
+    else
+      break
+    end
   end
   return code, body
 end
@@ -159,7 +176,7 @@ local rjson = string.format(
 -- /api/reserve is the authoritative gate and repeats the client/IP checks.
 -- Keeping a separate sip-guard request here doubled the API load and could
 -- consume the whole call-setup timeout before the reservation was returned.
-local code, body = http_post("/api/reserve", rjson)
+local code, body = http_post("/api/reserve", rjson, 2, true)
 if code ~= 200 then
   reject_call("[billing] reserve rejected (" .. code .. "): " .. body, code)
   return
@@ -296,7 +313,7 @@ local fjson = string.format(
   json_escape(result),
   json_escape(VOICE_NODE)
 )
-local fcode, fbody = http_post("/api/finalize", fjson)
+local fcode, fbody = http_post("/api/finalize", fjson, 3)
 if fcode ~= 200 then
   freeswitch.consoleLog("error", "[billing] finalize error (" .. fcode .. "): " .. fbody .. "\n")
 else

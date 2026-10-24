@@ -119,6 +119,25 @@ class VoiceNodeRoutingTests(unittest.TestCase):
         script = (Path(__file__).parents[1] / "freeswitch" / "billing.lua").read_text()
         self.assertNotIn('http_post("/api/sip-guard"', script)
         self.assertEqual(script.count('http_post("/api/reserve"'), 1)
+        self.assertIn('http_post("/api/reserve", rjson, 2, true)', script)
+
+    def test_reserve_retry_is_idempotent(self):
+        first = self.reserve("secondary")
+        second = self.reserve("secondary")
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(first.json()["max_seconds"], second.json()["max_seconds"])
+        with db.get_conn() as conn:
+            reservations = conn.execute(
+                "SELECT COUNT(*) AS c FROM reservations WHERE call_uuid = ?",
+                ("call-secondary",),
+            ).fetchone()["c"]
+            hits = conn.execute(
+                "SELECT COUNT(*) AS c FROM sip_hits WHERE call_uuid = ?",
+                ("call-secondary",),
+            ).fetchone()["c"]
+        self.assertEqual(reservations, 1)
+        self.assertEqual(hits, 1)
 
     def test_admin_can_add_and_subtract_client_balance(self):
         auth = ("test", "test-password")
