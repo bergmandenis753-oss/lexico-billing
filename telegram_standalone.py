@@ -3,6 +3,7 @@ import os
 import re
 import socket
 import textwrap
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -20,6 +21,9 @@ import voice_nodes
 
 
 app = FastAPI(title="Lexico Telegram diagnostics bot", docs_url=None, redoc_url=None, openapi_url=None)
+
+_diagnostics_cache = {"value": None, "expires_at": 0.0}
+_diagnostics_lock = threading.Lock()
 
 
 class TelegramUpdate(BaseModel):
@@ -248,7 +252,25 @@ def _load_diagnostics():
     base = _billing_base_url()
     if not base:
         raise RuntimeError("BILLING_API_BASE_URL не задан")
-    return _get_json(f"{base}/api/ops/diagnostics", headers=_billing_headers())
+    now = time.monotonic()
+    with _diagnostics_lock:
+        cached = _diagnostics_cache["value"]
+        if cached is not None and now < _diagnostics_cache["expires_at"]:
+            return cached
+        try:
+            value = _get_json(
+                f"{base}/api/ops/diagnostics",
+                headers=_billing_headers(),
+                timeout=6,
+                attempts=1,
+            )
+        except Exception:
+            if cached is not None:
+                return cached
+            raise
+        _diagnostics_cache["value"] = value
+        _diagnostics_cache["expires_at"] = time.monotonic() + 15
+        return value
 
 
 def _load_call_check(number):
@@ -259,8 +281,8 @@ def _load_call_check(number):
     return _get_json(
         f"{base}/api/ops/call-check/{safe_number}",
         headers=_billing_headers(),
-        timeout=8,
-        attempts=2,
+        timeout=5,
+        attempts=1,
     )
 
 
@@ -683,7 +705,7 @@ def healthz():
 
 
 @app.post("/telegram/webhook")
-async def telegram_webhook(
+def telegram_webhook(
     update: TelegramUpdate,
     x_telegram_bot_api_secret_token: Optional[str] = Header(None),
 ):
@@ -713,8 +735,8 @@ async def telegram_webhook(
             _send_rate_notification(chat_id, message_text)
             return {"ok": True, "rate_notification": True}
         if callback:
-            data = _load_diagnostics()
             _answer_callback(callback.get("id"))
+            data = _load_diagnostics()
             text, keyboard = _answer_for_callback(data, callback.get("data") or "menu")
         else:
             command = message_text.strip().lower().split(maxsplit=1)[0].split("@", 1)[0]
