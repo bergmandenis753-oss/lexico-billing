@@ -1,5 +1,6 @@
 import json
 import re
+import sqlite3
 from functools import lru_cache
 from pathlib import Path
 
@@ -34,6 +35,21 @@ COUNTRY_NAME_ALIASES = {
 
 def _rows(rows):
     return [dict(row) for row in rows]
+
+
+def _read_conn(db):
+    """Open a fail-fast, strictly read-only connection for report queries."""
+    uri = f"{Path(db.DB_PATH).resolve().as_uri()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=0.1)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only=ON")
+    conn.execute("PRAGMA busy_timeout=100")
+    return conn
+
+
+def _read_busy(exc):
+    message = str(exc).lower()
+    return "locked" in message or "busy" in message
 
 
 def _route_exists(app, path, method):
@@ -95,10 +111,9 @@ def install(app, main, db):
     if not _route_exists(app, "/api/ops/client-cdr-duration/{client_id}", "GET"):
         @app.get("/api/ops/client-cdr-duration/{client_id}", dependencies=main.API_AUTH)
         def ops_client_cdr_duration(client_id: int, min_billsec: int = 0, limit: int = 5000):
-            db.init_db()
             min_billsec = max(0, int(min_billsec or 0))
             limit = min(10000, max(1, int(limit or 5000)))
-            conn = db.get_conn()
+            conn = _read_conn(db)
             try:
                 client = conn.execute("SELECT id, name, currency FROM clients WHERE id = ?", (client_id,)).fetchone()
                 if client is None:
@@ -114,7 +129,8 @@ def install(app, main, db):
                     LEFT JOIN clients ON clients.id = cdr.client_id
                     WHERE cdr.client_id = ?
                       AND COALESCE(cdr.billsec, 0) > ?
-                      AND date(cdr.started_at) = date('now')
+                      AND cdr.started_at >= date('now')
+                      AND cdr.started_at < datetime(date('now'), '+1 day')
                     ORDER BY cdr.started_at DESC, cdr.id DESC
                     LIMIT ?
                     """,
@@ -130,16 +146,19 @@ def install(app, main, db):
                     "money_scale": db.MONEY_SCALE,
                     "cdr": _rows(rows),
                 }
+            except sqlite3.OperationalError as exc:
+                if _read_busy(exc):
+                    raise HTTPException(503, "CDR report database is temporarily busy") from exc
+                raise
             finally:
                 conn.close()
 
     if not _route_exists(app, "/api/ops/cdr-duration-country/{country_code}", "GET"):
         @app.get("/api/ops/cdr-duration-country/{country_code}", dependencies=main.API_AUTH)
         def ops_country_cdr_duration(country_code: str, min_billsec: int = 0, limit: int = 5000):
-            db.init_db()
             min_billsec = max(0, int(min_billsec or 0))
             limit = min(10000, max(1, int(limit or 5000)))
-            conn = db.get_conn()
+            conn = _read_conn(db)
             try:
                 code, country = _country_for_iso(db, conn, country_code)
                 matches = []
@@ -154,7 +173,8 @@ def install(app, main, db):
                     FROM cdr
                     LEFT JOIN clients ON clients.id = cdr.client_id
                     WHERE COALESCE(cdr.billsec, 0) > ?
-                      AND date(cdr.started_at) = date('now')
+                      AND cdr.started_at >= date('now')
+                      AND cdr.started_at < datetime(date('now'), '+1 day')
                     ORDER BY cdr.started_at DESC, cdr.id DESC
                     """,
                     (min_billsec,),
@@ -178,5 +198,9 @@ def install(app, main, db):
                     "money_scale": db.MONEY_SCALE,
                     "cdr": matches,
                 }
+            except sqlite3.OperationalError as exc:
+                if _read_busy(exc):
+                    raise HTTPException(503, "CDR report database is temporarily busy") from exc
+                raise
             finally:
                 conn.close()
