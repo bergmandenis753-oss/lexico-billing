@@ -583,6 +583,35 @@ def _reserve_response(row):
     }
 
 
+def _sip_targets_payload(conn):
+    numbers = [dict(row) for row in conn.execute(
+        """SELECT n.id, n.did_number, n.active, c.name AS client_name
+             FROM did_numbers n
+             JOIN did_clients c ON c.id = n.client_id
+            ORDER BY c.name, n.did_number"""
+    ).fetchall()]
+    targets = [dict(row) for row in conn.execute(
+        """SELECT s.*, n.did_number, n.active AS did_active,
+                  c.name AS client_name
+             FROM did_sip_targets s
+             JOIN did_numbers n ON n.id = s.did_number_id
+             JOIN did_clients c ON c.id = n.client_id
+            ORDER BY c.name, n.did_number"""
+    ).fetchall()]
+    for target in targets:
+        target["ready"] = bool(
+            target["plugin_hash"] and target["plugin_domain"] and target["sip_uri"]
+        )
+        try:
+            target["bridge_target"] = (
+                _exact_sip_bridge_target(target["sip_uri"]) if target["sip_uri"] else ""
+            )
+        except ValueError:
+            target["bridge_target"] = ""
+            target["ready"] = False
+    return {"numbers": numbers, "targets": targets}
+
+
 def finalize_call(db, data: DidFinalizeIn):
     conn = db.get_conn()
     try:
@@ -973,6 +1002,26 @@ def install(app, main, db, base_path: Path) -> None:
             },
         )
 
+    @app.get("/sip-crm", response_class=HTMLResponse, dependencies=main.ADMIN_AUTH)
+    def sip_crm_page(request: Request):
+        html = (base_path / "sip_crm.html").read_text(encoding="utf-8")
+        return HTMLResponse(
+            html,
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
+
+    @app.get("/api/dids/sip-targets", dependencies=main.ADMIN_AUTH)
+    def did_sip_targets():
+        conn = db.get_conn()
+        try:
+            return _sip_targets_payload(conn)
+        finally:
+            conn.close()
+
     @app.get("/api/dids/dashboard", dependencies=main.ADMIN_AUTH)
     def did_dashboard():
         now = int(time.time())
@@ -999,25 +1048,6 @@ def install(app, main, db, base_path: Path) -> None:
                     GROUP BY n.id ORDER BY n.did_number""",
                 (now,),
             ).fetchall()]
-            sip_targets = [dict(r) for r in conn.execute(
-                """SELECT s.*, n.did_number, n.active AS did_active,
-                          c.name AS client_name
-                     FROM did_sip_targets s
-                     JOIN did_numbers n ON n.id = s.did_number_id
-                     JOIN did_clients c ON c.id = n.client_id
-                    ORDER BY c.name, n.did_number"""
-            ).fetchall()]
-            for target in sip_targets:
-                target["ready"] = bool(
-                    target["plugin_hash"] and target["plugin_domain"] and target["sip_uri"]
-                )
-                try:
-                    target["bridge_target"] = (
-                        _exact_sip_bridge_target(target["sip_uri"]) if target["sip_uri"] else ""
-                    )
-                except ValueError:
-                    target["bridge_target"] = ""
-                    target["ready"] = False
             cdr = [dict(r) for r in conn.execute(
                 """SELECT d.*, c.name AS client_name, c.currency
                      FROM did_cdr d JOIN did_clients c ON c.id = d.client_id
@@ -1074,7 +1104,7 @@ def install(app, main, db, base_path: Path) -> None:
                 "money_scale": db.MONEY_SCALE, "summary": summary, "clients": clients,
                 "numbers": numbers, "cdr": cdr, "outbound_routes": outbound_routes,
                 "outbound_cdr": outbound_cdr, "caller_ids": caller_ids,
-                "existing_terminators": existing_terminators, "sip_targets": sip_targets,
+                "existing_terminators": existing_terminators,
             }
         finally:
             conn.close()

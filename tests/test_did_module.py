@@ -95,6 +95,32 @@ class DidBillingTests(unittest.TestCase):
         ))
         self.assertEqual(reserved["bridge_target"], "sofia/external/48221234567@198.51.100.20:5060")
 
+    def test_sip_crm_tab_uses_its_own_lightweight_api(self):
+        page = self.http.get("/sip-crm")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("Входящие маршруты в CRM", page.text)
+        self.assertIn("/api/dids/sip-targets", page.text)
+
+        saved = self.http.put(
+            f"/api/dids/numbers/{self.number_id}/sip-target",
+            json={
+                "plugin_hash": "draft-hash",
+                "plugin_domain": "kz.pbx.de.backend.salesrender.com",
+                "sip_uri": "sip:draft-hash:kz.pbx.de.backend.salesrender.com",
+                "active": False,
+            },
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+
+        response = self.http.get("/api/dids/sip-targets")
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(len(payload["numbers"]), 1)
+        self.assertEqual(len(payload["targets"]), 1)
+        self.assertEqual(payload["targets"][0]["did_number"], "48221234567")
+        self.assertTrue(payload["targets"][0]["ready"])
+        self.assertFalse(payload["targets"][0]["active"])
+
     def test_salesrender_target_uses_exact_uri_and_is_stable_for_retry(self):
         first_uri = "sip:1ec1c7b49dd8d2378e31407c195a0fe2:kz.pbx.de.backend.salesrender.com"
         response = self.http.put(
