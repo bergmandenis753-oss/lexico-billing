@@ -462,9 +462,15 @@ def reserve_call(db, data: DidReserveIn):
         )
         route = conn.execute(
             """SELECT n.*, c.name AS client_name, c.balance_cents,
-                      c.credit_limit_cents, c.currency, c.active AS client_active
+                      c.credit_limit_cents, c.currency, c.active AS client_active,
+                      s.plugin_hash AS sip_target_plugin_hash,
+                      s.plugin_domain AS sip_target_plugin_domain,
+                      s.sip_uri AS sip_target_uri,
+                      s.active AS sip_target_active
                  FROM did_numbers n
                  JOIN did_clients c ON c.id = n.client_id
+                 LEFT JOIN did_sip_targets s
+                   ON s.did_number_id = n.id AND s.active = 1
                 WHERE n.did_number = ?""",
             (did_number,),
         ).fetchone()
@@ -508,18 +514,12 @@ def reserve_call(db, data: DidReserveIn):
         expires_at = now + max_seconds + db.RESERVATION_BUFFER_SEC
         destination = route["destination"]
         bridge_target = ""
-        sip_target = conn.execute(
-            """SELECT plugin_hash, plugin_domain, sip_uri
-                 FROM did_sip_targets
-                WHERE did_number_id = ? AND active = 1""",
-            (route["id"],),
-        ).fetchone()
-        if sip_target is not None:
+        if route["sip_target_active"]:
             try:
-                bridge_target = _exact_sip_bridge_target(sip_target["sip_uri"])
+                bridge_target = _exact_sip_bridge_target(route["sip_target_uri"])
             except ValueError as exc:
                 raise HTTPException(500, "Активное SIP CRM назначение настроено некорректно") from exc
-            destination = sip_target["sip_uri"]
+            destination = route["sip_target_uri"]
         conn.execute(
             """INSERT INTO did_reservations
                    (call_uuid, did_number_id, client_id, caller_id, source_ip,
