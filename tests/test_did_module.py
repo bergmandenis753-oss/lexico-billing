@@ -82,6 +82,80 @@ class DidBillingTests(unittest.TestCase):
         self.assertEqual(repeated["charged_cents"], 1017)
         self.assertEqual(repeated["balance_cents"], 98983)
 
+    def test_salesrender_draft_does_not_change_live_did_route(self):
+        response = self.http.put(
+            f"/api/dids/numbers/{self.number_id}/sip-target",
+            json={"plugin_hash": "", "plugin_domain": "", "sip_uri": "", "active": False},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(response.json()["ready"])
+
+        reserved = did_module.reserve_call(db, did_module.DidReserveIn(
+            did_number="48221234567", source_ip="203.0.113.10", call_uuid="draft-route"
+        ))
+        self.assertEqual(reserved["bridge_target"], "sofia/external/48221234567@198.51.100.20:5060")
+
+    def test_salesrender_target_uses_exact_uri_and_is_stable_for_retry(self):
+        first_uri = "sip:1ec1c7b49dd8d2378e31407c195a0fe2:kz.pbx.de.backend.salesrender.com"
+        response = self.http.put(
+            f"/api/dids/numbers/{self.number_id}/sip-target",
+            json={
+                "plugin_hash": "1ec1c7b49dd8d2378e31407c195a0fe2",
+                "plugin_domain": "kz.pbx.de.backend.salesrender.com",
+                "sip_uri": first_uri,
+                "notes": "Inbound only",
+                "active": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["bridge_target"], f"sofia/external/{first_uri}")
+
+        reserved = did_module.reserve_call(db, did_module.DidReserveIn(
+            did_number="48221234567", source_ip="203.0.113.10", call_uuid="salesrender-route"
+        ))
+        self.assertEqual(reserved["destination"], first_uri)
+        self.assertEqual(reserved["bridge_target"], f"sofia/external/{first_uri}")
+
+        second_uri = "sip:newhash:de.pbx.de.backend.salesrender.com"
+        updated = self.http.put(
+            f"/api/dids/numbers/{self.number_id}/sip-target",
+            json={
+                "plugin_hash": "newhash",
+                "plugin_domain": "de.pbx.de.backend.salesrender.com",
+                "sip_uri": second_uri,
+                "active": True,
+            },
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+
+        repeated = did_module.reserve_call(db, did_module.DidReserveIn(
+            did_number="48221234567", source_ip="203.0.113.10", call_uuid="salesrender-route"
+        ))
+        self.assertEqual(repeated["bridge_target"], f"sofia/external/{first_uri}")
+
+    def test_salesrender_target_cannot_be_enabled_until_complete(self):
+        response = self.http.put(
+            f"/api/dids/numbers/{self.number_id}/sip-target",
+            json={
+                "plugin_hash": "hash-only",
+                "plugin_domain": "kz.pbx.de.backend.salesrender.com",
+                "sip_uri": "",
+                "active": True,
+            },
+        )
+        self.assertEqual(response.status_code, 422, response.text)
+
+        invalid_uri = self.http.put(
+            f"/api/dids/numbers/{self.number_id}/sip-target",
+            json={
+                "plugin_hash": "hash",
+                "plugin_domain": "kz.pbx.de.backend.salesrender.com",
+                "sip_uri": "https://not-sip.example",
+                "active": True,
+            },
+        )
+        self.assertEqual(invalid_uri.status_code, 422, invalid_uri.text)
+
     def test_provider_whitelist_and_channel_limit(self):
         with self.assertRaisesRegex(Exception, "whitelist"):
             did_module.reserve_call(db, did_module.DidReserveIn(

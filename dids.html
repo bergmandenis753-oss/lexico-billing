@@ -111,6 +111,15 @@
   </section>
 
   <section>
+    <div class="section-head"><h2>SIP CRM назначения</h2><button class="small" onclick="openSipTargetDialog()">+ SalesRender</button></div>
+    <div class="mut" style="margin:-2px 0 10px">Отдельный входящий маршрут на SIP URI CRM. Черновик и выключенная настройка не меняют обработку звонков.</div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>DID</th><th>Клиент</th><th>Интеграция</th><th>Plugin hash</th><th>Домен</th><th>Полный SIP URI</th><th>Готовность</th><th>Статус</th><th></th></tr></thead>
+      <tbody id="sip-targets-body"></tbody>
+    </table></div>
+  </section>
+
+  <section>
     <div class="section-head"><h2>Входящие CDR · последние 100</h2></div>
     <div class="table-wrap"><table>
       <thead><tr><th>Время</th><th>Клиент</th><th>DID (B)</th><th>Caller ID (A)</th><th>Поставщик / IP</th><th>Назначение</th><th class="right">Длит.</th><th class="right">Списано</th><th class="right">Маржа</th><th>Результат</th></tr></thead>
@@ -195,13 +204,28 @@
   </form>
 </dialog>
 
+<dialog id="sip-target-dlg">
+  <h3 id="sip-target-dlg-title">SalesRender · входящий SIP маршрут</h3>
+  <form id="sip-target-form">
+    <label>DID, который направляем в SalesRender</label><select id="sip-target-number" required></select>
+    <label>Plugin hash</label><input id="sip-target-hash" autocomplete="off" placeholder="1ec1c7b49dd8d2378e31407c195a0fe2">
+    <label>Домен SalesRender</label><input id="sip-target-domain" autocomplete="off" placeholder="kz.pbx.de.backend.salesrender.com">
+    <label>Полный SIP URI от SalesRender</label><input id="sip-target-uri" autocomplete="off" placeholder="sip:{plugin_hash}:{domain}">
+    <div class="mut" style="margin:-6px 0 14px">URI сохраняется и передаётся FreeSWITCH без перестройки. Включение доступно только после заполнения всех трёх полей.</div>
+    <label>Комментарий</label><textarea id="sip-target-notes" placeholder="Формат номера, whitelist IP или другие требования SalesRender"></textarea>
+    <label class="check"><input id="sip-target-active" type="checkbox"> Использовать этот маршрут для новых входящих звонков</label>
+    <div class="dialog-actions"><button id="sip-target-delete" type="button" class="danger push-left" hidden>Удалить</button><button type="button" class="ghost" onclick="sipTargetDlg.close()">Отмена</button><button type="submit">Сохранить</button></div>
+  </form>
+</dialog>
+
 <script>
 const MONEY_SCALE = 10000;
 const clientDlg = document.getElementById('client-dlg');
 const numberDlg = document.getElementById('number-dlg');
 const accessDlg = document.getElementById('access-dlg');
 const outboundRouteDlg = document.getElementById('outbound-route-dlg');
-let state = {clients:[], numbers:[], cdr:[], outbound_routes:[], outbound_cdr:[], caller_ids:{}, existing_terminators:[], summary:{}};
+const sipTargetDlg = document.getElementById('sip-target-dlg');
+let state = {clients:[], numbers:[], cdr:[], outbound_routes:[], outbound_cdr:[], caller_ids:{}, existing_terminators:[], sip_targets:[], summary:{}};
 let loading = false;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const empty = cols => `<tr><td colspan="${cols}" class="empty">Нет данных</td></tr>`;
@@ -276,6 +300,15 @@ function render() {
     <td><div class="actions"><button class="ghost icon-button" title="Редактировать правило" aria-label="Редактировать правило" onclick="openNumberEdit(${n.id})">✎</button><button class="small ${n.active?'danger':'ghost'}" onclick="toggleNumber(${n.id},${n.active?0:1})">${n.active?'Выкл':'Вкл'}</button></div></td>
   </tr>`).join('') || empty(11);
 
+  document.getElementById('sip-targets-body').innerHTML = (state.sip_targets || []).map(t => `<tr>
+    <td class="mono">${esc(t.did_number)}</td><td>${esc(t.client_name)}</td><td>SalesRender</td>
+    <td class="mono">${esc(t.plugin_hash || '—')}</td><td class="mono">${esc(t.plugin_domain || '—')}</td>
+    <td class="mono">${esc(t.sip_uri || '—')}</td>
+    <td>${t.ready ? '<span class="badge on">данные готовы</span>' : '<span class="badge busy">черновик</span>'}</td>
+    <td>${t.active ? '<span class="badge on">используется</span>' : '<span class="badge off">выключен</span>'}</td>
+    <td><div class="actions"><button class="ghost icon-button" title="Редактировать SIP CRM маршрут" aria-label="Редактировать SIP CRM маршрут" onclick="openSipTargetEdit(${t.did_number_id})">✎</button><button class="small ${t.active?'danger':'ghost'}" onclick="toggleSipTarget(${t.did_number_id},${t.active?0:1})">${t.active?'Выкл':'Вкл'}</button></div></td>
+  </tr>`).join('') || empty(9);
+
   document.getElementById('outbound-routes-body').innerHTML = (state.outbound_routes || []).map(r => `<tr>
     <td>${esc(r.client_name)}<div class="mut mono">${esc((state.clients.find(c=>c.id===r.client_id)||{}).outbound_ips || 'нет IP')}</div></td>
     <td>${esc(r.resolved_destination_name || r.destination_name)}<div class="mut mono">${esc(r.prefix)}</div></td>
@@ -319,6 +352,13 @@ function render() {
     return `<option value="${t.id}">${esc(provider)} · ${esc(t.destination_name)} ${esc(t.prefix)} · TP ${esc(t.tech_prefix || '—')} · buy ${money(t.cost_rate_cents,'USD')} ${esc(t.billing_cycle)} · ${esc(target)}</option>`;
   }).join('');
   if ([...termSelect.options].some(o => o.value === termSelected)) termSelect.value = termSelected;
+  const sipNumberSelect = document.getElementById('sip-target-number');
+  const sipNumberSelected = sipNumberSelect.value;
+  sipNumberSelect.innerHTML = state.numbers.map(n => {
+    const configured = (state.sip_targets || []).some(t => t.did_number_id === n.id);
+    return `<option value="${n.id}" ${configured?'disabled':''}>${esc(n.did_number)} · ${esc(n.client_name)}${configured?' · уже настроен':''}</option>`;
+  }).join('');
+  if ([...sipNumberSelect.options].some(o => o.value === sipNumberSelected)) sipNumberSelect.value = sipNumberSelected;
 }
 
 async function load(manual=false) {
@@ -377,6 +417,35 @@ function openOutboundRouteDialog() {
   document.getElementById('out-active').checked = true;
   document.getElementById('out-client').value = String(state.clients.find(c => c.active).id);
   outboundRouteDlg.showModal();
+}
+
+function openSipTargetDialog(numberId=null) {
+  if (!state.numbers.length) return notice('Сначала добавьте DID.',true);
+  const available = state.numbers.filter(n => !(state.sip_targets || []).some(t => t.did_number_id === n.id));
+  if (!available.length && numberId === null) return notice('Для всех DID уже создана SIP CRM настройка.',true);
+  document.getElementById('sip-target-form').reset();
+  document.getElementById('sip-target-number').disabled = false;
+  const number = available.find(n => n.id === Number(numberId)) || available[0] || state.numbers.find(n => n.id === Number(numberId));
+  document.getElementById('sip-target-number').value = String(number.id);
+  document.getElementById('sip-target-active').checked = false;
+  document.getElementById('sip-target-delete').hidden = true;
+  document.getElementById('sip-target-dlg-title').textContent = 'SalesRender · новый входящий маршрут';
+  sipTargetDlg.showModal();
+}
+
+function openSipTargetEdit(numberId) {
+  const target = (state.sip_targets || []).find(item => item.did_number_id === numberId);
+  if (!target) return openSipTargetDialog(numberId);
+  document.getElementById('sip-target-number').value = String(numberId);
+  document.getElementById('sip-target-number').disabled = true;
+  document.getElementById('sip-target-hash').value = target.plugin_hash || '';
+  document.getElementById('sip-target-domain').value = target.plugin_domain || '';
+  document.getElementById('sip-target-uri').value = target.sip_uri || '';
+  document.getElementById('sip-target-notes').value = target.notes || '';
+  document.getElementById('sip-target-active').checked = Boolean(target.active);
+  document.getElementById('sip-target-delete').hidden = false;
+  document.getElementById('sip-target-dlg-title').textContent = `SalesRender · ${target.did_number}`;
+  sipTargetDlg.showModal();
 }
 
 function openClientDialog() {
@@ -486,6 +555,18 @@ async function toggleOutboundRoute(id, active) {
   catch (error) { notice(error.message,true); }
 }
 
+async function toggleSipTarget(numberId, active) {
+  const target = (state.sip_targets || []).find(item => item.did_number_id === numberId);
+  if (!target) return;
+  try {
+    await api(`/api/dids/numbers/${numberId}/sip-target`,'PUT',{
+      plugin_hash:target.plugin_hash || '', plugin_domain:target.plugin_domain || '', sip_uri:target.sip_uri || '',
+      notes:target.notes || '', active:Boolean(active)
+    });
+    await load(true);
+  } catch (error) { notice(error.message,true); }
+}
+
 document.getElementById('client-form').addEventListener('submit', async event => {
   event.preventDefault();
   try {
@@ -549,6 +630,33 @@ document.getElementById('outbound-route-form').addEventListener('submit', async 
     await api(id ? `/api/dids/outbound-routes/${id}` : '/api/dids/outbound-routes', id ? 'PATCH' : 'POST', payload);
     event.target.reset(); document.getElementById('out-cycle').value='1/1'; document.getElementById('out-channels').value='10'; document.getElementById('out-active').checked=true;
     outboundRouteDlg.close(); await load(true);
+  } catch (error) { notice(error.message,true); }
+});
+
+document.getElementById('sip-target-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const numberId = Number(document.getElementById('sip-target-number').value);
+  try {
+    await api(`/api/dids/numbers/${numberId}/sip-target`,'PUT',{
+      plugin_hash:document.getElementById('sip-target-hash').value.trim(),
+      plugin_domain:document.getElementById('sip-target-domain').value.trim(),
+      sip_uri:document.getElementById('sip-target-uri').value.trim(),
+      notes:document.getElementById('sip-target-notes').value.trim(),
+      active:document.getElementById('sip-target-active').checked
+    });
+    sipTargetDlg.close();
+    await load(true);
+  } catch (error) { notice(error.message,true); }
+});
+
+document.getElementById('sip-target-delete').addEventListener('click', async () => {
+  const numberId = Number(document.getElementById('sip-target-number').value);
+  const number = state.numbers.find(item => item.id === numberId);
+  if (!numberId || !confirm(`Удалить SIP CRM настройку для DID ${number?.did_number || ''}? Основной маршрут DID останется без изменений.`)) return;
+  try {
+    await api(`/api/dids/numbers/${numberId}/sip-target`,'DELETE');
+    sipTargetDlg.close();
+    await load(true);
   } catch (error) { notice(error.message,true); }
 });
 

@@ -51,6 +51,32 @@ def _bridge_target(destination: str, did_number: str) -> str:
     return f"sofia/external/{did_number}@{destination}"
 
 
+def _exact_sip_bridge_target(sip_uri: str) -> str:
+    """Return a Sofia dial string without rewriting a CRM-provided SIP URI."""
+    value = (sip_uri or "").strip()
+    if not re.fullmatch(r"sips?:[^\s]+", value, flags=re.IGNORECASE):
+        raise ValueError("Некорректный полный SIP URI")
+    return f"sofia/external/{value}"
+
+
+def _validate_sip_target(*, plugin_hash: str, plugin_domain: str, sip_uri: str, active: bool):
+    plugin_hash = _clean_text(plugin_hash, 160)
+    plugin_domain = _clean_text(plugin_domain, 255).lower()
+    sip_uri = _clean_text(sip_uri, 500)
+    if plugin_hash and not re.fullmatch(r"[A-Za-z0-9._-]+", plugin_hash):
+        raise HTTPException(422, "Plugin hash содержит недопустимые символы")
+    if plugin_domain and not re.fullmatch(r"[A-Za-z0-9.-]+(?::[0-9]{1,5})?", plugin_domain):
+        raise HTTPException(422, "Некорректный домен SalesRender")
+    if sip_uri:
+        try:
+            _exact_sip_bridge_target(sip_uri)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+    if active and not (plugin_hash and plugin_domain and sip_uri):
+        raise HTTPException(422, "Для включения нужны plugin hash, домен и полный SIP URI")
+    return plugin_hash, plugin_domain, sip_uri
+
+
 class DidClientIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     currency: str = Field(default="USD", min_length=3, max_length=8)
@@ -112,6 +138,14 @@ class DidNumberUpdate(BaseModel):
     max_channels: Optional[int] = Field(default=None, ge=1, le=1000)
     active: Optional[bool] = None
     notes: Optional[str] = Field(default=None, max_length=2000)
+
+
+class DidSipTargetIn(BaseModel):
+    plugin_hash: str = Field(default="", max_length=160)
+    plugin_domain: str = Field(default="", max_length=255)
+    sip_uri: str = Field(default="", max_length=500)
+    notes: str = Field(default="", max_length=2000)
+    active: bool = False
 
 
 class DidReserveIn(BaseModel):
@@ -219,6 +253,21 @@ def init_schema(db) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_did_numbers_client ON did_numbers(client_id);
 
+            CREATE TABLE IF NOT EXISTS did_sip_targets (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                did_number_id      INTEGER NOT NULL UNIQUE REFERENCES did_numbers(id) ON DELETE CASCADE,
+                integration        TEXT NOT NULL DEFAULT 'salesrender',
+                plugin_hash        TEXT NOT NULL DEFAULT '',
+                plugin_domain      TEXT NOT NULL DEFAULT '',
+                sip_uri            TEXT NOT NULL DEFAULT '',
+                notes              TEXT NOT NULL DEFAULT '',
+                active             INTEGER NOT NULL DEFAULT 0,
+                created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_did_sip_targets_number
+                ON did_sip_targets(did_number_id, active);
+
             CREATE TABLE IF NOT EXISTS did_caller_ids (
                 id                 INTEGER PRIMARY KEY AUTOINCREMENT,
                 client_id          INTEGER NOT NULL REFERENCES did_clients(id) ON DELETE CASCADE,
@@ -235,6 +284,7 @@ def init_schema(db) -> None:
                 caller_id          TEXT NOT NULL DEFAULT '',
                 source_ip          TEXT NOT NULL DEFAULT '',
                 destination        TEXT NOT NULL DEFAULT '',
+                bridge_target      TEXT NOT NULL DEFAULT '',
                 reserved_cents     INTEGER NOT NULL DEFAULT 0,
                 max_seconds        INTEGER NOT NULL DEFAULT 0,
                 active             INTEGER NOT NULL DEFAULT 1,
@@ -365,6 +415,9 @@ def init_schema(db) -> None:
         for column, definition in number_additions.items():
             if column not in number_columns:
                 conn.execute(f"ALTER TABLE did_numbers ADD COLUMN {column} {definition}")
+        reservation_columns = {row["name"] for row in conn.execute("PRAGMA table_info(did_reservations)")}
+        if "bridge_target" not in reservation_columns:
+            conn.execute("ALTER TABLE did_reservations ADD COLUMN bridge_target TEXT NOT NULL DEFAULT ''")
         conn.execute(
             "UPDATE did_numbers SET sold_on = date(created_at) "
             "WHERE sold_on IS NULL OR trim(sold_on) = ''"
@@ -454,11 +507,24 @@ def reserve_call(db, data: DidReserveIn):
             reserved = 0
         expires_at = now + max_seconds + db.RESERVATION_BUFFER_SEC
         destination = route["destination"]
+        bridge_target = ""
+        sip_target = conn.execute(
+            """SELECT plugin_hash, plugin_domain, sip_uri
+                 FROM did_sip_targets
+                WHERE did_number_id = ? AND active = 1""",
+            (route["id"],),
+        ).fetchone()
+        if sip_target is not None:
+            try:
+                bridge_target = _exact_sip_bridge_target(sip_target["sip_uri"])
+            except ValueError as exc:
+                raise HTTPException(500, "Активное SIP CRM назначение настроено некорректно") from exc
+            destination = sip_target["sip_uri"]
         conn.execute(
             """INSERT INTO did_reservations
                    (call_uuid, did_number_id, client_id, caller_id, source_ip,
-                    destination, reserved_cents, max_seconds, expires_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    destination, bridge_target, reserved_cents, max_seconds, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 data.call_uuid,
                 route["id"],
@@ -466,6 +532,7 @@ def reserve_call(db, data: DidReserveIn):
                 _clean_text(data.caller_id, 64),
                 _clean_text(data.source_ip, 64),
                 destination,
+                bridge_target,
                 reserved,
                 max_seconds,
                 expires_at,
@@ -478,6 +545,7 @@ def reserve_call(db, data: DidReserveIn):
             caller_id=data.caller_id,
             source_ip=data.source_ip,
             destination=destination,
+            bridge_target=bridge_target,
             reserved_cents=reserved,
             max_seconds=max_seconds,
             expires_at=expires_at,
@@ -495,6 +563,7 @@ def reserve_call(db, data: DidReserveIn):
 
 def _reserve_response(row):
     did_number = row["did_number"]
+    stored_bridge_target = row["bridge_target"] if "bridge_target" in row.keys() else ""
     return {
         "allowed": True,
         "call_uuid": row["call_uuid"],
@@ -503,7 +572,7 @@ def _reserve_response(row):
         "did_number": did_number,
         "destination": row["destination"],
         "backup_destination": row["backup_destination"],
-        "bridge_target": _bridge_target(row["destination"], did_number),
+        "bridge_target": stored_bridge_target or _bridge_target(row["destination"], did_number),
         "backup_bridge_target": _bridge_target(row["backup_destination"], did_number) if row["backup_destination"] else "",
         "max_seconds": row["max_seconds"],
         "sell_rate_cents": row["sell_rate_cents"],
@@ -930,6 +999,25 @@ def install(app, main, db, base_path: Path) -> None:
                     GROUP BY n.id ORDER BY n.did_number""",
                 (now,),
             ).fetchall()]
+            sip_targets = [dict(r) for r in conn.execute(
+                """SELECT s.*, n.did_number, n.active AS did_active,
+                          c.name AS client_name
+                     FROM did_sip_targets s
+                     JOIN did_numbers n ON n.id = s.did_number_id
+                     JOIN did_clients c ON c.id = n.client_id
+                    ORDER BY c.name, n.did_number"""
+            ).fetchall()]
+            for target in sip_targets:
+                target["ready"] = bool(
+                    target["plugin_hash"] and target["plugin_domain"] and target["sip_uri"]
+                )
+                try:
+                    target["bridge_target"] = (
+                        _exact_sip_bridge_target(target["sip_uri"]) if target["sip_uri"] else ""
+                    )
+                except ValueError:
+                    target["bridge_target"] = ""
+                    target["ready"] = False
             cdr = [dict(r) for r in conn.execute(
                 """SELECT d.*, c.name AS client_name, c.currency
                      FROM did_cdr d JOIN did_clients c ON c.id = d.client_id
@@ -986,7 +1074,7 @@ def install(app, main, db, base_path: Path) -> None:
                 "money_scale": db.MONEY_SCALE, "summary": summary, "clients": clients,
                 "numbers": numbers, "cdr": cdr, "outbound_routes": outbound_routes,
                 "outbound_cdr": outbound_cdr, "caller_ids": caller_ids,
-                "existing_terminators": existing_terminators,
+                "existing_terminators": existing_terminators, "sip_targets": sip_targets,
             }
         finally:
             conn.close()
@@ -1156,6 +1244,72 @@ def install(app, main, db, base_path: Path) -> None:
         finally:
             conn.close()
 
+    @app.put("/api/dids/numbers/{number_id}/sip-target", dependencies=main.ADMIN_WRITE_AUTH)
+    def upsert_did_sip_target(number_id: int, data: DidSipTargetIn):
+        plugin_hash, plugin_domain, sip_uri = _validate_sip_target(
+            plugin_hash=data.plugin_hash,
+            plugin_domain=data.plugin_domain,
+            sip_uri=data.sip_uri,
+            active=data.active,
+        )
+        conn = db.get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            number = conn.execute(
+                "SELECT id FROM did_numbers WHERE id = ?", (number_id,)
+            ).fetchone()
+            if number is None:
+                raise HTTPException(404, "DID номер не найден")
+            conn.execute(
+                """INSERT INTO did_sip_targets
+                       (did_number_id, integration, plugin_hash, plugin_domain,
+                        sip_uri, notes, active, updated_at)
+                   VALUES (?, 'salesrender', ?, ?, ?, ?, ?, datetime('now'))
+                   ON CONFLICT(did_number_id) DO UPDATE SET
+                       integration = 'salesrender',
+                       plugin_hash = excluded.plugin_hash,
+                       plugin_domain = excluded.plugin_domain,
+                       sip_uri = excluded.sip_uri,
+                       notes = excluded.notes,
+                       active = excluded.active,
+                       updated_at = datetime('now')""",
+                (
+                    number_id,
+                    plugin_hash,
+                    plugin_domain,
+                    sip_uri,
+                    data.notes.strip(),
+                    int(data.active),
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM did_sip_targets WHERE did_number_id = ?", (number_id,)
+            ).fetchone()
+            conn.commit()
+            result = dict(row)
+            result["ready"] = bool(plugin_hash and plugin_domain and sip_uri)
+            result["bridge_target"] = _exact_sip_bridge_target(sip_uri) if sip_uri else ""
+            return result
+        except HTTPException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    @app.delete("/api/dids/numbers/{number_id}/sip-target", dependencies=main.ADMIN_WRITE_AUTH)
+    def delete_did_sip_target(number_id: int):
+        conn = db.get_conn()
+        try:
+            cur = conn.execute(
+                "DELETE FROM did_sip_targets WHERE did_number_id = ?", (number_id,)
+            )
+            if not cur.rowcount:
+                raise HTTPException(404, "SIP CRM назначение не найдено")
+            conn.commit()
+            return {"ok": True}
+        finally:
+            conn.close()
+
     @app.delete("/api/dids/numbers/{number_id}", dependencies=main.ADMIN_WRITE_AUTH)
     def delete_did_number(number_id: int):
         now = int(time.time())
@@ -1174,6 +1328,7 @@ def install(app, main, db, base_path: Path) -> None:
             if active_calls:
                 raise HTTPException(409, "Нельзя удалить DID: по нему сейчас идёт звонок")
             conn.execute("DELETE FROM did_reservations WHERE did_number_id = ?", (number_id,))
+            conn.execute("DELETE FROM did_sip_targets WHERE did_number_id = ?", (number_id,))
             conn.execute(
                 "DELETE FROM did_caller_ids WHERE client_id = ? AND caller_id = ?",
                 (number["client_id"], number["did_number"]),
