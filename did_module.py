@@ -141,11 +141,20 @@ class DidNumberUpdate(BaseModel):
 
 
 class DidSipTargetIn(BaseModel):
+    edge_node_id: Optional[int] = None
     plugin_hash: str = Field(default="", max_length=160)
     plugin_domain: str = Field(default="", max_length=255)
     sip_uri: str = Field(default="", max_length=500)
     notes: str = Field(default="", max_length=2000)
     active: bool = False
+
+
+class DidSipNodeIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    node_key: str = Field(min_length=2, max_length=80)
+    public_ip: str = Field(default="", max_length=255)
+    notes: str = Field(default="", max_length=1000)
+    active: bool = True
 
 
 class DidReserveIn(BaseModel):
@@ -253,9 +262,21 @@ def init_schema(db) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_did_numbers_client ON did_numbers(client_id);
 
+            CREATE TABLE IF NOT EXISTS did_sip_nodes (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                name               TEXT NOT NULL,
+                node_key           TEXT NOT NULL UNIQUE,
+                public_ip          TEXT NOT NULL DEFAULT '',
+                notes              TEXT NOT NULL DEFAULT '',
+                active             INTEGER NOT NULL DEFAULT 1,
+                created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
             CREATE TABLE IF NOT EXISTS did_sip_targets (
                 id                 INTEGER PRIMARY KEY AUTOINCREMENT,
                 did_number_id      INTEGER NOT NULL UNIQUE REFERENCES did_numbers(id) ON DELETE CASCADE,
+                edge_node_id       INTEGER REFERENCES did_sip_nodes(id),
                 integration        TEXT NOT NULL DEFAULT 'salesrender',
                 plugin_hash        TEXT NOT NULL DEFAULT '',
                 plugin_domain      TEXT NOT NULL DEFAULT '',
@@ -267,6 +288,8 @@ def init_schema(db) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_did_sip_targets_number
                 ON did_sip_targets(did_number_id, active);
+            CREATE INDEX IF NOT EXISTS idx_did_sip_targets_node
+                ON did_sip_targets(edge_node_id, active);
 
             CREATE TABLE IF NOT EXISTS did_caller_ids (
                 id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -284,7 +307,6 @@ def init_schema(db) -> None:
                 caller_id          TEXT NOT NULL DEFAULT '',
                 source_ip          TEXT NOT NULL DEFAULT '',
                 destination        TEXT NOT NULL DEFAULT '',
-                bridge_target      TEXT NOT NULL DEFAULT '',
                 reserved_cents     INTEGER NOT NULL DEFAULT 0,
                 max_seconds        INTEGER NOT NULL DEFAULT 0,
                 active             INTEGER NOT NULL DEFAULT 1,
@@ -415,9 +437,9 @@ def init_schema(db) -> None:
         for column, definition in number_additions.items():
             if column not in number_columns:
                 conn.execute(f"ALTER TABLE did_numbers ADD COLUMN {column} {definition}")
-        reservation_columns = {row["name"] for row in conn.execute("PRAGMA table_info(did_reservations)")}
-        if "bridge_target" not in reservation_columns:
-            conn.execute("ALTER TABLE did_reservations ADD COLUMN bridge_target TEXT NOT NULL DEFAULT ''")
+        sip_target_columns = {row["name"] for row in conn.execute("PRAGMA table_info(did_sip_targets)")}
+        if "edge_node_id" not in sip_target_columns:
+            conn.execute("ALTER TABLE did_sip_targets ADD COLUMN edge_node_id INTEGER REFERENCES did_sip_nodes(id)")
         conn.execute(
             "UPDATE did_numbers SET sold_on = date(created_at) "
             "WHERE sold_on IS NULL OR trim(sold_on) = ''"
@@ -462,15 +484,9 @@ def reserve_call(db, data: DidReserveIn):
         )
         route = conn.execute(
             """SELECT n.*, c.name AS client_name, c.balance_cents,
-                      c.credit_limit_cents, c.currency, c.active AS client_active,
-                      s.plugin_hash AS sip_target_plugin_hash,
-                      s.plugin_domain AS sip_target_plugin_domain,
-                      s.sip_uri AS sip_target_uri,
-                      s.active AS sip_target_active
+                      c.credit_limit_cents, c.currency, c.active AS client_active
                  FROM did_numbers n
                  JOIN did_clients c ON c.id = n.client_id
-                 LEFT JOIN did_sip_targets s
-                   ON s.did_number_id = n.id AND s.active = 1
                 WHERE n.did_number = ?""",
             (did_number,),
         ).fetchone()
@@ -513,18 +529,11 @@ def reserve_call(db, data: DidReserveIn):
             reserved = 0
         expires_at = now + max_seconds + db.RESERVATION_BUFFER_SEC
         destination = route["destination"]
-        bridge_target = ""
-        if route["sip_target_active"]:
-            try:
-                bridge_target = _exact_sip_bridge_target(route["sip_target_uri"])
-            except ValueError as exc:
-                raise HTTPException(500, "Активное SIP CRM назначение настроено некорректно") from exc
-            destination = route["sip_target_uri"]
         conn.execute(
             """INSERT INTO did_reservations
                    (call_uuid, did_number_id, client_id, caller_id, source_ip,
-                    destination, bridge_target, reserved_cents, max_seconds, expires_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    destination, reserved_cents, max_seconds, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 data.call_uuid,
                 route["id"],
@@ -532,7 +541,6 @@ def reserve_call(db, data: DidReserveIn):
                 _clean_text(data.caller_id, 64),
                 _clean_text(data.source_ip, 64),
                 destination,
-                bridge_target,
                 reserved,
                 max_seconds,
                 expires_at,
@@ -545,7 +553,6 @@ def reserve_call(db, data: DidReserveIn):
             caller_id=data.caller_id,
             source_ip=data.source_ip,
             destination=destination,
-            bridge_target=bridge_target,
             reserved_cents=reserved,
             max_seconds=max_seconds,
             expires_at=expires_at,
@@ -563,7 +570,6 @@ def reserve_call(db, data: DidReserveIn):
 
 def _reserve_response(row):
     did_number = row["did_number"]
-    stored_bridge_target = row["bridge_target"] if "bridge_target" in row.keys() else ""
     return {
         "allowed": True,
         "call_uuid": row["call_uuid"],
@@ -572,7 +578,7 @@ def _reserve_response(row):
         "did_number": did_number,
         "destination": row["destination"],
         "backup_destination": row["backup_destination"],
-        "bridge_target": stored_bridge_target or _bridge_target(row["destination"], did_number),
+        "bridge_target": _bridge_target(row["destination"], did_number),
         "backup_bridge_target": _bridge_target(row["backup_destination"], did_number) if row["backup_destination"] else "",
         "max_seconds": row["max_seconds"],
         "sell_rate_cents": row["sell_rate_cents"],
@@ -590,17 +596,24 @@ def _sip_targets_payload(conn):
              JOIN did_clients c ON c.id = n.client_id
             ORDER BY c.name, n.did_number"""
     ).fetchall()]
+    nodes = [dict(row) for row in conn.execute(
+        "SELECT * FROM did_sip_nodes ORDER BY active DESC, name, id"
+    ).fetchall()]
     targets = [dict(row) for row in conn.execute(
         """SELECT s.*, n.did_number, n.active AS did_active,
-                  c.name AS client_name
+                  c.name AS client_name, e.name AS edge_node_name,
+                  e.node_key AS edge_node_key, e.public_ip AS edge_node_public_ip,
+                  e.active AS edge_node_active
              FROM did_sip_targets s
              JOIN did_numbers n ON n.id = s.did_number_id
              JOIN did_clients c ON c.id = n.client_id
+             LEFT JOIN did_sip_nodes e ON e.id = s.edge_node_id
             ORDER BY c.name, n.did_number"""
     ).fetchall()]
     for target in targets:
         target["ready"] = bool(
             target["plugin_hash"] and target["plugin_domain"] and target["sip_uri"]
+            and target["edge_node_id"] and target["edge_node_active"]
         )
         try:
             target["bridge_target"] = (
@@ -609,7 +622,7 @@ def _sip_targets_payload(conn):
         except ValueError:
             target["bridge_target"] = ""
             target["ready"] = False
-    return {"numbers": numbers, "targets": targets}
+    return {"numbers": numbers, "nodes": nodes, "targets": targets}
 
 
 def finalize_call(db, data: DidFinalizeIn):
@@ -1022,6 +1035,105 @@ def install(app, main, db, base_path: Path) -> None:
         finally:
             conn.close()
 
+    @app.post("/api/dids/sip-nodes", dependencies=main.ADMIN_WRITE_AUTH)
+    def create_did_sip_node(data: DidSipNodeIn):
+        node_key = _clean_text(data.node_key, 80).lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]+", node_key):
+            raise HTTPException(422, "Ключ сервера: только a-z, 0-9, _ и -")
+        conn = db.get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(
+                """INSERT INTO did_sip_nodes
+                       (name, node_key, public_ip, notes, active, updated_at)
+                   VALUES (?, ?, ?, ?, ?, datetime('now'))""",
+                (
+                    data.name.strip(), node_key, data.public_ip.strip(),
+                    data.notes.strip(), int(data.active),
+                ),
+            )
+            conn.commit()
+            return {"ok": True, "id": cur.lastrowid}
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            raise HTTPException(409, "Сервер с таким ключом уже существует") from exc
+        finally:
+            conn.close()
+
+    @app.put("/api/dids/sip-nodes/{node_id}", dependencies=main.ADMIN_WRITE_AUTH)
+    def update_did_sip_node(node_id: int, data: DidSipNodeIn):
+        node_key = _clean_text(data.node_key, 80).lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]+", node_key):
+            raise HTTPException(422, "Ключ сервера: только a-z, 0-9, _ и -")
+        conn = db.get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(
+                """UPDATE did_sip_nodes
+                      SET name = ?, node_key = ?, public_ip = ?, notes = ?,
+                          active = ?, updated_at = datetime('now')
+                    WHERE id = ?""",
+                (
+                    data.name.strip(), node_key, data.public_ip.strip(),
+                    data.notes.strip(), int(data.active), node_id,
+                ),
+            )
+            if not cur.rowcount:
+                raise HTTPException(404, "SIP edge сервер не найден")
+            if not data.active:
+                conn.execute("UPDATE did_sip_targets SET active = 0 WHERE edge_node_id = ?", (node_id,))
+            conn.commit()
+            return {"ok": True}
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            raise HTTPException(409, "Сервер с таким ключом уже существует") from exc
+        except HTTPException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    @app.delete("/api/dids/sip-nodes/{node_id}", dependencies=main.ADMIN_WRITE_AUTH)
+    def delete_did_sip_node(node_id: int):
+        conn = db.get_conn()
+        try:
+            assigned = conn.execute(
+                "SELECT COUNT(*) FROM did_sip_targets WHERE edge_node_id = ?", (node_id,)
+            ).fetchone()[0]
+            if assigned:
+                raise HTTPException(409, "Сначала перенесите или удалите маршруты этого сервера")
+            cur = conn.execute("DELETE FROM did_sip_nodes WHERE id = ?", (node_id,))
+            if not cur.rowcount:
+                raise HTTPException(404, "SIP edge сервер не найден")
+            conn.commit()
+            return {"ok": True}
+        finally:
+            conn.close()
+
+    @app.get("/api/freeswitch/sip-crm-config/{node_key}", dependencies=main.API_AUTH)
+    def sip_crm_edge_config(node_key: str):
+        conn = db.get_conn()
+        try:
+            node = conn.execute(
+                "SELECT id, name, node_key, public_ip FROM did_sip_nodes WHERE node_key = ? AND active = 1",
+                (_clean_text(node_key, 80).lower(),),
+            ).fetchone()
+            if node is None:
+                raise HTTPException(404, "Активный SIP edge сервер не найден")
+            routes = [dict(row) for row in conn.execute(
+                """SELECT n.did_number, n.provider_ips, s.sip_uri, s.updated_at
+                     FROM did_sip_targets s
+                     JOIN did_numbers n ON n.id = s.did_number_id
+                    WHERE s.edge_node_id = ? AND s.active = 1 AND n.active = 1
+                    ORDER BY n.did_number""",
+                (node["id"],),
+            ).fetchall()]
+            for route in routes:
+                route["bridge_target"] = _exact_sip_bridge_target(route["sip_uri"])
+            return {"node": dict(node), "routes": routes}
+        finally:
+            conn.close()
+
     @app.get("/api/dids/dashboard", dependencies=main.ADMIN_AUTH)
     def did_dashboard():
         now = int(time.time())
@@ -1290,12 +1402,22 @@ def install(app, main, db, base_path: Path) -> None:
             ).fetchone()
             if number is None:
                 raise HTTPException(404, "DID номер не найден")
+            edge_node = None
+            if data.edge_node_id is not None:
+                edge_node = conn.execute(
+                    "SELECT id, active FROM did_sip_nodes WHERE id = ?", (data.edge_node_id,)
+                ).fetchone()
+                if edge_node is None:
+                    raise HTTPException(404, "SIP edge сервер не найден")
+            if data.active and (edge_node is None or not edge_node["active"]):
+                raise HTTPException(422, "Для включения выберите активный SIP edge сервер")
             conn.execute(
                 """INSERT INTO did_sip_targets
-                       (did_number_id, integration, plugin_hash, plugin_domain,
+                       (did_number_id, edge_node_id, integration, plugin_hash, plugin_domain,
                         sip_uri, notes, active, updated_at)
-                   VALUES (?, 'salesrender', ?, ?, ?, ?, ?, datetime('now'))
+                   VALUES (?, ?, 'salesrender', ?, ?, ?, ?, ?, datetime('now'))
                    ON CONFLICT(did_number_id) DO UPDATE SET
+                       edge_node_id = excluded.edge_node_id,
                        integration = 'salesrender',
                        plugin_hash = excluded.plugin_hash,
                        plugin_domain = excluded.plugin_domain,
@@ -1305,6 +1427,7 @@ def install(app, main, db, base_path: Path) -> None:
                        updated_at = datetime('now')""",
                 (
                     number_id,
+                    data.edge_node_id,
                     plugin_hash,
                     plugin_domain,
                     sip_uri,
