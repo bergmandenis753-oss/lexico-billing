@@ -15,12 +15,15 @@ class SipCrmEdgeTests(unittest.TestCase):
     def test_render_uses_only_local_exact_routes(self):
         xml = sync_routes.render_dialplan({
             "routes": [{
-                "did_number": "+420 510 015 272",
-                "bridge_target": "sofia/external/sip:hash:kz.pbx.de.backend.salesrender.com",
+                "inbound_number": "+777 800 326 50",
+                "originator_ips": ["195.219.39.9", "195.219.39.14"],
+                "bridge_target": "sofia/external/sip:hash@kz.pbx.de.backend.salesrender.com",
             }]
         })
-        self.assertIn('expression="^\\+?420510015272$"', xml)
-        self.assertIn("sofia/external/sip:hash:kz.pbx.de.backend.salesrender.com", xml)
+        self.assertIn('expression="^\\+?77780032650$"', xml)
+        self.assertIn('field="network_addr"', xml)
+        self.assertIn(r"195\.219\.39\.9", xml)
+        self.assertIn("sofia/external/sip:hash@kz.pbx.de.backend.salesrender.com", xml)
         self.assertNotIn("http", xml)
 
     def test_invalid_update_keeps_previous_file(self):
@@ -29,9 +32,23 @@ class SipCrmEdgeTests(unittest.TestCase):
             output.write_text("last-known-good", encoding="utf-8")
             with self.assertRaises(ValueError):
                 sync_routes.render_dialplan({
-                    "routes": [{"did_number": "420510015272", "bridge_target": "https://bad"}]
+                    "routes": [{
+                        "inbound_number": "77780032650",
+                        "originator_ips": ["195.219.39.9"],
+                        "bridge_target": "https://bad",
+                    }]
                 })
             self.assertEqual(output.read_text(encoding="utf-8"), "last-known-good")
+
+    def test_route_without_originator_ip_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "originator IPs"):
+            sync_routes.render_dialplan({
+                "routes": [{
+                    "inbound_number": "77780032650",
+                    "originator_ips": [],
+                    "bridge_target": "sofia/external/sip:hash@example.com",
+                }]
+            })
 
     def test_atomic_update_reloads_only_when_content_changes(self):
         with tempfile.TemporaryDirectory() as directory:

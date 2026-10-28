@@ -1,339 +1,37 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
-<title>Lexico VoIP — SIP CRM</title>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Cache-Control" content="no-store,no-cache,must-revalidate,max-age=0">
+<title>Lexico VoIP — SIP Buffer</title>
 <style>
-  :root { --bg:#0f1420; --card:#1a2130; --line:#2a3446; --txt:#e6ebf2; --mut:#8a96a8; --accent:#3f8cff; --good:#37c26a; --bad:#ff5a5a; --warn:#ffbf47; }
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--txt); font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif; }
-  header { min-height:68px; padding:14px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
-  header h1 { font-size:18px; margin:0; font-weight:600; }
-  header .sub { color:var(--mut); font-size:13px; }
-  .mode-nav { display:flex; gap:4px; margin-left:16px; padding:3px; border:1px solid var(--line); border-radius:8px; }
-  .mode-nav a { color:var(--mut); text-decoration:none; padding:5px 10px; border-radius:5px; font-size:13px; white-space:nowrap; }
-  .mode-nav a.active { background:var(--line); color:var(--txt); }
-  .header-actions { margin-left:auto; display:flex; align-items:center; gap:10px; }
-  main { padding:24px; max-width:1440px; margin:0 auto; }
-  .hero { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; margin-bottom:20px; }
-  .hero h2 { margin:0 0 6px; font-size:22px; }
-  .hero p { margin:0; color:var(--mut); max-width:760px; }
-  .summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-bottom:20px; }
-  .metric { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
-  .metric .label { color:var(--mut); font-size:11px; text-transform:uppercase; }
-  .metric .value { margin-top:8px; font-size:24px; font-weight:650; }
-  .safety { margin-bottom:20px; padding:13px 15px; border:1px solid rgba(63,140,255,.35); border-radius:9px; background:rgba(63,140,255,.08); }
-  .safety strong { color:#9fc3ff; }
-  .section-head { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
-  .section-head h3 { margin:0; font-size:15px; }
-  section + section { margin-top:20px; }
-  button { background:var(--accent); color:#fff; border:0; border-radius:7px; padding:7px 12px; cursor:pointer; font:inherit; }
-  button:hover { opacity:.9; }
-  button.small { padding:4px 9px; font-size:12px; }
-  button.ghost { background:transparent; border:1px solid var(--line); color:var(--txt); }
-  button.danger { background:transparent; border:1px solid rgba(255,90,90,.35); color:var(--bad); }
-  button.icon-button { width:31px; height:31px; padding:0; display:inline-grid; place-items:center; font-size:18px; }
-  .table-wrap { overflow:auto; border:1px solid var(--line); border-radius:9px; background:var(--card); }
-  table { width:100%; min-width:1050px; border-collapse:collapse; }
-  th,td { padding:12px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }
-  tr:last-child td { border-bottom:0; }
-  th { color:var(--mut); font-size:11px; font-weight:600; text-transform:uppercase; }
-  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; }
-  .mut { color:var(--mut); }
-  .badge { display:inline-flex; min-height:22px; align-items:center; padding:2px 8px; border-radius:20px; font-size:12px; }
-  .on { color:var(--good); background:rgba(55,194,106,.15); }
-  .off { color:var(--mut); background:rgba(138,150,168,.15); }
-  .draft { color:var(--warn); background:rgba(255,191,71,.14); }
-  .actions { display:flex; justify-content:flex-end; gap:6px; white-space:nowrap; }
-  .empty { padding:28px; color:var(--mut); text-align:center; }
-  #notice { min-height:20px; margin-bottom:10px; color:var(--mut); }
-  #notice.error { color:var(--bad); }
-  dialog { width:min(520px,calc(100vw - 28px)); max-height:90vh; overflow:auto; background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:11px; padding:20px; }
-  dialog::backdrop { background:rgba(3,7,18,.72); }
-  dialog h3 { margin:0 0 16px; font-size:17px; }
-  label { display:block; color:var(--mut); font-size:12px; margin-bottom:5px; }
-  input,select,textarea { width:100%; margin:0 0 13px; padding:9px 10px; color:var(--txt); background:var(--bg); border:1px solid var(--line); border-radius:7px; font:inherit; }
-  textarea { min-height:82px; resize:vertical; }
-  .check { display:flex; align-items:flex-start; gap:8px; margin-bottom:14px; color:var(--txt); }
-  .check input { width:auto; margin:3px 0 0; }
-  .dialog-actions { display:flex; justify-content:flex-end; gap:8px; }
-  .dialog-actions .push-left { margin-right:auto; }
-  @media (max-width:980px) {
-    header { flex-wrap:wrap; padding:12px 16px; }
-    header .sub { display:none; }
-    .mode-nav { order:3; width:100%; margin:0; overflow-x:auto; }
-    .mode-nav a { flex:1; text-align:center; }
-    main { padding:18px 16px; }
-    .hero { display:block; }
-    .hero button { margin-top:14px; }
-  }
-  @media (max-width:620px) { .summary { grid-template-columns:1fr; } }
-</style>
-</head>
+:root{--bg:#0f1420;--card:#1a2130;--line:#2a3446;--txt:#e6ebf2;--mut:#8a96a8;--accent:#3f8cff;--good:#37c26a;--bad:#ff5a5a}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif}header{min-height:68px;padding:14px 24px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px}header h1{font-size:18px;margin:0;font-weight:650}.sub,.mut{color:var(--mut)}.mode-nav{display:flex;gap:4px;margin-left:16px;padding:3px;border:1px solid var(--line);border-radius:8px}.mode-nav a{color:var(--mut);text-decoration:none;padding:5px 10px;border-radius:5px;font-size:13px;white-space:nowrap}.mode-nav a.active{background:var(--line);color:var(--txt)}.header-actions{margin-left:auto;display:flex;align-items:center;gap:10px}main{padding:24px;max-width:1440px;margin:0 auto}.hero{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:20px}.hero h2{margin:0 0 6px;font-size:22px}.hero p{margin:0;color:var(--mut);max-width:850px}.summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:20px}.metric,.card{background:var(--card);border:1px solid var(--line);border-radius:10px}.metric{padding:16px}.metric .label{color:var(--mut);font-size:11px;text-transform:uppercase}.metric .value{margin-top:8px;font-size:24px;font-weight:650}.safety{margin-bottom:20px;padding:13px 15px;border:1px solid rgba(63,140,255,.35);border-radius:9px;background:rgba(63,140,255,.08)}.safety strong{color:#9fc3ff}.flow{display:grid;grid-template-columns:1fr auto 1fr auto 1.2fr;gap:10px;align-items:center;margin-bottom:20px}.flow .card{padding:14px}.flow .arrow{color:var(--accent);font-size:22px}.flow b{display:block;margin-top:4px}.section-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}.section-head h3{margin:0;font-size:15px}section+section{margin-top:20px}button{background:var(--accent);color:#fff;border:0;border-radius:7px;padding:7px 12px;cursor:pointer;font:inherit}button:hover{opacity:.9}button.small{padding:4px 9px;font-size:12px}button.ghost{background:transparent;border:1px solid var(--line);color:var(--txt)}button.danger{background:transparent;border:1px solid rgba(255,90,90,.35);color:var(--bad)}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:9px;background:var(--card)}table{width:100%;min-width:1000px;border-collapse:collapse}th,td{padding:12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}tr:last-child td{border-bottom:0}th{color:var(--mut);font-size:11px;font-weight:600;text-transform:uppercase}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}.badge{display:inline-flex;min-height:22px;align-items:center;padding:2px 8px;border-radius:20px;font-size:12px}.on{color:var(--good);background:rgba(55,194,106,.15)}.off{color:var(--mut);background:rgba(138,150,168,.15)}.actions{display:flex;justify-content:flex-end;gap:6px;white-space:nowrap}.empty{padding:28px;color:var(--mut);text-align:center}#notice{min-height:20px;margin-bottom:10px;color:var(--mut)}#notice.error{color:var(--bad)}dialog{width:min(600px,calc(100vw - 28px));max-height:90vh;overflow:auto;background:var(--card);color:var(--txt);border:1px solid var(--line);border-radius:11px;padding:20px}dialog::backdrop{background:rgba(3,7,18,.72)}dialog h3{margin:0 0 16px;font-size:17px}label{display:block;color:var(--mut);font-size:12px;margin-bottom:5px}input,select,textarea{width:100%;margin:0 0 13px;padding:9px 10px;color:var(--txt);background:var(--bg);border:1px solid var(--line);border-radius:7px;font:inherit}textarea{min-height:78px;resize:vertical}.check{display:flex;align-items:flex-start;gap:8px;margin-bottom:14px;color:var(--txt)}.check input{width:auto;margin:3px 0 0}.dialog-actions{display:flex;justify-content:flex-end;gap:8px}.push-left{margin-right:auto}@media(max-width:980px){header{flex-wrap:wrap;padding:12px 16px}.sub{display:none}.mode-nav{order:3;width:100%;margin:0;overflow-x:auto}.mode-nav a{flex:1;text-align:center}main{padding:18px 16px}.hero{display:block}.hero button{margin-top:14px}.flow{grid-template-columns:1fr}.flow .arrow{transform:rotate(90deg);text-align:center}}@media(max-width:620px){.summary{grid-template-columns:1fr}}
+</style></head>
 <body>
-<header>
-  <h1>Lexico VoIP</h1>
-  <span class="sub">prepaid-биллинг · SIP CRM</span>
-  <nav class="mode-nav" aria-label="Режим биллинга"><a href="/">Исходящие</a><a href="/dids">DIDs</a><a href="/monitoring">Мониторинг</a><a href="/invoice">Invoice</a><a href="/system">Система</a><a class="active" href="/sip-crm">SIP CRM</a></nav>
-  <div class="header-actions"><span class="mut" id="refresh-state">обновляю...</span><button class="ghost" onclick="load()">Обновить</button></div>
-</header>
-
+<header><h1>Lexico VoIP</h1><span class="sub">автономный SIP-буфер</span><nav class="mode-nav"><a href="/">Исходящие</a><a href="/dids">DIDs</a><a href="/monitoring">Мониторинг</a><a href="/invoice">Invoice</a><a href="/system">Система</a><a class="active" href="/sip-crm">SIP CRM</a></nav><div class="header-actions"><span class="mut" id="refresh-state">обновляю...</span><button class="ghost" onclick="load()">Обновить</button></div></header>
 <main>
-  <div class="hero">
-    <div><h2>Входящие маршруты в CRM</h2><p>Здесь DID связывается с точным SIP URI SalesRender. Существующая исходящая телефония и маршруты поставщиков не изменяются.</p></div>
-    <button onclick="openCreate()">+ SalesRender маршрут</button>
-  </div>
-
-  <div class="summary">
-    <div class="metric"><div class="label">Доступные DID</div><div class="value" id="metric-dids">—</div></div>
-    <div class="metric"><div class="label">Настроено CRM</div><div class="value" id="metric-configured">—</div></div>
-    <div class="metric"><div class="label">Активные маршруты</div><div class="value" id="metric-active">—</div></div>
-  </div>
-
-  <div class="safety"><strong>Изолированный режим.</strong> Маршруты получает выбранный выделенный SIP edge и хранит локально. Текущие два голосовых сервера и основной call flow не изменяются.</div>
-  <div id="notice"></div>
-
-  <section>
-    <div class="section-head"><h3>Выделенные SIP edge серверы</h3><button class="small" onclick="openNodeCreate()">+ Сервер</button></div>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Название</th><th>Ключ конфигурации</th><th>Публичный IP</th><th>Маршруты</th><th>Статус</th><th></th></tr></thead>
-      <tbody id="nodes-body"></tbody>
-    </table></div>
-  </section>
-
-  <section>
-    <div class="section-head"><h3>SalesRender назначения</h3></div>
-    <div class="table-wrap"><table>
-      <thead><tr><th>DID</th><th>Клиент</th><th>SIP edge</th><th>Plugin hash</th><th>Домен</th><th>Полный SIP URI</th><th>Готовность</th><th>Статус</th><th></th></tr></thead>
-      <tbody id="targets-body"></tbody>
-    </table></div>
-  </section>
+<div class="hero"><div><h2>Отдельный SIP-буфер</h2><p>Прямой маршрут от разрешённых IP originator к точному SIP-адресу terminator. Этот раздел не использует DIDs, баланс, CDR или маршрутизацию основного биллинга.</p></div><button onclick="openRouteCreate()">+ Маршрут</button></div>
+<div class="summary"><div class="metric"><div class="label">Буферные серверы</div><div class="value" id="metric-nodes">—</div></div><div class="metric"><div class="label">Маршруты</div><div class="value" id="metric-routes">—</div></div><div class="metric"><div class="label">Активные</div><div class="value" id="metric-active">—</div></div></div>
+<div class="safety"><strong>Полная изоляция call flow.</strong> Конфигурация хранится в отдельной базе <span class="mono">sip_buffer.db</span>. Третий сервер забирает её заранее и обслуживает INVITE локально; Railway и основная база не участвуют в момент звонка.</div>
+<div class="flow"><div class="card"><span class="mut">Originator</span><b>Lexico</b><span class="mono mut">whitelist IP</span></div><div class="arrow">→</div><div class="card"><span class="mut">Буфер</span><b>165.245.208.124</b><span class="mono mut">FreeSWITCH</span></div><div class="arrow">→</div><div class="card"><span class="mut">Terminator</span><b>SalesRender</b><span class="mono mut">sip:login@domain</span></div></div>
+<div id="notice"></div>
+<section><div class="section-head"><h3>Буферные серверы</h3><button class="small" onclick="openNodeCreate()">+ Сервер</button></div><div class="table-wrap"><table><thead><tr><th>Название</th><th>Ключ</th><th>Публичный IP</th><th>Маршруты</th><th>Статус</th><th></th></tr></thead><tbody id="nodes-body"></tbody></table></div></section>
+<section><div class="section-head"><h3>Originator → Terminator</h3></div><div class="table-wrap"><table><thead><tr><th>Маршрут</th><th>Originator / IP</th><th>Входящий номер</th><th>Terminator</th><th>SIP URI</th><th>Сервер</th><th>Статус</th><th></th></tr></thead><tbody id="routes-body"></tbody></table></div></section>
 </main>
-
-<dialog id="target-dlg">
-  <h3 id="dlg-title">SalesRender · новый маршрут</h3>
-  <form id="target-form">
-    <label>DID, который направляем в SalesRender</label><select id="target-number" required></select>
-    <label>Выделенный сервер, который примет звонок</label><select id="target-node" required></select>
-    <label>Plugin hash</label><input id="target-hash" autocomplete="off" placeholder="1ec1c7b49dd8d2378e31407c195a0fe2">
-    <label>Домен SalesRender</label><input id="target-domain" autocomplete="off" placeholder="kz.pbx.de.backend.salesrender.com">
-    <label>Полный SIP URI от SalesRender</label><input id="target-uri" autocomplete="off" placeholder="sip:{plugin_hash}:{domain}">
-    <div class="mut" style="margin:-6px 0 14px">Адрес сохраняется и передаётся FreeSWITCH без изменения формата.</div>
-    <label>Комментарий</label><textarea id="target-notes" placeholder="Формат номера, whitelist IP, transport или другие требования"></textarea>
-    <label class="check"><input id="target-active" type="checkbox"><span>Включить для новых входящих звонков. Делайте это только после проверки данных SalesRender.</span></label>
-    <div class="dialog-actions"><button id="target-delete" type="button" class="danger push-left" hidden>Удалить</button><button type="button" class="ghost" onclick="targetDlg.close()">Отмена</button><button type="submit">Сохранить</button></div>
-  </form>
-</dialog>
-
-<dialog id="node-dlg">
-  <h3 id="node-dlg-title">Новый SIP edge сервер</h3>
-  <form id="node-form">
-    <input id="node-id" type="hidden">
-    <label>Название</label><input id="node-name" required placeholder="SalesRender edge #1">
-    <label>Ключ конфигурации</label><input id="node-key" required pattern="[a-z0-9][a-z0-9_-]+" placeholder="salesrender-edge-1">
-    <label>Публичный IP или hostname</label><input id="node-ip" placeholder="203.0.113.80">
-    <label>Комментарий</label><textarea id="node-notes" placeholder="Отдельный VPS только для SalesRender"></textarea>
-    <label class="check"><input id="node-active" type="checkbox" checked><span>Сервер активен и может получать конфигурацию.</span></label>
-    <div class="dialog-actions"><button id="node-delete" type="button" class="danger push-left" hidden>Удалить</button><button type="button" class="ghost" onclick="nodeDlg.close()">Отмена</button><button type="submit">Сохранить</button></div>
-  </form>
-</dialog>
-
+<dialog id="route-dlg"><h3 id="route-title">Новый маршрут</h3><form id="route-form"><input id="route-id" type="hidden"><label>Буферный сервер</label><select id="route-node" required></select><label>Название маршрута</label><input id="route-name" required placeholder="Lexico → SalesRender KZ"><label>Originator</label><input id="route-originator" required placeholder="Lexico"><label>Разрешённые IP originator, по одному в строке</label><textarea id="route-ips" required placeholder="195.219.39.9&#10;195.219.39.14"></textarea><label>Входящий номер</label><input id="route-number" required inputmode="numeric" placeholder="77780032650"><label>Terminator</label><input id="route-terminator" required placeholder="SalesRender"><label>SIP URI terminator</label><input id="route-uri" required placeholder="sip:login@domain"><div class="mut" style="margin:-6px 0 14px">Формат SalesRender <span class="mono">sip:{login}:{domain}</span> автоматически преобразуется в стандартный <span class="mono">sip:login@domain</span>.</div><label>Комментарий</label><textarea id="route-notes" placeholder="Назначение маршрута, контакт клиента"></textarea><label class="check"><input id="route-active" type="checkbox"><span>Включить маршрут для новых звонков после сохранения и синхронизации.</span></label><div class="dialog-actions"><button id="route-delete" type="button" class="danger push-left" hidden>Удалить</button><button type="button" class="ghost" onclick="routeDlg.close()">Отмена</button><button type="submit">Сохранить</button></div></form></dialog>
+<dialog id="node-dlg"><h3 id="node-title">Новый буферный сервер</h3><form id="node-form"><input id="node-id" type="hidden"><label>Название</label><input id="node-name" required placeholder="SalesRender Buffer"><label>Ключ конфигурации</label><input id="node-key" required pattern="[a-z0-9][a-z0-9_-]+" placeholder="salesrender-edge-1"><label>Публичный IP</label><input id="node-ip" placeholder="165.245.208.124"><label>Комментарий</label><textarea id="node-notes"></textarea><label class="check"><input id="node-active" type="checkbox" checked><span>Сервер активен и может получать конфигурацию.</span></label><div class="dialog-actions"><button id="node-delete" type="button" class="danger push-left" hidden>Удалить</button><button type="button" class="ghost" onclick="nodeDlg.close()">Отмена</button><button type="submit">Сохранить</button></div></form></dialog>
 <script>
-const targetDlg = document.getElementById('target-dlg');
-const nodeDlg = document.getElementById('node-dlg');
-const MONEY_SCALE = 10000;
-let state = {numbers:[], nodes:[], targets:[]};
-let loading = false;
-const esc = value => String(value == null ? '' : value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const empty = cols => `<tr><td colspan="${cols}" class="empty">Настроенных SIP CRM маршрутов пока нет</td></tr>`;
-
-async function api(path, method='GET', body) {
-  const response = await fetch(path, {method, cache:'no-store', headers:{'Content-Type':'application/json','X-Money-Scale':String(MONEY_SCALE)}, body:body === undefined ? undefined : JSON.stringify(body)});
-  if (!response.ok) {
-    let message = await response.text();
-    try { message = JSON.parse(message).detail || message; } catch (_) {}
-    throw new Error(message);
-  }
-  return response.json();
-}
-
-function notice(message='', error=false) {
-  const element = document.getElementById('notice');
-  element.textContent = message;
-  element.className = error ? 'error' : '';
-}
-
-function render() {
-  document.getElementById('metric-dids').textContent = state.numbers.length;
-  document.getElementById('metric-configured').textContent = state.targets.length;
-  document.getElementById('metric-active').textContent = state.targets.filter(target => target.active).length;
-  document.getElementById('nodes-body').innerHTML = state.nodes.map(node => `<tr>
-    <td>${esc(node.name)}</td><td class="mono">${esc(node.node_key)}</td><td class="mono">${esc(node.public_ip || 'ещё не задан')}</td>
-    <td>${state.targets.filter(target => target.edge_node_id === node.id).length}</td>
-    <td>${node.active ? '<span class="badge on">активен</span>' : '<span class="badge off">выключен</span>'}</td>
-    <td><div class="actions"><button class="ghost icon-button" title="Редактировать" onclick="openNodeEdit(${node.id})">✎</button></div></td>
-  </tr>`).join('') || `<tr><td colspan="6" class="empty">Добавьте отдельный сервер перед созданием маршрута</td></tr>`;
-  document.getElementById('targets-body').innerHTML = state.targets.map(target => `<tr>
-    <td class="mono">${esc(target.did_number)}</td><td>${esc(target.client_name)}</td>
-    <td>${esc(target.edge_node_name || 'не выбран')}<div class="mut mono">${esc(target.edge_node_public_ip || '')}</div></td>
-    <td class="mono">${esc(target.plugin_hash || '—')}</td><td class="mono">${esc(target.plugin_domain || '—')}</td>
-    <td class="mono">${esc(target.sip_uri || '—')}</td>
-    <td>${target.ready ? '<span class="badge on">данные готовы</span>' : '<span class="badge draft">черновик</span>'}</td>
-    <td>${target.active ? '<span class="badge on">используется</span>' : '<span class="badge off">выключен</span>'}</td>
-    <td><div class="actions"><button class="ghost icon-button" title="Редактировать" onclick="openEdit(${target.did_number_id})">✎</button><button class="small ${target.active?'danger':'ghost'}" onclick="toggleTarget(${target.did_number_id},${target.active?0:1})">${target.active?'Выключить':'Включить'}</button></div></td>
-  </tr>`).join('') || empty(9);
-}
-
-async function load() {
-  if (loading) return;
-  loading = true;
-  const status = document.getElementById('refresh-state');
-  status.textContent = 'обновляю...';
-  try {
-    state = await api('/api/dids/sip-targets');
-    render();
-    status.textContent = `обновлено ${new Date().toLocaleTimeString()}`;
-    notice();
-  } catch (error) {
-    status.textContent = 'ошибка обновления';
-    notice(error.message, true);
-  } finally { loading = false; }
-}
-
-function fillNumberOptions(selectedId, editing=false) {
-  const select = document.getElementById('target-number');
-  select.innerHTML = state.numbers.map(number => {
-    const configured = state.targets.some(target => target.did_number_id === number.id);
-    const disabled = configured && number.id !== selectedId;
-    return `<option value="${number.id}" ${disabled?'disabled':''}>${esc(number.did_number)} · ${esc(number.client_name)}${configured && number.id !== selectedId?' · уже настроен':''}</option>`;
-  }).join('');
-  select.value = String(selectedId || '');
-  select.disabled = editing;
-}
-
-function fillNodeOptions(selectedId) {
-  const select = document.getElementById('target-node');
-  select.innerHTML = state.nodes.map(node => `<option value="${node.id}" ${node.active?'':'disabled'}>${esc(node.name)} · ${esc(node.public_ip || node.node_key)}${node.active?'':' · выключен'}</option>`).join('');
-  select.value = String(selectedId || state.nodes.find(node => node.active)?.id || '');
-}
-
-function openCreate() {
-  if (!state.nodes.some(node => node.active)) return notice('Сначала добавьте активный выделенный SIP edge сервер.', true);
-  const available = state.numbers.filter(number => !state.targets.some(target => target.did_number_id === number.id));
-  if (!available.length) return notice(state.numbers.length ? 'Для всех DID уже создана настройка.' : 'Сначала добавьте DID во вкладке DIDs.', true);
-  document.getElementById('target-form').reset();
-  fillNumberOptions(available[0].id, false);
-  fillNodeOptions();
-  document.getElementById('target-active').checked = false;
-  document.getElementById('target-delete').hidden = true;
-  document.getElementById('dlg-title').textContent = 'SalesRender · новый маршрут';
-  targetDlg.showModal();
-}
-
-function openEdit(numberId) {
-  const target = state.targets.find(item => item.did_number_id === numberId);
-  if (!target) return;
-  document.getElementById('target-form').reset();
-  fillNumberOptions(numberId, true);
-  fillNodeOptions(target.edge_node_id);
-  document.getElementById('target-hash').value = target.plugin_hash || '';
-  document.getElementById('target-domain').value = target.plugin_domain || '';
-  document.getElementById('target-uri').value = target.sip_uri || '';
-  document.getElementById('target-notes').value = target.notes || '';
-  document.getElementById('target-active').checked = Boolean(target.active);
-  document.getElementById('target-delete').hidden = false;
-  document.getElementById('dlg-title').textContent = `SalesRender · ${target.did_number}`;
-  targetDlg.showModal();
-}
-
-function payloadFromTarget(target, active) {
-  return {edge_node_id:target.edge_node_id || null, plugin_hash:target.plugin_hash || '', plugin_domain:target.plugin_domain || '', sip_uri:target.sip_uri || '', notes:target.notes || '', active:Boolean(active)};
-}
-
-async function toggleTarget(numberId, active) {
-  const target = state.targets.find(item => item.did_number_id === numberId);
-  if (!target) return;
-  if (active && !confirm(`Включить входящие звонки DID ${target.did_number} на указанный SIP URI?`)) return;
-  try { await api(`/api/dids/numbers/${numberId}/sip-target`, 'PUT', payloadFromTarget(target, active)); await load(); }
-  catch (error) { notice(error.message, true); }
-}
-
-document.getElementById('target-form').addEventListener('submit', async event => {
-  event.preventDefault();
-  const numberId = Number(document.getElementById('target-number').value);
-  const active = document.getElementById('target-active').checked;
-  const current = state.targets.find(item => item.did_number_id === numberId);
-  if (active && !(current && current.active) && !confirm('Сохранить и сразу включить этот маршрут для новых входящих звонков?')) return;
-  try {
-    await api(`/api/dids/numbers/${numberId}/sip-target`, 'PUT', {
-      edge_node_id:Number(document.getElementById('target-node').value) || null,
-      plugin_hash:document.getElementById('target-hash').value.trim(),
-      plugin_domain:document.getElementById('target-domain').value.trim(),
-      sip_uri:document.getElementById('target-uri').value.trim(),
-      notes:document.getElementById('target-notes').value.trim(),
-      active
-    });
-    targetDlg.close();
-    await load();
-  } catch (error) { notice(error.message, true); }
-});
-
-function openNodeCreate() {
-  document.getElementById('node-form').reset();
-  document.getElementById('node-id').value = '';
-  document.getElementById('node-active').checked = true;
-  document.getElementById('node-delete').hidden = true;
-  document.getElementById('node-dlg-title').textContent = 'Новый SIP edge сервер';
-  nodeDlg.showModal();
-}
-
-function openNodeEdit(nodeId) {
-  const node = state.nodes.find(item => item.id === nodeId);
-  if (!node) return;
-  document.getElementById('node-id').value = node.id;
-  document.getElementById('node-name').value = node.name || '';
-  document.getElementById('node-key').value = node.node_key || '';
-  document.getElementById('node-ip').value = node.public_ip || '';
-  document.getElementById('node-notes').value = node.notes || '';
-  document.getElementById('node-active').checked = Boolean(node.active);
-  document.getElementById('node-delete').hidden = false;
-  document.getElementById('node-dlg-title').textContent = `SIP edge · ${node.name}`;
-  nodeDlg.showModal();
-}
-
-document.getElementById('node-form').addEventListener('submit', async event => {
-  event.preventDefault();
-  const nodeId = Number(document.getElementById('node-id').value);
-  const payload = {
-    name:document.getElementById('node-name').value.trim(),
-    node_key:document.getElementById('node-key').value.trim().toLowerCase(),
-    public_ip:document.getElementById('node-ip').value.trim(),
-    notes:document.getElementById('node-notes').value.trim(),
-    active:document.getElementById('node-active').checked
-  };
-  try { await api(nodeId ? `/api/dids/sip-nodes/${nodeId}` : '/api/dids/sip-nodes', nodeId ? 'PUT' : 'POST', payload); nodeDlg.close(); await load(); }
-  catch (error) { notice(error.message, true); }
-});
-
-document.getElementById('node-delete').addEventListener('click', async () => {
-  const nodeId = Number(document.getElementById('node-id').value);
-  const node = state.nodes.find(item => item.id === nodeId);
-  if (!node || !confirm(`Удалить сервер ${node.name}?`)) return;
-  try { await api(`/api/dids/sip-nodes/${nodeId}`, 'DELETE'); nodeDlg.close(); await load(); }
-  catch (error) { notice(error.message, true); }
-});
-
-document.getElementById('target-delete').addEventListener('click', async () => {
-  const numberId = Number(document.getElementById('target-number').value);
-  const target = state.targets.find(item => item.did_number_id === numberId);
-  if (!target || !confirm(`Удалить SIP CRM настройку для DID ${target.did_number}? Текущий основной маршрут DID останется без изменений.`)) return;
-  try { await api(`/api/dids/numbers/${numberId}/sip-target`, 'DELETE'); targetDlg.close(); await load(); }
-  catch (error) { notice(error.message, true); }
-});
-
-load();
-</script>
-</body>
-</html>
+const MONEY_SCALE=10000,routeDlg=document.getElementById('route-dlg'),nodeDlg=document.getElementById('node-dlg');let state={nodes:[],routes:[]},loading=false;const esc=v=>String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function api(path,method='GET',body){const response=await fetch(path,{method,cache:'no-store',headers:{'Content-Type':'application/json','X-Money-Scale':String(MONEY_SCALE)},body:body===undefined?undefined:JSON.stringify(body)});if(!response.ok){let message=await response.text();try{message=JSON.parse(message).detail||message}catch(_){}throw new Error(message)}return response.json()}
+function notice(message='',error=false){const e=document.getElementById('notice');e.textContent=message;e.className=error?'error':''}
+function render(){document.getElementById('metric-nodes').textContent=state.nodes.length;document.getElementById('metric-routes').textContent=state.routes.length;document.getElementById('metric-active').textContent=state.routes.filter(r=>r.active).length;document.getElementById('nodes-body').innerHTML=state.nodes.map(n=>`<tr><td>${esc(n.name)}</td><td class="mono">${esc(n.node_key)}</td><td class="mono">${esc(n.public_ip||'—')}</td><td>${state.routes.filter(r=>r.node_id===n.id).length}</td><td>${n.active?'<span class="badge on">активен</span>':'<span class="badge off">выключен</span>'}</td><td><div class="actions"><button class="ghost small" onclick="openNodeEdit(${n.id})">Изменить</button></div></td></tr>`).join('')||'<tr><td colspan="6" class="empty">Добавьте выделенный буферный сервер</td></tr>';document.getElementById('routes-body').innerHTML=state.routes.map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.originator_name)}<div class="mono mut">${r.originator_ip_list.map(esc).join('<br>')}</div></td><td class="mono">${esc(r.inbound_number)}</td><td>${esc(r.terminator_name)}</td><td class="mono">${esc(r.destination_uri)}</td><td>${esc(r.node_name)}<div class="mono mut">${esc(r.node_public_ip)}</div></td><td>${r.active?'<span class="badge on">активен</span>':'<span class="badge off">выключен</span>'}</td><td><div class="actions"><button class="ghost small" onclick="openRouteEdit(${r.id})">Изменить</button></div></td></tr>`).join('')||'<tr><td colspan="8" class="empty">Маршрутов пока нет</td></tr>'}
+async function load(){if(loading)return;loading=true;const s=document.getElementById('refresh-state');s.textContent='обновляю...';try{state=await api('/api/sip-buffer');render();s.textContent=`обновлено ${new Date().toLocaleTimeString()}`;notice()}catch(e){s.textContent='ошибка обновления';notice(e.message,true)}finally{loading=false}}
+function nodeOptions(selected){document.getElementById('route-node').innerHTML=state.nodes.map(n=>`<option value="${n.id}" ${n.active?'':'disabled'} ${n.id===selected?'selected':''}>${esc(n.name)} · ${esc(n.public_ip||n.node_key)}</option>`).join('')}
+function openRouteCreate(){if(!state.nodes.some(n=>n.active))return notice('Сначала добавьте активный буферный сервер.',true);document.getElementById('route-form').reset();document.getElementById('route-id').value='';nodeOptions(state.nodes.find(n=>n.active)?.id);document.getElementById('route-name').value='Lexico → SalesRender KZ';document.getElementById('route-originator').value='Lexico';document.getElementById('route-ips').value='195.219.39.9\n195.219.39.14\n195.219.39.39\n195.219.39.40';document.getElementById('route-number').value='77780032650';document.getElementById('route-terminator').value='SalesRender';document.getElementById('route-uri').value='sip:1ec1c7b49dd8d2378e31407c195a0fe2@kz.pbx.de.backend.salesrender.com';document.getElementById('route-delete').hidden=true;document.getElementById('route-title').textContent='Новый прямой маршрут';routeDlg.showModal()}
+function openRouteEdit(id){const r=state.routes.find(x=>x.id===id);if(!r)return;document.getElementById('route-form').reset();document.getElementById('route-id').value=r.id;nodeOptions(r.node_id);document.getElementById('route-name').value=r.name;document.getElementById('route-originator').value=r.originator_name;document.getElementById('route-ips').value=r.originator_ips;document.getElementById('route-number').value=r.inbound_number;document.getElementById('route-terminator').value=r.terminator_name;document.getElementById('route-uri').value=r.destination_uri;document.getElementById('route-notes').value=r.notes||'';document.getElementById('route-active').checked=Boolean(r.active);document.getElementById('route-delete').hidden=false;document.getElementById('route-title').textContent=r.name;routeDlg.showModal()}
+document.getElementById('route-form').addEventListener('submit',async e=>{e.preventDefault();const id=Number(document.getElementById('route-id').value),active=document.getElementById('route-active').checked;if(active&&!confirm('Включить маршрут для новых входящих звонков?'))return;const body={node_id:Number(document.getElementById('route-node').value),name:document.getElementById('route-name').value.trim(),originator_name:document.getElementById('route-originator').value.trim(),originator_ips:document.getElementById('route-ips').value.trim(),inbound_number:document.getElementById('route-number').value.trim(),terminator_name:document.getElementById('route-terminator').value.trim(),destination_uri:document.getElementById('route-uri').value.trim(),notes:document.getElementById('route-notes').value.trim(),active};try{await api(id?`/api/sip-buffer/routes/${id}`:'/api/sip-buffer/routes',id?'PUT':'POST',body);routeDlg.close();await load()}catch(err){notice(err.message,true)}});
+document.getElementById('route-delete').addEventListener('click',async()=>{const id=Number(document.getElementById('route-id').value);if(!id||!confirm('Удалить этот маршрут?'))return;try{await api(`/api/sip-buffer/routes/${id}`,'DELETE');routeDlg.close();await load()}catch(e){notice(e.message,true)}});
+function openNodeCreate(){document.getElementById('node-form').reset();document.getElementById('node-id').value='';document.getElementById('node-name').value='SalesRender Buffer';document.getElementById('node-key').value='salesrender-edge-1';document.getElementById('node-ip').value='165.245.208.124';document.getElementById('node-active').checked=true;document.getElementById('node-delete').hidden=true;document.getElementById('node-title').textContent='Новый буферный сервер';nodeDlg.showModal()}
+function openNodeEdit(id){const n=state.nodes.find(x=>x.id===id);if(!n)return;document.getElementById('node-id').value=n.id;document.getElementById('node-name').value=n.name;document.getElementById('node-key').value=n.node_key;document.getElementById('node-ip').value=n.public_ip||'';document.getElementById('node-notes').value=n.notes||'';document.getElementById('node-active').checked=Boolean(n.active);document.getElementById('node-delete').hidden=false;document.getElementById('node-title').textContent=n.name;nodeDlg.showModal()}
+document.getElementById('node-form').addEventListener('submit',async e=>{e.preventDefault();const id=Number(document.getElementById('node-id').value),body={name:document.getElementById('node-name').value.trim(),node_key:document.getElementById('node-key').value.trim().toLowerCase(),public_ip:document.getElementById('node-ip').value.trim(),notes:document.getElementById('node-notes').value.trim(),active:document.getElementById('node-active').checked};try{await api(id?`/api/sip-buffer/nodes/${id}`:'/api/sip-buffer/nodes',id?'PUT':'POST',body);nodeDlg.close();await load()}catch(err){notice(err.message,true)}});
+document.getElementById('node-delete').addEventListener('click',async()=>{const id=Number(document.getElementById('node-id').value);if(!id||!confirm('Удалить этот сервер?'))return;try{await api(`/api/sip-buffer/nodes/${id}`,'DELETE');nodeDlg.close();await load()}catch(e){notice(e.message,true)}});load();
+</script></body></html>

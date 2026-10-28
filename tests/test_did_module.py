@@ -102,8 +102,8 @@ class DidBillingTests(unittest.TestCase):
     def test_sip_crm_tab_uses_its_own_lightweight_api(self):
         page = self.http.get("/sip-crm")
         self.assertEqual(page.status_code, 200, page.text)
-        self.assertIn("Входящие маршруты в CRM", page.text)
-        self.assertIn("/api/dids/sip-targets", page.text)
+        self.assertIn("Отдельный SIP-буфер", page.text)
+        self.assertNotIn("/api/dids/sip-targets", page.text)
 
         saved = self.http.put(
             f"/api/dids/numbers/{self.number_id}/sip-target",
