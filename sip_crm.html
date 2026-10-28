@@ -143,13 +143,14 @@
 <script>
 const targetDlg = document.getElementById('target-dlg');
 const nodeDlg = document.getElementById('node-dlg');
+const MONEY_SCALE = 10000;
 let state = {numbers:[], nodes:[], targets:[]};
 let loading = false;
 const esc = value => String(value == null ? '' : value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const empty = cols => `<tr><td colspan="${cols}" class="empty">Настроенных SIP CRM маршрутов пока нет</td></tr>`;
 
 async function api(path, method='GET', body) {
-  const response = await fetch(path, {method, cache:'no-store', headers:{'Content-Type':'application/json'}, body:body === undefined ? undefined : JSON.stringify(body)});
+  const response = await fetch(path, {method, cache:'no-store', headers:{'Content-Type':'application/json','X-Money-Scale':String(MONEY_SCALE)}, body:body === undefined ? undefined : JSON.stringify(body)});
   if (!response.ok) {
     let message = await response.text();
     try { message = JSON.parse(message).detail || message; } catch (_) {}
