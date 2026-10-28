@@ -12,6 +12,9 @@ the last valid local dialplan remains in service.
 ## Server setup
 
 1. Install FreeSWITCH with `mod_sofia` and `mod_dptools` on a separate VPS.
+   The hardened minimal module list, local-only event socket and safe empty
+   dialplan shipped in `freeswitch/` can be copied over the vanilla defaults
+   before the service is started.
 2. Copy `sync_routes.py` to `/usr/local/bin/sip-crm-sync` and make it executable.
 3. Copy `sip-crm-sync.service` to `/etc/systemd/system/`.
 4. Create `/etc/lexico/sip-crm-edge.env`:
