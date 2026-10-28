@@ -39,6 +39,10 @@ class DidBillingTests(unittest.TestCase):
             (self.client_id,),
         )
         self.number_id = route.lastrowid
+        self.edge_node_id = conn.execute(
+            """INSERT INTO did_sip_nodes (name, node_key, public_ip)
+               VALUES ('Dedicated CRM edge', 'crm-edge-1', '203.0.113.80')"""
+        ).lastrowid
         self.outbound_route_id = conn.execute(
             """INSERT INTO did_outbound_routes
                    (client_id, provider_name, destination_name, prefix, route_ips,
@@ -81,6 +85,115 @@ class DidBillingTests(unittest.TestCase):
         self.assertTrue(repeated["idempotent"])
         self.assertEqual(repeated["charged_cents"], 1017)
         self.assertEqual(repeated["balance_cents"], 98983)
+
+    def test_salesrender_draft_does_not_change_live_did_route(self):
+        response = self.http.put(
+            f"/api/dids/numbers/{self.number_id}/sip-target",
+            json={"plugin_hash": "", "plugin_domain": "", "sip_uri": "", "active": False},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(response.json()["ready"])
+
+        reserved = did_module.reserve_call(db, did_module.DidReserveIn(
+            did_number="48221234567", source_ip="203.0.113.10", call_uuid="draft-route"
+        ))
+        self.assertEqual(reserved["bridge_target"], "sofia/external/48221234567@198.51.100.20:5060")
+
+    def test_sip_crm_tab_uses_its_own_lightweight_api(self):
+        page = self.http.get("/sip-crm")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("Входящие маршруты в CRM", page.text)
+        self.assertIn("/api/dids/sip-targets", page.text)
+
+        saved = self.http.put(
+            f"/api/dids/numbers/{self.number_id}/sip-target",
+            json={
+                "plugin_hash": "draft-hash",
+                "plugin_domain": "kz.pbx.de.backend.salesrender.com",
+                "sip_uri": "sip:draft-hash:kz.pbx.de.backend.salesrender.com",
+                "edge_node_id": self.edge_node_id,
+                "active": False,
+            },
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+
+        response = self.http.get("/api/dids/sip-targets")
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(len(payload["numbers"]), 1)
+        self.assertEqual(len(payload["targets"]), 1)
+        self.assertEqual(payload["targets"][0]["did_number"], "48221234567")
+        self.assertTrue(payload["targets"][0]["ready"])
+        self.assertFalse(payload["targets"][0]["active"])
+
+    def test_salesrender_target_is_exported_to_edge_without_changing_live_route(self):
+        first_uri = "sip:1ec1c7b49dd8d2378e31407c195a0fe2:kz.pbx.de.backend.salesrender.com"
+        response = self.http.put(
+            f"/api/dids/numbers/{self.number_id}/sip-target",
+            json={
+                "plugin_hash": "1ec1c7b49dd8d2378e31407c195a0fe2",
+                "plugin_domain": "kz.pbx.de.backend.salesrender.com",
+                "sip_uri": first_uri,
+                "edge_node_id": self.edge_node_id,
+                "notes": "Inbound only",
+                "active": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["bridge_target"], f"sofia/external/{first_uri}")
+
+        reserved = did_module.reserve_call(db, did_module.DidReserveIn(
+            did_number="48221234567", source_ip="203.0.113.10", call_uuid="salesrender-route"
+        ))
+        self.assertEqual(reserved["destination"], "198.51.100.20:5060")
+        self.assertEqual(reserved["bridge_target"], "sofia/external/48221234567@198.51.100.20:5060")
+
+        edge_config = self.http.get("/api/freeswitch/sip-crm-config/crm-edge-1")
+        self.assertEqual(edge_config.status_code, 200, edge_config.text)
+        self.assertEqual(edge_config.json()["routes"][0]["sip_uri"], first_uri)
+        self.assertEqual(edge_config.json()["routes"][0]["bridge_target"], f"sofia/external/{first_uri}")
+
+        second_uri = "sip:newhash:de.pbx.de.backend.salesrender.com"
+        updated = self.http.put(
+            f"/api/dids/numbers/{self.number_id}/sip-target",
+            json={
+                "plugin_hash": "newhash",
+                "plugin_domain": "de.pbx.de.backend.salesrender.com",
+                "sip_uri": second_uri,
+                "edge_node_id": self.edge_node_id,
+                "active": True,
+            },
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+
+        refreshed = self.http.get("/api/freeswitch/sip-crm-config/crm-edge-1")
+        self.assertEqual(refreshed.status_code, 200, refreshed.text)
+        self.assertEqual(refreshed.json()["routes"][0]["sip_uri"], second_uri)
+
+    def test_salesrender_target_cannot_be_enabled_until_complete(self):
+        response = self.http.put(
+            f"/api/dids/numbers/{self.number_id}/sip-target",
+            json={
+                "plugin_hash": "hash-only",
+                "plugin_domain": "kz.pbx.de.backend.salesrender.com",
+                "sip_uri": "",
+                "edge_node_id": self.edge_node_id,
+                "active": True,
+            },
+        )
+        self.assertEqual(response.status_code, 422, response.text)
+
+        invalid_uri = self.http.put(
+            f"/api/dids/numbers/{self.number_id}/sip-target",
+            json={
+                "plugin_hash": "hash",
+                "plugin_domain": "kz.pbx.de.backend.salesrender.com",
+                "sip_uri": "https://not-sip.example",
+                "edge_node_id": self.edge_node_id,
+                "active": True,
+            },
+        )
+        self.assertEqual(invalid_uri.status_code, 422, invalid_uri.text)
 
     def test_provider_whitelist_and_channel_limit(self):
         with self.assertRaisesRegex(Exception, "whitelist"):
