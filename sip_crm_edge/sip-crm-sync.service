@@ -1,0 +1,15 @@
+[Unit]
+Description=Lexico dedicated SIP CRM route sync
+After=network-online.target freeswitch.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/lexico/sip-crm-edge.env
+ExecStart=/usr/local/bin/sip-crm-sync --watch
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
