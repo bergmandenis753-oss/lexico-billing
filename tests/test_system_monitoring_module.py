@@ -61,6 +61,7 @@ class SystemMonitoringTests(unittest.TestCase):
         for node, cpu, calls, loss, jitter in (
             ("primary", 21.0, 12, 0.4, 8.0),
             ("secondary", 66.0, 37, 2.1, 24.0),
+            ("third", 33.0, 5, 0.2, 6.0),
         ):
             system_monitoring_module.record_sample(db, system_monitoring_module.SystemMetricIn(
                 sampled_at=now,
@@ -79,8 +80,10 @@ class SystemMonitoringTests(unittest.TestCase):
         self.assertTrue(result["all_online"])
         self.assertEqual(snapshots["primary"]["latest"]["active_calls"], 12)
         self.assertEqual(snapshots["secondary"]["latest"]["active_calls"], 37)
+        self.assertEqual(snapshots["third"]["latest"]["active_calls"], 5)
         self.assertEqual(snapshots["primary"]["quality"]["jitter_ms"], 8.0)
         self.assertEqual(snapshots["secondary"]["quality"]["jitter_ms"], 24.0)
+        self.assertEqual(snapshots["third"]["quality"]["jitter_ms"], 6.0)
 
     def test_reconciles_only_old_reservations_after_both_nodes_report(self):
         conn = db.get_conn()
@@ -121,7 +124,15 @@ class SystemMonitoringTests(unittest.TestCase):
                 voice_node="secondary", cpu_percent=10, active_call_uuids=[]
             ),
         )
-        self.assertEqual(second["reconciled_reservations"], 1)
+        self.assertEqual(second["reconciled_reservations"], 0)
+
+        third = system_monitoring_module.record_sample(
+            db,
+            system_monitoring_module.SystemMetricIn(
+                voice_node="third", cpu_percent=10, active_call_uuids=[]
+            ),
+        )
+        self.assertEqual(third["reconciled_reservations"], 1)
         conn = db.get_conn()
         try:
             remaining = {
@@ -136,7 +147,7 @@ class SystemMonitoringTests(unittest.TestCase):
         result = system_monitoring_module.system_snapshot(db)
 
         self.assertFalse(result["online"])
-        self.assertEqual(len(result["nodes"]), 2)
+        self.assertEqual(len(result["nodes"]), 3)
         for node in result["nodes"]:
             self.assertIsNone(node["latest"])
             self.assertIsNone(node["quality"]["packet_loss_percent"])

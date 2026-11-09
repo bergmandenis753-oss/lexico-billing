@@ -242,6 +242,7 @@ _incident_alert_started = False
 _VOICE_NODE_LABELS = {
     "primary": "Основной · 207.154.192.34",
     "secondary": "Новый · 207.154.219.145",
+    "third": "Третий · 165.227.135.250",
 }
 
 

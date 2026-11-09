@@ -75,6 +75,12 @@ class VoiceNodeRoutingTests(unittest.TestCase):
             },
         )
 
+    def test_third_node_is_available_for_routing(self):
+        third = next(node for node in voice_nodes.list_nodes() if node["id"] == "third")
+        self.assertEqual(third["name"], "Третий")
+        self.assertEqual(third["public_ip"], "165.227.135.250")
+        self.assertEqual(voice_nodes.validate("third"), "third")
+
     def test_only_assigned_node_can_reserve_route(self):
         blocked = self.reserve("primary")
         self.assertEqual(blocked.status_code, 503, blocked.text)

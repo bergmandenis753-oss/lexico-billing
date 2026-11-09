@@ -38,6 +38,9 @@ class SystemMonitorAgentTests(unittest.TestCase):
 
             self.assertEqual(agent.configured_voice_node(node_file), "secondary")
 
+            node_file.write_text("third\n", encoding="utf-8")
+            self.assertEqual(agent.configured_voice_node(node_file), "third")
+
     def test_incident_trigger_detects_bad_rtp_quality(self):
         payload = {
             "cpu_percent": 42,
