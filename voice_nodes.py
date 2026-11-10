@@ -13,6 +13,12 @@ VOICE_NODES = (
         "public_ip": "207.154.219.145",
         "private_ip": "10.114.0.3",
     },
+    {
+        "id": "third",
+        "name": "Третий",
+        "public_ip": "165.227.135.250",
+        "private_ip": "",
+    },
 )
 
 _NODE_IDS = {node["id"] for node in VOICE_NODES}
