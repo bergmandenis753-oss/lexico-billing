@@ -56,6 +56,8 @@ RESERVATION_BUFFER_SEC = 120
 # Правила тарификации (тариф задан за минуту). По умолчанию посекундно = 1/1.
 DEFAULT_BILLING_CYCLE = "1/1"
 BILLING_CYCLE_RE = re.compile(r"^\s*(\d+)\s*/\s*(\d+)\s*$")
+TERMINATOR_MODES = {"sip", "audio"}
+AUDIO_ASSET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.wav$")
 MONEY_SCALE = 10000
 LEGACY_CENT_TO_MONEY_UNITS = 100
 
@@ -68,6 +70,16 @@ def normalize_billing_cycle(value) -> str:
     if first <= 0 or increment <= 0:
         return DEFAULT_BILLING_CYCLE
     return f"{first}/{increment}"
+
+
+def normalize_terminator_mode(value) -> str:
+    mode = str(value or "sip").strip().lower()
+    return mode if mode in TERMINATOR_MODES else "sip"
+
+
+def normalize_audio_asset(value) -> str:
+    asset = str(value or "").strip()
+    return asset if AUDIO_ASSET_RE.fullmatch(asset) else ""
 
 
 def billing_cycle_parts(value):
@@ -163,6 +175,9 @@ def init_db() -> None:
             tech_prefix      TEXT    NOT NULL DEFAULT '',  -- техпрефикс перед номером, напр. '999001'
             cost_rate_cents  INTEGER NOT NULL,       -- legacy name; 0.0001 USD/min units
             billing_cycle    TEXT    NOT NULL DEFAULT '1/1',
+            route_mode       TEXT    NOT NULL DEFAULT 'sip',
+            audio_asset      TEXT    NOT NULL DEFAULT '',
+            audio_max_seconds INTEGER NOT NULL DEFAULT 300,
             active           INTEGER NOT NULL DEFAULT 1,
             created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
         );
@@ -337,6 +352,15 @@ def init_db() -> None:
         conn.execute("ALTER TABLE terminators ADD COLUMN gateway_group_id INTEGER")
     if "billing_cycle" not in term_cols:
         conn.execute("ALTER TABLE terminators ADD COLUMN billing_cycle TEXT NOT NULL DEFAULT '1/1'")
+    if "route_mode" not in term_cols:
+        conn.execute("ALTER TABLE terminators ADD COLUMN route_mode TEXT NOT NULL DEFAULT 'sip'")
+    if "audio_asset" not in term_cols:
+        conn.execute("ALTER TABLE terminators ADD COLUMN audio_asset TEXT NOT NULL DEFAULT ''")
+    if "audio_max_seconds" not in term_cols:
+        conn.execute("ALTER TABLE terminators ADD COLUMN audio_max_seconds INTEGER NOT NULL DEFAULT 300")
+    conn.execute("UPDATE terminators SET route_mode = 'sip' WHERE route_mode IS NULL OR route_mode NOT IN ('sip', 'audio')")
+    conn.execute("UPDATE terminators SET audio_asset = '' WHERE audio_asset IS NULL")
+    conn.execute("UPDATE terminators SET audio_max_seconds = 300 WHERE audio_max_seconds IS NULL OR audio_max_seconds < 1")
     cdr_cols = [r["name"] for r in conn.execute("PRAGMA table_info(cdr)").fetchall()]
     cdr_migrations = {
         "sip_ip": "ALTER TABLE cdr ADD COLUMN sip_ip TEXT NOT NULL DEFAULT ''",
