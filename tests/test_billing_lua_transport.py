@@ -26,6 +26,12 @@ class BillingLuaTransportTests(unittest.TestCase):
         self.assertIn('tonumber(sip_code) == 503 and "503" or "403"', self.script)
         self.assertIn('reserve rejected (" .. code .. "): " .. body, code)', self.script)
 
+    def test_audio_ivr_checks_local_wav_before_answering(self):
+        self.assertIn('local AUDIO_DIR = "/usr/share/freeswitch/sounds/lexico/ivr/"', self.script)
+        self.assertIn('if not file_exists(audio_path) then', self.script)
+        self.assertLess(self.script.index('if not file_exists(audio_path) then'), self.script.index('session:answer()'))
+        self.assertIn('result = "AUDIO_IVR"', self.script)
+
 
 if __name__ == "__main__":
     unittest.main()
