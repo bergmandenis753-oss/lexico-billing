@@ -2,6 +2,7 @@ local API = "https://web-production-d5e1c.up.railway.app"
 local KEY_FILE = "/etc/freeswitch/billing_api_key"
 local NODE_FILE = "/etc/freeswitch/voice_node"
 local DIRECT_PROFILE = "internal"
+local AUDIO_DIR = "/usr/share/freeswitch/sounds/lexico/ivr/"
 
 local client_ip = session:getVariable("network_addr") or session:getVariable("sip_received_ip") or ""
 local client_port = session:getVariable("network_port") or session:getVariable("sip_received_port") or session:getVariable("sip_network_port") or ""
@@ -74,6 +75,13 @@ local function read_number_file(path)
   f:close()
   local value = tonumber(raw)
   return value or 0
+end
+
+local function file_exists(path)
+  local f = io.open(path, "rb")
+  if not f then return false end
+  f:close()
+  return true
 end
 
 local function json_escape(s)
@@ -199,13 +207,31 @@ local terminator_name = jstr(body, "terminator_name") or ""
 local terminator_destination_name = jstr(body, "terminator_destination_name") or ""
 local terminator_prefix = jstr(body, "terminator_prefix") or ""
 local terminator_tech_prefix = jstr(body, "terminator_tech_prefix") or tech_prefix
+local route_mode = trim(jstr(body, "route_mode") or "sip"):lower()
+local audio_asset = trim(jstr(body, "audio_asset") or "")
+local audio_path = ""
 
 if not max_seconds or max_seconds <= 0 or not client_id or not sell or not cost then
   reject_call("[billing] invalid reserve response: " .. body)
   return
 end
 
-if gateway == "" and route_ip == "" then
+if route_mode ~= "sip" and route_mode ~= "audio" then
+  reject_call("[billing] invalid route_mode: " .. route_mode)
+  return
+end
+
+if route_mode == "audio" then
+  if #audio_asset > 128 or not audio_asset:match("^[%w][%w%._%-]*%.wav$") then
+    reject_call("[billing] invalid Audio/IVR asset")
+    return
+  end
+  audio_path = AUDIO_DIR .. audio_asset
+  if not file_exists(audio_path) then
+    reject_call("[billing] Audio/IVR file is missing: " .. audio_asset, 503)
+    return
+  end
+elseif gateway == "" and route_ip == "" then
   reject_call("[billing] reserve has neither gateway nor route_ip: " .. body)
   return
 end
@@ -214,8 +240,10 @@ local answer_stamp_path = "/tmp/billing_answer_" .. safe_filename(uuid) .. ".ts"
 os.remove(answer_stamp_path)
 local dial_number = provider_number
 local bridge_target = ""
-local used_route = gateway
-if gateway ~= "" and looks_like_direct_sip_host(gateway) then
+local used_route = route_mode == "audio" and ("audio:" .. audio_asset) or gateway
+if route_mode == "audio" then
+  -- Audio/IVR is handled locally and never creates an outbound supplier leg.
+elseif gateway ~= "" and looks_like_direct_sip_host(gateway) then
   bridge_target = "sofia/" .. DIRECT_PROFILE .. "/" .. dial_number .. "@" .. gateway
   route_ip = route_ip ~= "" and route_ip or gateway
   used_route = "direct:" .. gateway
@@ -228,7 +256,7 @@ end
 
 -- Scope the override to the outbound leg; keep the original CLID for CDR.
 local outbound_caller_id = jstr(body, "outbound_caller_id") or ""
-if outbound_caller_id ~= "" then
+if route_mode == "sip" and outbound_caller_id ~= "" then
   if outbound_caller_id:match("^[1-9]%d+$") and #outbound_caller_id >= 7 and #outbound_caller_id <= 15 then
     local caller_id_domain = session:getVariable("sip_local_network_addr") or
       freeswitch.getGlobalVariable("local_ip_v4") or ""
@@ -247,17 +275,36 @@ if outbound_caller_id ~= "" then
   end
 end
 
+local audio_answer_epoch = 0
 if session:ready() then
   session:execute("set", "api_on_answer=luarun /etc/freeswitch/scripts/billing_mark_answer.lua " .. uuid)
   session:execute("set", "execute_on_answer=sched_hangup +" .. max_seconds .. " normal_clearing")
-  freeswitch.consoleLog("info", "[billing] bridge " .. bridge_target .. "\n")
-  session:execute("bridge", bridge_target)
+  if route_mode == "audio" then
+    freeswitch.consoleLog("info", "[billing] local Audio/IVR playback " .. audio_asset .. "\n")
+    session:answer()
+    audio_answer_epoch = os.time()
+    if session:ready() then
+      session:execute("playback", audio_path)
+    end
+    if session:ready() then
+      session:hangup("NORMAL_CLEARING")
+    end
+  else
+    freeswitch.consoleLog("info", "[billing] bridge " .. bridge_target .. "\n")
+    session:execute("bridge", bridge_target)
+  end
 else
-  freeswitch.consoleLog("notice", "[billing] caller disconnected before bridge call_uuid=" .. uuid .. "\n")
+  freeswitch.consoleLog("notice", "[billing] caller disconnected before bridge or local route call_uuid=" .. uuid .. "\n")
 end
 
 local raw_billsec, billsec_source = positive_number_var("billsec", "flow_billsec", "bridge_billsec")
 local billsec = raw_billsec
+if billsec <= 0 then
+  if audio_answer_epoch > 0 then
+    billsec = math.max(0, os.time() - audio_answer_epoch)
+    billsec_source = "audio_answer_epoch"
+  end
+end
 if billsec <= 0 then
   local marked_answer_epoch = read_number_file(answer_stamp_path)
   if marked_answer_epoch > 0 then
@@ -279,7 +326,9 @@ local bridge_hangup_cause = session:getVariable("bridge_hangup_cause")
   or session:getVariable("endpoint_disposition")
   or ""
 local result = "Normal"
-if billsec <= 0 then
+if route_mode == "audio" and billsec > 0 then
+  result = "AUDIO_IVR"
+elseif billsec <= 0 then
   result = bridge_hangup_cause ~= "" and bridge_hangup_cause or hangup_cause
   if result == "" then result = "Rejected" end
 end
