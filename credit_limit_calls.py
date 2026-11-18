@@ -36,6 +36,9 @@ def install_call_routes(app, main, db):
         client = rate = route = None
         stage = "received"
         client_tech_prefix = dial_destination = gateway_name = route_ip = provider_number = ""
+        route_mode = "sip"
+        audio_asset = ""
+        audio_max_seconds = 300
         outbound_caller_id = ""
         max_seconds = None
         try:
@@ -85,18 +88,28 @@ def install_call_routes(app, main, db):
                 route = db.match_active_terminator(conn, dial_destination)
             if route is None:
                 raise HTTPException(403, f"Нет терминатора для {dial_destination}")
-            group = db.get_termination_group(conn, route["gateway_group_id"]) if "gateway_group_id" in route.keys() else None
-            gateway_name = (route["gateway_name"] or "").strip()
-            route_ips = route["ips"] or ""
-            if group is not None:
-                gateway_name = gateway_name or (group["gateway_name"] or "").strip()
-                route_ips = route_ips or group["ips"] or ""
-            route_ip = db.pick_ip(route_ips, data.call_uuid or dial_destination)
-            stage = "gateway"
-            if not gateway_name and not route_ip:
-                raise HTTPException(403, "У терминатора не указан ни gateway, ни IP")
-
-            provider_number = f"{route['tech_prefix'] or ''}{dial_destination}"
+            route_mode = db.normalize_terminator_mode(route["route_mode"] if "route_mode" in route.keys() else "sip")
+            if route_mode == "audio":
+                audio_asset = db.normalize_audio_asset(route["audio_asset"] if "audio_asset" in route.keys() else "")
+                audio_max_seconds = int(route["audio_max_seconds"] if "audio_max_seconds" in route.keys() else 300)
+                if not audio_asset:
+                    stage = "audio_asset"
+                    raise HTTPException(503, "У Audio/IVR терминатора не задан корректный WAV-файл")
+                gateway_name = f"audio:{audio_asset}"
+                route_ip = ""
+                provider_number = dial_destination
+            else:
+                group = db.get_termination_group(conn, route["gateway_group_id"]) if "gateway_group_id" in route.keys() else None
+                gateway_name = (route["gateway_name"] or "").strip()
+                route_ips = route["ips"] or ""
+                if group is not None:
+                    gateway_name = gateway_name or (group["gateway_name"] or "").strip()
+                    route_ips = route_ips or group["ips"] or ""
+                route_ip = db.pick_ip(route_ips, data.call_uuid or dial_destination)
+                stage = "gateway"
+                if not gateway_name and not route_ip:
+                    raise HTTPException(403, "У терминатора не указан ни gateway, ни IP")
+                provider_number = f"{route['tech_prefix'] or ''}{dial_destination}"
             call_uuid = data.call_uuid or f"nouuid-{now_ts}-{client['id']}"
 
             # Only calls that belong to this voice node acquire the SQLite write
@@ -127,6 +140,8 @@ def install_call_routes(app, main, db):
                 raise HTTPException(403, "Недостаточно средств")
             per_call_balance = math.floor(spendable_balance / (active_calls + 1))
             max_seconds = math.floor(per_call_balance / rate["sell_rate_cents"] * 60)
+            if route_mode == "audio":
+                max_seconds = min(max_seconds, max(1, min(audio_max_seconds, 3600)))
             if max_seconds <= 0:
                 raise HTTPException(403, "Недостаточно средств даже на 1 секунду разговора")
 
@@ -145,6 +160,8 @@ def install_call_routes(app, main, db):
                 )
             stage = "reserved"
             reason = f"Пропущен; активных звонков={active_calls}; лимит={max_seconds} сек"
+            if route_mode == "audio":
+                reason += f"; Audio/IVR={audio_asset}"
             main._safe_record_sip_hit(
                 data,
                 status_text="allowed",
@@ -168,7 +185,11 @@ def install_call_routes(app, main, db):
                 "outbound_caller_id": outbound_caller_id,
                 "max_seconds": max_seconds,
                 "sell_rate_cents": rate["sell_rate_cents"],
-                "cost_rate_cents": route["cost_rate_cents"],
+                "cost_rate_cents": 0 if route_mode == "audio" else route["cost_rate_cents"],
+                "sell_billing_cycle": db.normalize_billing_cycle(rate["billing_cycle"]),
+                "cost_billing_cycle": db.normalize_billing_cycle(route["billing_cycle"]),
+                "route_mode": route_mode,
+                "audio_asset": audio_asset,
                 "gateway_name": gateway_name,
                 "route_ip": route_ip,
                 "tech_prefix": route["tech_prefix"],
