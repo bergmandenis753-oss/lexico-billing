@@ -164,6 +164,9 @@ class TerminatorIn(BaseModel):
     tech_prefix: str = ''
     cost_rate_cents: int = Field(ge=0)
     billing_cycle: str = db.DEFAULT_BILLING_CYCLE
+    route_mode: str = 'sip'
+    audio_asset: str = ''
+    audio_max_seconds: int = Field(default=300, ge=1, le=3600)
     active: bool = True
 
 class TerminatorUpdateIn(BaseModel):
@@ -176,6 +179,9 @@ class TerminatorUpdateIn(BaseModel):
     tech_prefix: Optional[str] = None
     cost_rate_cents: Optional[int] = Field(default=None, ge=0)
     billing_cycle: Optional[str] = None
+    route_mode: Optional[str] = None
+    audio_asset: Optional[str] = None
+    audio_max_seconds: Optional[int] = Field(default=None, ge=1, le=3600)
     active: Optional[bool] = None
 
 class ClientRateIn(BaseModel):
@@ -540,16 +546,31 @@ def delete_termination_group(gid: int):
 def create_terminator(data: TerminatorIn):
     conn = db.get_conn()
     try:
-        group = db.get_termination_group(conn, data.gateway_group_id)
-        if data.gateway_group_id is not None and group is None:
+        raw_mode = str(data.route_mode or 'sip').strip().lower()
+        if raw_mode not in db.TERMINATOR_MODES:
+            raise HTTPException(400, 'Неизвестный тип терминатора')
+        route_mode = db.normalize_terminator_mode(raw_mode)
+        audio_asset = db.normalize_audio_asset(data.audio_asset)
+        if route_mode == 'audio' and not audio_asset:
+            raise HTTPException(400, 'Для Audio/IVR укажите WAV-файл, например greeting.wav')
+        group_id = None if route_mode == 'audio' else data.gateway_group_id
+        ips = '' if route_mode == 'audio' else data.ips
+        gateway_name = '' if route_mode == 'audio' else data.gateway_name
+        tech_prefix = '' if route_mode == 'audio' else data.tech_prefix
+        cost_rate_cents = 0 if route_mode == 'audio' else data.cost_rate_cents
+        group = db.get_termination_group(conn, group_id)
+        if group_id is not None and group is None:
             raise HTTPException(404, 'Терминационная группа не найдена')
-        if group is None and (not data.gateway_name.strip()) and (not db.split_ip_list(data.ips)):
+        if route_mode == 'sip' and group is None and (not gateway_name.strip()) and (not db.split_ip_list(ips)):
             raise HTTPException(400, 'Укажите gateway или IP терминатора')
         billing_cycle = db.normalize_billing_cycle(data.billing_cycle or db.default_billing_cycle_for_route(data.destination_name, data.prefix))
         conn.execute('BEGIN IMMEDIATE')
         if data.active:
             conn.execute('UPDATE terminators SET active = 0 WHERE prefix = ?', (data.prefix,))
-        cur = conn.execute('INSERT INTO terminators (name, gateway_group_id, ips, destination_name, prefix, gateway_name, tech_prefix, cost_rate_cents, billing_cycle, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (data.name, data.gateway_group_id, data.ips, data.destination_name, data.prefix, data.gateway_name, data.tech_prefix, data.cost_rate_cents, billing_cycle, int(data.active)))
+        cur = conn.execute(
+            'INSERT INTO terminators (name, gateway_group_id, ips, destination_name, prefix, gateway_name, tech_prefix, cost_rate_cents, billing_cycle, route_mode, audio_asset, audio_max_seconds, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            (data.name, group_id, ips, data.destination_name, data.prefix, gateway_name, tech_prefix, cost_rate_cents, billing_cycle, route_mode, audio_asset if route_mode == 'audio' else '', data.audio_max_seconds, int(data.active)),
+        )
         conn.commit()
         return {'id': cur.lastrowid}
     finally:
@@ -576,6 +597,27 @@ def update_terminator(tid: int, data: TerminatorUpdateIn):
         if row is None:
             conn.rollback()
             raise HTTPException(404, 'Терминатор не найден')
+        raw_mode = str(fields.get('route_mode', row['route_mode'] if 'route_mode' in row.keys() else 'sip') or 'sip').strip().lower()
+        if raw_mode not in db.TERMINATOR_MODES:
+            conn.rollback()
+            raise HTTPException(400, 'Неизвестный тип терминатора')
+        next_mode = db.normalize_terminator_mode(raw_mode)
+        fields['route_mode'] = next_mode
+        next_audio_asset = db.normalize_audio_asset(fields.get('audio_asset', row['audio_asset'] if 'audio_asset' in row.keys() else ''))
+        if next_mode == 'audio':
+            if not next_audio_asset:
+                conn.rollback()
+                raise HTTPException(400, 'Для Audio/IVR укажите WAV-файл, например greeting.wav')
+            fields.update({
+                'gateway_group_id': None,
+                'ips': '',
+                'gateway_name': '',
+                'tech_prefix': '',
+                'cost_rate_cents': 0,
+                'audio_asset': next_audio_asset,
+            })
+        else:
+            fields['audio_asset'] = ''
         next_group_id = fields.get('gateway_group_id', row['gateway_group_id'] if 'gateway_group_id' in row.keys() else None)
         group = db.get_termination_group(conn, next_group_id)
         if next_group_id is not None and group is None:
@@ -583,7 +625,7 @@ def update_terminator(tid: int, data: TerminatorUpdateIn):
             raise HTTPException(404, 'Терминационная группа не найдена')
         next_gateway = fields.get('gateway_name', row['gateway_name']) or ''
         next_ips = fields.get('ips', row['ips']) or ''
-        if group is None and (not next_gateway.strip()) and (not db.split_ip_list(next_ips)):
+        if next_mode == 'sip' and group is None and (not next_gateway.strip()) and (not db.split_ip_list(next_ips)):
             conn.rollback()
             raise HTTPException(400, 'Укажите gateway или IP терминатора')
         if fields.get('active'):
@@ -746,6 +788,12 @@ def _route_preview(conn, *, client, destination: str, terminator_id: Optional[in
         route = db.match_active_terminator(conn, dial_destination)
     if route is None:
         return {'ok': False, 'stage': 'terminator', 'message': f'Нет терминатора для {dial_destination}', 'client': dict(client), 'client_rate': dict(rate), 'input_destination': destination, 'dial_destination': dial_destination, 'client_tech_prefix': client_tech_prefix}
+    route_mode = db.normalize_terminator_mode(route['route_mode'] if 'route_mode' in route.keys() else 'sip')
+    if route_mode == 'audio':
+        audio_asset = db.normalize_audio_asset(route['audio_asset'] if 'audio_asset' in route.keys() else '')
+        if not audio_asset:
+            return {'ok': False, 'stage': 'audio_asset', 'message': 'У Audio/IVR терминатора не задан корректный WAV-файл', 'client': dict(client), 'client_rate': dict(rate), 'terminator': dict(route), 'input_destination': destination, 'dial_destination': dial_destination, 'client_tech_prefix': client_tech_prefix}
+        return {'ok': True, 'stage': 'ready', 'message': 'Цепочка готова: локальный Audio/IVR', 'client': dict(client), 'client_rate': dict(rate), 'terminator': dict(route), 'termination_group': None, 'input_destination': destination, 'client_tech_prefix': client_tech_prefix, 'dial_destination': dial_destination, 'gateway_name': '', 'route_ip': '', 'terminator_tech_prefix': '', 'provider_number': dial_destination, 'dial_string': f'audio:{audio_asset}', 'route_mode': 'audio', 'audio_asset': audio_asset}
     group = db.get_termination_group(conn, route['gateway_group_id'] if 'gateway_group_id' in route.keys() else None)
     gateway_name = (route['gateway_name'] or '').strip()
     route_ips = route['ips'] or ''
@@ -771,6 +819,12 @@ def _new_direction_preview(conn, *, client, route, destination: str, prefix: str
         resolved_name = resolved['country'] if resolved is not None else ''
         hint = f" E.164 определил: {resolved_name}." if resolved_name else ''
         return {'ok': False, 'stage': 'prefix', 'message': f'Номер после клиентского техпрефикса должен относиться к {route["destination_name"]} / {prefix}.{hint}', 'client': dict(client), 'terminator': dict(route), 'input_destination': destination, 'dial_destination': dial_destination, 'client_tech_prefix': client_tech_prefix}
+    route_mode = db.normalize_terminator_mode(route['route_mode'] if 'route_mode' in route.keys() else 'sip')
+    if route_mode == 'audio':
+        audio_asset = db.normalize_audio_asset(route['audio_asset'] if 'audio_asset' in route.keys() else '')
+        if not audio_asset:
+            return {'ok': False, 'stage': 'audio_asset', 'message': 'У Audio/IVR терминатора не задан корректный WAV-файл', 'client': dict(client), 'terminator': dict(route), 'input_destination': destination, 'dial_destination': dial_destination, 'client_tech_prefix': client_tech_prefix}
+        return {'ok': True, 'stage': 'ready', 'message': 'Цепочка будет готова: локальный Audio/IVR', 'client': dict(client), 'client_rate': None, 'terminator': dict(route), 'termination_group': None, 'input_destination': destination, 'client_tech_prefix': client_tech_prefix, 'dial_destination': dial_destination, 'gateway_name': '', 'route_ip': '', 'terminator_tech_prefix': '', 'provider_number': dial_destination, 'dial_string': f'audio:{audio_asset}', 'route_mode': 'audio', 'audio_asset': audio_asset}
     group = db.get_termination_group(conn, route['gateway_group_id'] if 'gateway_group_id' in route.keys() else None)
     gateway_name = (route['gateway_name'] or '').strip()
     route_ips = route['ips'] or ''
@@ -806,13 +860,17 @@ def create_direction(data: DirectionIn):
         if not route['active']:
             conn.rollback()
             raise HTTPException(400, 'Терминатор выключен')
+        route_mode = db.normalize_terminator_mode(route['route_mode'] if 'route_mode' in route.keys() else 'sip')
         group = db.get_termination_group(conn, route['gateway_group_id'] if 'gateway_group_id' in route.keys() else None)
         gateway_name = (route['gateway_name'] or '').strip()
         route_ips = route['ips'] or ''
         if group is not None:
             gateway_name = gateway_name or (group['gateway_name'] or '').strip()
             route_ips = route_ips or group['ips'] or ''
-        if not gateway_name and (not db.split_ip_list(route_ips)):
+        if route_mode == 'audio' and not db.normalize_audio_asset(route['audio_asset'] if 'audio_asset' in route.keys() else ''):
+            conn.rollback()
+            raise HTTPException(400, 'У Audio/IVR терминатора не задан корректный WAV-файл')
+        if route_mode == 'sip' and not gateway_name and (not db.split_ip_list(route_ips)):
             conn.rollback()
             raise HTTPException(400, 'У терминатора нет gateway/IP')
         country = db.get_e164_country(conn, data.destination_name)
