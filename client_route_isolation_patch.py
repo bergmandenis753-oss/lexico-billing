@@ -46,6 +46,16 @@ def _validate_client_route(conn, main, db, data):
             raise HTTPException(404, "Терминатор не найден")
         if not route["active"]:
             raise HTTPException(400, "Терминатор выключен")
+        route_mode = db.normalize_terminator_mode(
+            route["route_mode"] if "route_mode" in route.keys() else "sip"
+        )
+        if route_mode == "audio":
+            audio_asset = db.normalize_audio_asset(
+                route["audio_asset"] if "audio_asset" in route.keys() else ""
+            )
+            if not audio_asset:
+                raise HTTPException(400, "У Audio/IVR терминатора не задан корректный WAV-файл")
+            return client, route
         group = db.get_termination_group(
             conn,
             route["gateway_group_id"] if "gateway_group_id" in route.keys() else None,
