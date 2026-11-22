@@ -11,6 +11,7 @@ import credit_limit_calls
 import credit_limit_common
 import db
 import main
+import multi_active_terminators_patch
 import terminator_balance_patch
 
 
@@ -152,6 +153,36 @@ class AudioIvrTests(unittest.TestCase):
                 )
             )
         self.assertEqual(raised.exception.status_code, 400)
+
+    def test_multi_active_admin_endpoint_accepts_audio_without_gateway(self):
+        app = FastAPI()
+        multi_active_terminators_patch.install(app, main, db)
+        app.dependency_overrides[main.require_admin] = lambda: "test"
+        http = TestClient(app)
+        self.addCleanup(http.close)
+
+        response = http.post(
+            "/api/terminators",
+            json={
+                "name": "IVR Germany",
+                "destination_name": "Germany",
+                "prefix": "49",
+                "cost_rate_cents": 9999,
+                "billing_cycle": "1/1",
+                "route_mode": "audio",
+                "audio_asset": "lexico_ivr_20261122.wav",
+                "audio_max_seconds": 300,
+                "active": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        with db.get_conn() as conn:
+            row = conn.execute("SELECT * FROM terminators WHERE id = ?", (response.json()["id"],)).fetchone()
+            self.assertEqual(row["route_mode"], "audio")
+            self.assertEqual(row["audio_asset"], "lexico_ivr_20261122.wav")
+            self.assertEqual(row["cost_rate_cents"], 0)
+            self.assertEqual(row["gateway_name"], "")
+            self.assertIsNone(row["gateway_group_id"])
 
 
 if __name__ == "__main__":
